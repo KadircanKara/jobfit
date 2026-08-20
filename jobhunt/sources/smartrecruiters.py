@@ -88,6 +88,11 @@ class SmartRecruitersAdapter(HttpAdapter):
             country=country,
             city=city,
             remote_type=remote_type,
+            employment_type=norm.normalize_employment_type(
+                (posting.get("typeOfEmployment") or {}).get("label")
+                if isinstance(posting.get("typeOfEmployment"), dict)
+                else None
+            ),
             description_html=None,
             description_text=None,
             description_md=None,

@@ -65,6 +65,7 @@ class JobPosting:
     country: str | None = None
     city: str | None = None
     remote_type: str = "unknown"
+    employment_type: str | None = None
 
     salary_min: float | None = None
     salary_max: float | None = None

@@ -83,6 +83,7 @@ class RecruiteeAdapter(HttpAdapter):
             country=(offer.get("country_code") or "").upper()[:2] or None,
             city=offer.get("city") or None,
             remote_type=remote_type,
+            employment_type=norm.normalize_employment_type(offer.get("employment_type_code")),
             salary_min=salary[0],
             salary_max=salary[1],
             salary_currency=salary[2],

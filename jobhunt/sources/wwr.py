@@ -79,6 +79,7 @@ class WeWorkRemotelyAdapter(HttpAdapter):
             country=country,
             city=city or (text("state") or None),
             remote_type="remote" if not text("country") else parsed_remote,
+            employment_type=norm.normalize_employment_type(text("type")),
             description_html=description_html,
             description_text=description_text,
             description_md=norm.html_to_markdown(description_html),

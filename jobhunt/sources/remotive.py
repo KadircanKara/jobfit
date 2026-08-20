@@ -68,6 +68,7 @@ class RemotiveAdapter(HttpAdapter):
             city=city,
             # Every posting on Remotive is a remote role. That is the whole site.
             remote_type="remote",
+            employment_type=norm.normalize_employment_type(job.get("job_type")),
             salary_min=low,
             salary_max=high,
             salary_currency=currency,

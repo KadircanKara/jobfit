@@ -308,3 +308,55 @@ def parse_datetime(value: object) -> dt.datetime | None:
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone(dt.UTC).replace(tzinfo=None)
     return parsed
+
+
+# --- employment type ----------------------------------------------------------
+
+# Every source spells this differently, and several send a list or two separate
+# fields. Values below are the ones observed live on 2026-08-20, not guesses:
+# Ashby "FullTime", Lever "Contract", Recruitee "fulltime_permanent", Personio
+# "permanent" plus schedule "full-time", SmartRecruiters and Workable "Full-time",
+# Remotive "full_time", Jobicy ["Full-Time"], We Work Remotely "Full-Time".
+EMPLOYMENT_TYPES = ("full_time", "part_time", "contract", "internship", "temporary")
+
+_EMPLOYMENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    # Checked before full-time, because "internship, full time" is an internship.
+    (
+        "internship",
+        re.compile(r"intern|stag|stajyer|trainee|apprentic|working.?student|werkstudent", re.I),
+    ),
+    ("part_time", re.compile(r"part.?time|parttime|yari.?zamanli|yarı.?zamanlı|teilzeit", re.I)),
+    ("contract", re.compile(r"contract|freelance|consultan|b2b|sozlesme|sözleşme|contractor", re.I)),
+    ("temporary", re.compile(r"tempor|seasonal|interim|fixed.?term|gecici|geçici", re.I)),
+    (
+        "full_time",
+        re.compile(r"full.?time|fulltime|permanent|vollzeit|tam.?zamanli|tam.?zamanlı|regular", re.I),
+    ),
+]
+
+
+def normalize_employment_type(*values: object) -> str | None:
+    """First recognisable employment type among the values given, else None.
+
+    Takes several values because sources split the signal: Personio states
+    `employmentType` "permanent" and `schedule` "full-time", and neither alone is
+    the whole answer. Lists are flattened, which covers Jobicy and Arbeitnow.
+
+    Returns None rather than a default. An unstated type must stay unknown, or the
+    filter would drop jobs for a value nobody published.
+    """
+    parts: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, list | tuple | set):
+            parts.extend(str(item) for item in value if item)
+        else:
+            parts.append(str(value))
+    text = " ".join(part for part in parts if part.strip())
+    if not text.strip():
+        return None
+    for label, pattern in _EMPLOYMENT_PATTERNS:
+        if pattern.search(text):
+            return label
+    return None

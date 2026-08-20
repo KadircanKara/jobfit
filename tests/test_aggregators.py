@@ -172,3 +172,13 @@ def test_wwr_malformed_feed_yields_nothing_instead_of_raising() -> None:
     assert list(adapter.normalize("<not xml", BoardRef("wwr", "all"))) == []
     assert list(adapter.normalize("", BoardRef("wwr", "all"))) == []
     assert list(adapter.normalize(None, BoardRef("wwr", "all"))) == []
+
+
+def test_aggregators_capture_employment_type_where_they_state_it() -> None:
+    assert all(p.employment_type == "full_time" for p in jobicy_postings())
+    assert {p.employment_type for p in wwr_postings()} <= {"full_time", "contract", None}
+    assert {p.employment_type for p in remotive_postings()} <= {
+        "full_time", "part_time", "contract", "internship", "temporary", None
+    }
+    # RemoteOK does not state it anywhere in its payload.
+    assert all(p.employment_type is None for p in remoteok_postings())

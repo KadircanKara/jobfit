@@ -87,6 +87,9 @@ class PersonioAdapter(HttpAdapter):
             country=country,
             city=city or (office or None),
             remote_type=remote_type,
+            # Personio splits it: employmentType is "permanent", schedule is "full-time".
+            # Neither alone answers the question.
+            employment_type=norm.normalize_employment_type(text("schedule"), text("employmentType")),
             description_html=description_html,
             description_text=description_text,
             description_md=norm.html_to_markdown(description_html),

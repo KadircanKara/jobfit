@@ -66,6 +66,7 @@ class JobicyAdapter(HttpAdapter):
             country=country,
             city=city,
             remote_type="remote",
+            employment_type=norm.normalize_employment_type(job.get("jobType")),
             salary_min=low,
             salary_max=high,
             salary_currency=job.get("salaryCurrency") or None,

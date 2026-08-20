@@ -147,3 +147,51 @@ def test_parse_datetime_accepts_millisecond_epochs() -> None:
     """Lever sends createdAt in milliseconds. Seconds would land in the year 58000."""
     assert norm.parse_datetime(1787203369315).year == 2026
     assert norm.parse_datetime(1787203369).year == 2026
+
+
+# --- employment type ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("FullTime", "full_time"),                    # ashby
+        ("Contract", "contract"),                     # lever
+        ("fulltime_permanent", "full_time"),          # recruitee
+        ("permanent", "full_time"),                   # personio employmentType
+        ("full-time", "full_time"),                   # personio schedule
+        ("Full-time", "full_time"),                   # smartrecruiters, workable
+        ("full_time", "full_time"),                   # remotive
+        (["Full-Time"], "full_time"),                 # jobicy, a list
+        ("Full-Time", "full_time"),                   # wwr rss
+        ("Part-time", "part_time"),
+        ("Internship", "internship"),
+        ("Working Student", "internship"),
+        ("Freelance", "contract"),
+        ("Fixed term", "temporary"),
+        ("Stajyer", "internship"),
+        ("Yarı zamanlı", "part_time"),
+    ],
+)
+def test_employment_type_maps_every_live_wire_value(raw, expected) -> None:
+    assert norm.normalize_employment_type(raw) == expected
+
+
+def test_employment_type_is_none_when_unstated() -> None:
+    """Greenhouse and RemoteOK do not state it. Guessing would let the filter
+    drop jobs for a value nobody published."""
+    assert norm.normalize_employment_type(None) is None
+    assert norm.normalize_employment_type("") is None
+    assert norm.normalize_employment_type([]) is None
+    assert norm.normalize_employment_type("Engineering") is None
+
+
+def test_employment_type_reads_several_fields() -> None:
+    """Personio splits it across employmentType and schedule."""
+    assert norm.normalize_employment_type(None, "permanent") == "full_time"
+    assert norm.normalize_employment_type("part-time", "permanent") == "part_time"
+
+
+def test_an_internship_is_not_read_as_full_time() -> None:
+    """"Internship, full time" is an internship. Order matters here."""
+    assert norm.normalize_employment_type("Internship, full time") == "internship"

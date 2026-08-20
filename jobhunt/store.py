@@ -129,6 +129,7 @@ def _row_fields(
         "country": posting.country,
         "city": posting.city,
         "remote_type": posting.remote_type,
+        "employment_type": posting.employment_type,
         "salary_min": posting.salary_min,
         "salary_max": posting.salary_max,
         "salary_currency": posting.salary_currency,

@@ -400,3 +400,27 @@ def test_workable_empty_account_yields_nothing() -> None:
     adapter = WorkableAdapter()
     assert list(adapter.normalize({"name": "x", "jobs": []}, BoardRef("workable", "x"))) == []
     assert list(adapter.normalize(None, BoardRef("workable", "x"))) == []
+
+
+# --- employment type across adapters -----------------------------------------
+
+
+def test_every_adapter_that_states_an_employment_type_captures_it() -> None:
+    """One assertion per source, against its real captured payload. This is the
+    field nine adapters were receiving and throwing away."""
+    # The matchgroup fixture carries a contract accountant, full-time engineers,
+    # and an apprenticeship, which reads as an internship. All three are right.
+    assert {p.employment_type for p in lever_postings()} == {
+        "contract", "full_time", "internship"
+    }
+    assert all(p.employment_type == "full_time" for p in recruitee_postings())
+    assert all(p.employment_type == "full_time" for p in smartrecruiters_postings())
+    assert all(p.employment_type == "full_time" for p in personio_postings())
+    assert all(p.employment_type == "full_time" for p in workable_postings())
+
+
+def test_greenhouse_leaves_employment_type_unknown() -> None:
+    """It is not on the wire. Inventing it would be worse than a null."""
+    raw = load_fixture("greenhouse_stripe.json")
+    postings = list(GreenhouseAdapter().normalize(raw, BoardRef("greenhouse", "stripe")))
+    assert all(p.employment_type is None for p in postings)

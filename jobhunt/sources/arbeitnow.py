@@ -73,6 +73,7 @@ class ArbeitnowAdapter(HttpAdapter):
             country=country,
             city=city,
             remote_type=remote_type,
+            employment_type=norm.normalize_employment_type(job.get("job_types")),
             description_html=description_html,
             description_text=description_text,
             description_md=norm.html_to_markdown(description_html),

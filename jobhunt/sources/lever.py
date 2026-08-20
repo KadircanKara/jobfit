@@ -77,6 +77,8 @@ class LeverAdapter(HttpAdapter):
             country=country,
             city=city,
             remote_type=remote_type,
+            # Lever calls it commitment, and it lives inside categories.
+            employment_type=norm.normalize_employment_type(categories.get("commitment")),
             salary_min=salary[0],
             salary_max=salary[1],
             salary_currency=salary[2],

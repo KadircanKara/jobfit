@@ -78,6 +78,7 @@ class WorkableAdapter(HttpAdapter):
             country=country,
             city=city,
             remote_type="remote" if job.get("telecommuting") else ("onsite" if city else "unknown"),
+            employment_type=norm.normalize_employment_type(job.get("employment_type")),
             description_html=description_html,
             description_text=description_text,
             description_md=norm.html_to_markdown(description_html),

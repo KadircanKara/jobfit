@@ -111,6 +111,9 @@ class Job(Base):
     country: Mapped[str | None] = mapped_column(String(8))
     city: Mapped[str | None] = mapped_column(String(200))
     remote_type: Mapped[str] = mapped_column(String(10), default="unknown")
+    # full_time | part_time | contract | internship | temporary. Nullable, because
+    # Greenhouse and RemoteOK do not state it and guessing would be worse.
+    employment_type: Mapped[str | None] = mapped_column(String(20), index=True)
     tz_min_overlap_h: Mapped[float | None] = mapped_column(Float)
 
     salary_min: Mapped[float | None] = mapped_column(Numeric(14, 2))
