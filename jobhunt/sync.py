@@ -70,6 +70,7 @@ def due_boards(
     force: bool,
     limit: int,
     only_status: str | None = None,
+    market: str | None = None,
 ) -> list[BoardRef]:
     """Boards this source owes a fetch, per next_fetch_at. Never the whole table.
 
@@ -82,6 +83,8 @@ def due_boards(
         stmt = select(Board).where(Board.provider == source, Board.status != "dead")
         if only_status:
             stmt = stmt.where(Board.status == only_status)
+        if market:
+            stmt = stmt.where(Board.market == market)
         if not force:
             stmt = stmt.where((Board.next_fetch_at.is_(None)) | (Board.next_fetch_at <= now))
         stmt = stmt.order_by(Board.next_fetch_at.is_(None).desc(), Board.id).limit(limit)
@@ -264,6 +267,7 @@ def sync_source(
     dry_run: bool = False,
     from_raw: str | None = None,
     only_status: str | None = None,
+    market: str | None = None,
 ) -> SourceResult:
     """Run one source end to end. Never raises: failures come back on the result."""
     run_key = from_raw or new_run_key()
@@ -273,7 +277,9 @@ def sync_source(
     try:
         if from_raw is None:
             limit = int(config.get("sync", "max_boards_per_run", default=200))
-            refs = due_boards(config, source, force, limit, only_status=only_status)
+            refs = due_boards(
+                config, source, force, limit, only_status=only_status, market=market
+            )
             result.boards = len(refs)
             if not refs:
                 result.status = "ok"

@@ -40,7 +40,7 @@ def init(force: bool = typer.Option(False, "--force", help="Rewrite an existing 
 @app.command("sync")
 def sync_cmd(
     source: str = typer.Option(None, "--source", help="Source id. Omit to run every source."),
-    market: str = typer.Option(None, "--market", help="Restrict to one market."),
+    market: str = typer.Option(None, "--market", help="Restrict to one market: yc, global_remote, tr_local."),
     force: bool = typer.Option(False, "--force", help="Ignore next_fetch_at scheduling."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Fetch and normalize, write nothing."),
     from_raw: str = typer.Option(
@@ -63,7 +63,9 @@ def sync_cmd(
     worst = "ok"
     for name in targets:
         try:
-            result = sync.sync_source(cfg, name, force=force, dry_run=dry_run, from_raw=from_raw)
+            result = sync.sync_source(
+                cfg, name, force=force, dry_run=dry_run, from_raw=from_raw, market=market
+            )
         except Exception as exc:  # noqa: BLE001 - a stack trace is for the log, not the terminal
             console.print(f"{name}: failed {type(exc).__name__}: {exc}")
             worst = "failed"
@@ -75,8 +77,6 @@ def sync_cmd(
             worst = "failed"
         elif result.status == "degraded" and worst == "ok":
             worst = "degraded"
-    if market:
-        console.print(f"note: --market {market} is recorded but not yet a filter (phase 3).")
     raise typer.Exit(1 if worst == "failed" else 0)
 
 
@@ -91,6 +91,7 @@ def discover(
     limit: int = typer.Option(None, "--limit", help="Stop after this many records."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be written."),
     from_raw: bool = typer.Option(False, "--from-raw", help="Re-parse the stored list, no fetch."),
+    market: str = typer.Option(None, "--market", help="Override the market these boards belong to."),
     no_guess: bool = typer.Option(
         False, "--no-guess", help="Skip token guesses from employer-hosted URLs."
     ),
@@ -106,7 +107,10 @@ def discover(
 
     if strategy == "yc":
         try:
-            seeded = yc_module.run(cfg, limit=limit, dry_run=dry_run, from_raw=from_raw)
+            seeded = yc_module.run(
+                cfg, limit=limit, dry_run=dry_run, from_raw=from_raw,
+                market=market or yc_module.MARKET,
+            )
         except Exception as exc:  # noqa: BLE001 - a strategy is isolated like a source
             console.print(f"yc: failed {type(exc).__name__}: {exc}")
             raise typer.Exit(1) from None
@@ -153,6 +157,7 @@ def _discover_domain(cfg, domain: str, dry_run: bool) -> None:
 def boards(
     provider: str = typer.Option(None, "--provider"),
     status: str = typer.Option(None, "--status"),
+    market: str = typer.Option(None, "--market"),
     validate: bool = typer.Option(
         False, "--validate", help="Fetch candidate boards once to prove them out."
     ),
@@ -162,7 +167,7 @@ def boards(
     """Counts by provider, status, and tier."""
     cfg = _config()
     if validate:
-        _validate_candidates(cfg, provider)
+        _validate_candidates(cfg, provider, market)
         return
     if show_list:
         _list_boards(cfg, provider, status, limit)
@@ -173,6 +178,8 @@ def boards(
             stmt = stmt.where(Board.provider == provider)
         if status:
             stmt = stmt.where(Board.status == status)
+        if market:
+            stmt = stmt.where(Board.market == market)
         rows = session.execute(stmt.group_by(Board.provider, Board.status, Board.tier)).all()
 
     table = Table("provider", "status", "tier", "count")
@@ -213,6 +220,7 @@ def sources() -> None:
 @app.command("list")
 def list_jobs(
     source: str = typer.Option(None, "--source"),
+    market: str = typer.Option(None, "--market"),
     limit: int = typer.Option(20, "--limit"),
     canonical_only: bool = typer.Option(True, "--canonical-only/--all-rows"),
 ) -> None:
@@ -226,6 +234,8 @@ def list_jobs(
         )
         if source:
             stmt = stmt.where(Job.source == source)
+        if market:
+            stmt = stmt.where(Job.market == market)
         if canonical_only:
             stmt = stmt.where((Job.canonical_job_id == Job.id) | (Job.canonical_job_id.is_(None)))
         rows = session.execute(stmt.order_by(Job.first_seen_at.desc(), Job.id.desc()).limit(limit)).all()
@@ -299,10 +309,16 @@ def stats() -> None:
         full_jd = session.scalar(
             select(func.count(Job.id)).where(Job.is_active.is_(True), Job.jd_completeness == "full")
         ) or 0
+        by_market = session.execute(
+            select(Job.market, func.count(Job.id))
+            .where(Job.is_active.is_(True))
+            .group_by(Job.market)
+        ).all()
     console.print(
         f"jobs={jobs} active={active} canonical={canonical} clustered_away={active - canonical} "
         f"companies={companies} boards={boards_count} full_jd={full_jd}"
     )
+    console.print("markets: " + (" ".join(f"{m}={c}" for m, c in sorted(by_market)) or "-"))
 
 
 @app.command()
@@ -312,7 +328,7 @@ def version() -> None:
     console.print(f"jobhunt {__version__} config={cfg.path} db={cfg.db_path}")
 
 
-def _validate_candidates(cfg, provider: str | None) -> None:
+def _validate_candidates(cfg, provider: str | None, market: str | None = None) -> None:
     """One fetch per candidate. Non-empty becomes validated, empty becomes cold,
     an error kills the guess outright. PLAN.md 3.5 validation loop.
     """
@@ -321,7 +337,7 @@ def _validate_candidates(cfg, provider: str | None) -> None:
         if name not in source_registry.REGISTRY:
             console.print(f"boards: no adapter for {name!r}, nothing to validate")
             continue
-        result = sync.sync_source(cfg, name, only_status="candidate")
+        result = sync.sync_source(cfg, name, only_status="candidate", market=market)
         console.print(result.summary())
 
 

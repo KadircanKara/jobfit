@@ -85,12 +85,19 @@ def domain_of(website: str | None) -> str | None:
     return host if "." in host else None
 
 
+# Boards seeded from the YC list belong to the yc market, not global_remote.
+# PLAN.md section 2: market is assigned at ingestion, and the yc market has its
+# own filters and ranking prompt.
+MARKET = "yc"
+
+
 def seed(
     config: Config,
     raw_path: pathlib.Path,
     limit: int | None = None,
     dry_run: bool = False,
     providers: tuple[str, ...] = GUESS_PROVIDERS,
+    market: str = MARKET,
 ) -> SeedResult:
     """Pass two: company list -> company rows plus candidate boards."""
     companies = json.loads(raw_path.read_text(encoding="utf-8"))
@@ -138,7 +145,7 @@ def seed(
                         company_id=company.id if company else None,
                         discovered_via="yc",
                         discovered_at=utcnow(),
-                        market="global_remote",
+                        market=market,
                         status="candidate",
                         # NULL means due now. The next sync validates it, and a
                         # wrong guess dies on that single request.
@@ -174,6 +181,7 @@ def run(
     limit: int | None = None,
     dry_run: bool = False,
     from_raw: bool = False,
+    market: str = MARKET,
 ) -> SeedResult:
     """Fetch the list unless --from-raw, then seed. Returns a one-line summary."""
     path = latest_raw(config) if from_raw else None
@@ -181,4 +189,4 @@ def run(
         if from_raw:
             raise FileNotFoundError("no stored yc payload. run without --from-raw once.")
         path = fetch_hiring(config, utcnow().strftime("%Y%m%dT%H%M%S"))
-    return seed(config, path, limit=limit, dry_run=dry_run)
+    return seed(config, path, limit=limit, dry_run=dry_run, market=market)

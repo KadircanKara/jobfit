@@ -270,3 +270,14 @@ def test_a_validated_board_failing_still_degrades_the_run(cfg) -> None:
 
     dead, rejected = sync.record_fetch_failures(cfg, "ashby", ["waslive"])
     assert (dead, rejected) == (0, 0)
+
+
+def test_due_boards_filters_by_market(cfg) -> None:
+    """A market is a separate pipeline with its own filters. PLAN.md section 2."""
+    with session_scope(cfg.db_path) as session:
+        store.get_or_create_board(session, "ashby", "ycco", "yc", "yc")
+        store.get_or_create_board(session, "ashby", "remoteco", "manual", "global_remote")
+
+    assert len(sync.due_boards(cfg, "ashby", force=True, limit=10)) == 2
+    yc_only = sync.due_boards(cfg, "ashby", force=True, limit=10, market="yc")
+    assert [ref.token for ref in yc_only] == ["ycco"]

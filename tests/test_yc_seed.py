@@ -103,3 +103,15 @@ def test_a_company_already_known_by_name_is_upgraded_not_duplicated(cfg) -> None
         rows = session.query(Company).filter_by(normalized_name="inkeep").all()
         assert len(rows) == 1
         assert rows[0].domain == "inkeep.com"
+
+
+def test_yc_boards_land_in_the_yc_market(cfg) -> None:
+    yc.seed(cfg, place_list(cfg))
+    with session_scope(cfg.db_path) as session:
+        assert {b.market for b in session.query(Board).all()} == {"yc"}
+
+
+def test_the_market_can_be_overridden(cfg) -> None:
+    yc.seed(cfg, place_list(cfg), market="global_remote")
+    with session_scope(cfg.db_path) as session:
+        assert {b.market for b in session.query(Board).all()} == {"global_remote"}
