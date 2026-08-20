@@ -5,11 +5,17 @@ from jobhunt.sources.ashby import AshbyAdapter
 from jobhunt.sources.base import BoardRef, JobPosting, RateLimit, SourceAdapter
 from jobhunt.sources.greenhouse import GreenhouseAdapter
 from jobhunt.sources.lever import LeverAdapter
+from jobhunt.sources.personio import PersonioAdapter
+from jobhunt.sources.recruitee import RecruiteeAdapter
+from jobhunt.sources.smartrecruiters import SmartRecruitersAdapter
 
 REGISTRY: dict[str, type] = {
     GreenhouseAdapter.source_id: GreenhouseAdapter,
     AshbyAdapter.source_id: AshbyAdapter,
     LeverAdapter.source_id: LeverAdapter,
+    RecruiteeAdapter.source_id: RecruiteeAdapter,
+    SmartRecruitersAdapter.source_id: SmartRecruitersAdapter,
+    PersonioAdapter.source_id: PersonioAdapter,
 }
 
 __all__ = [
@@ -19,6 +25,9 @@ __all__ = [
     "GreenhouseAdapter",
     "JobPosting",
     "LeverAdapter",
+    "PersonioAdapter",
+    "RecruiteeAdapter",
+    "SmartRecruitersAdapter",
     "RateLimit",
     "SourceAdapter",
 ]

@@ -6,12 +6,15 @@ shape would only prove the adapter matches my assumptions, not the API.
 from __future__ import annotations
 
 import pytest
-from conftest import load_fixture
+from conftest import FIXTURES, load_fixture
 
 from jobhunt.sources.ashby import AshbyAdapter
 from jobhunt.sources.base import BoardRef
 from jobhunt.sources.greenhouse import GreenhouseAdapter
 from jobhunt.sources.lever import LeverAdapter
+from jobhunt.sources.personio import PersonioAdapter
+from jobhunt.sources.recruitee import RecruiteeAdapter
+from jobhunt.sources.smartrecruiters import SmartRecruitersAdapter
 
 
 @pytest.fixture
@@ -234,3 +237,127 @@ def test_lever_apply_url_leaks_its_own_token() -> None:
 def test_lever_error_body_yields_nothing() -> None:
     assert list(LeverAdapter().normalize({"error": "not found"}, BoardRef("lever", "x"))) == []
     assert list(LeverAdapter().normalize(None, BoardRef("lever", "x"))) == []
+
+
+# --- recruitee ----------------------------------------------------------------
+
+
+def recruitee_postings() -> list:
+    raw = load_fixture("recruitee_channable.json")
+    return list(RecruiteeAdapter().normalize(raw, BoardRef("recruitee", "channable")))
+
+
+def test_recruitee_normalizes_published_offers() -> None:
+    postings = recruitee_postings()
+    assert len(postings) == 4
+    assert {p.company_name for p in postings} == {"Channable"}
+
+
+def test_recruitee_concatenates_description_and_requirements() -> None:
+    """Either field alone is a partial JD, and a partial JD is a bug."""
+    posting = next(p for p in recruitee_postings() if p.title.startswith("Product Manager"))
+    assert "Your team" in posting.description_text
+    assert len(posting.description_text) > 500
+    assert posting.jd_completeness == "full"
+
+
+def test_recruitee_three_booleans_become_one_mode() -> None:
+    posting = next(p for p in recruitee_postings() if p.title.startswith("Product Manager"))
+    assert posting.remote_type == "hybrid"
+
+
+def test_recruitee_salary_arrives_as_strings() -> None:
+    posting = next(p for p in recruitee_postings() if p.title.startswith("Product Manager"))
+    assert (posting.salary_min, posting.salary_max) == (4500.0, 6000.0)
+    assert posting.salary_currency == "EUR"
+    assert posting.salary_period == "monthly"
+
+
+def test_recruitee_uses_the_iso_country_code() -> None:
+    posting = recruitee_postings()[0]
+    assert posting.country == "NL"
+    assert posting.city == "Utrecht"
+
+
+def test_recruitee_learns_the_employer_domain_from_the_careers_url() -> None:
+    """careers_url is the employer's own host, which is a free company domain."""
+    posting = recruitee_postings()[0]
+    assert posting.company_domain == "jobs.channable.com"
+
+
+def test_recruitee_unpublished_offers_are_skipped() -> None:
+    raw = {"offers": [{"id": 1, "title": "Draft", "status": "draft"}]}
+    assert list(RecruiteeAdapter().normalize(raw, BoardRef("recruitee", "x"))) == []
+
+
+# --- smartrecruiters ----------------------------------------------------------
+
+
+def smartrecruiters_postings() -> list:
+    raw = load_fixture("smartrecruiters_visa.json")
+    return list(SmartRecruitersAdapter().normalize(raw, BoardRef("smartrecruiters", "Visa")))
+
+
+def test_smartrecruiters_reads_name_as_the_title() -> None:
+    assert {p.title for p in smartrecruiters_postings()} == {"Sr. Manager", "Director"}
+
+
+def test_smartrecruiters_never_claims_a_description_it_does_not_have() -> None:
+    """The list response carries no description. Calling that a snippet would let
+    a partial JD reach the tailoring skill.
+    """
+    for posting in smartrecruiters_postings():
+        assert posting.description_text is None
+        assert posting.jd_completeness == "none"
+        assert posting.source_url.startswith("https://api.smartrecruiters.com/")
+
+
+def test_smartrecruiters_flattens_the_location_object() -> None:
+    posting = next(p for p in smartrecruiters_postings() if p.title == "Sr. Manager")
+    assert posting.city == "Austin"
+    assert posting.country == "US"
+    assert posting.remote_type == "onsite"
+
+
+def test_smartrecruiters_apply_url_leaks_its_own_token() -> None:
+    from jobhunt.discovery import patterns
+
+    hits, _ = patterns.scan(smartrecruiters_postings()[0].apply_url)
+    assert patterns.BoardHit("smartrecruiters", "Visa") in hits
+
+
+# --- personio -----------------------------------------------------------------
+
+
+def personio_postings() -> list:
+    raw = (FIXTURES / "personio_personio.xml").read_text(encoding="utf-8")
+    return list(PersonioAdapter().normalize(raw, BoardRef("personio", "personio")))
+
+
+def test_personio_parses_the_xml_feed() -> None:
+    postings = personio_postings()
+    assert postings
+    assert all(p.source == "personio" for p in postings)
+    assert all(p.external_id.isdigit() for p in postings)
+
+
+def test_personio_description_joins_the_named_blocks() -> None:
+    posting = personio_postings()[0]
+    assert posting.jd_completeness == "full"
+    assert len(posting.description_text) > 500
+
+
+def test_personio_builds_the_apply_url_from_the_token_and_id() -> None:
+    posting = personio_postings()[0]
+    assert posting.apply_url == f"https://personio.jobs.personio.de/job/{posting.external_id}"
+
+
+def test_personio_keeps_every_office_in_the_location() -> None:
+    posting = personio_postings()[0]
+    assert "Munich" in posting.location_raw
+
+
+def test_personio_malformed_feed_yields_nothing_instead_of_raising() -> None:
+    assert list(PersonioAdapter().normalize("<not xml", BoardRef("personio", "x"))) == []
+    assert list(PersonioAdapter().normalize("", BoardRef("personio", "x"))) == []
+    assert list(PersonioAdapter().normalize(None, BoardRef("personio", "x"))) == []
