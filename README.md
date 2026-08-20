@@ -2,9 +2,9 @@
 
 Local CLI job sourcing and application tracking. Full architecture in `PLAN.md`.
 
-Phases 1 to 3 are built: skeleton, schema, adapter protocol, dedupe, board
-discovery, and six ATS adapters. Ranking (phase 5) and the tailoring handoff
-are not built yet.
+Phases 1 to 4 are built: skeleton, schema, adapter protocol, dedupe, board
+discovery, six ATS adapters, and five aggregator feeds. Ranking (phase 5) and
+the tailoring handoff are not built yet.
 
 **You never type a company name.** The board list is discovered, not curated.
 
@@ -25,8 +25,10 @@ Point everything at a scratch directory with `JOBHUNT_HOME=/tmp/whatever`.
 
 ```bash
 jobhunt init                          # config and database
-jobhunt discover --strategy yc        # seed boards from a public company list
-jobhunt discover --strategy harvest   # mine ATS tokens out of ingested URLs
+jobhunt discover --strategy yc          # seed boards from a public company list
+jobhunt discover --strategy commoncrawl # bulk backfill from the crawl index
+jobhunt discover --strategy feeds       # register the tier 2 aggregators
+jobhunt discover --strategy harvest     # mine ATS tokens out of ingested URLs
 jobhunt discover --domain acme.com    # probe one company I actually care about
 jobhunt boards --list --status validated
 jobhunt boards --validate             # one fetch per candidate
@@ -94,6 +96,23 @@ The write-up is in `references/sources.md`. Strategy A still earns its place: AT
 postings do leak their own tokens, and phase 6 (LinkedIn via Unipile) supplies
 raw employer URLs, which is where it pays off.
 
+**Strategy C, the Common Crawl backfill.** `discover --strategy commoncrawl`
+queries the CDX index once per provider and turns the returned URLs into
+candidates. Live: 4 providers, 4 requests, 23 seconds, 32491 records, **4106 new
+candidate boards**. Subdomain wildcards (`*.recruitee.com`) work natively, which
+is what covers the subdomain-keyed providers. Validating the first 200 recruitee
+candidates resolved 182 live boards and 3056 jobs, a 91 percent hit rate: these
+tokens beat domain guesses because they were real URLs.
+
+Run it at setup and maybe quarterly. It is a backfill, not a daily job, and
+Common Crawl asks not to be overloaded.
+
+**Strategy D, certificate transparency, is deliberately not built.** Measured:
+crt.sh returns only the provider's own infrastructure subdomains, because
+customer boards sit behind a wildcard certificate that names nobody. A board
+confirmed live in phase 3 does not appear in its own provider's CT results. The
+Common Crawl subdomain patterns cover the same providers properly.
+
 **Board scheduling.** Discovery can produce tens of thousands of tokens, so
 nothing iterates the boards table. `sync` selects boards where `next_fetch_at` is
 due, newest candidates first, with a hard per-run cap. A board with jobs is
@@ -111,6 +130,19 @@ re-fetched weekly, an empty one monthly, and a dead one never.
 | personio | XML | yes |
 
 Workable and Workday are deferred: see `references/sources.md` for why.
+
+Tier 2 aggregators, registered as feed boards by `discover --strategy feeds` and
+re-fetched daily rather than weekly:
+
+| Feed | Records per run | Notes |
+|---|---|---|
+| remotive | 17 | `limit` is not honoured; salary is free text |
+| remoteok | 100 | first array element is a legal notice, not a job |
+| arbeitnow | 650 | paged; descriptions are HTML-escaped on the wire |
+| jobicy | 50 | best-shaped: structured salary fields |
+| wwr | 162 | RSS; title packs "Company: Position" |
+
+None of them leak ATS tokens, so they add jobs, not boards.
 
 ## Deduplication
 
@@ -139,7 +171,7 @@ earliest-seen member, so `review` can show a single card with an "also on" line.
 ## Development
 
 ```bash
-.venv/bin/pytest tests -q      # 172 tests, no network
+.venv/bin/pytest tests -q      # 208 tests, no network
 .venv/bin/ruff check jobhunt tests scripts
 ```
 
@@ -171,11 +203,16 @@ The database URL comes from the jobhunt config, never from `alembic.ini`.
 
 ```bash
 jobhunt init
-jobhunt discover --strategy yc --limit 40
-jobhunt sync
-jobhunt discover --strategy harvest
+jobhunt discover --strategy feeds           # 7 aggregator feeds
+jobhunt discover --strategy commoncrawl     # thousands of candidate boards
+jobhunt discover --strategy yc              # the YC market
+jobhunt sync                                # validates candidates as it goes
+jobhunt discover --strategy harvest         # mine the URLs that just landed
 jobhunt boards --list --status validated
 ```
+
+Candidates are validated by the ordinary sync, capped per run, so a backfill of
+several thousand drains over several runs rather than in one burst.
 
 No company name appears anywhere in that sequence, which is the requirement the
 whole discovery layer exists to satisfy.

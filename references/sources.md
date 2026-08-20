@@ -385,3 +385,31 @@ crt.sh is also 502-heavy: 5 of 8 requests failed across this measurement.
 **Strategy D is not built.** Its stated purpose, subdomain-keyed provider
 discovery, is served by Common Crawl `*.recruitee.com` and `*.jobs.personio.de`
 patterns, which returned 707 and 668 real tokens in one request each.
+
+---
+
+## Tier 2 aggregators, adapters built 2026-08-20
+
+All five verified live through the real sync path.
+
+| Source | Endpoint | Records | Trap |
+|---|---|---|---|
+| remotive | `/api/remote-jobs` | 17 | `limit` ignored; salary is free text |
+| remoteok | `/api` | 100 | element 0 is a legal notice, not a job |
+| arbeitnow | `/api/job-board-api` | 650 over 5 pages | description HTML-escaped; `location` often `""` |
+| jobicy | `/api/v2/remote-jobs?count=50` | 50 | none, best-shaped of the five |
+| wwr | category and site RSS | 162 over 3 feeds | title is `Company: Position` |
+
+Remotive salary strings seen live: `$36k`, `$150k - $230k`, `$120 - $170 /hour`.
+The last one is an hourly rate and is deliberately not parsed as a band.
+
+We Work Remotely category slugs confirmed working: `remote-programming-jobs`
+(25 items), `remote-devops-sysadmin-jobs` (37). The site feed returns 100 and
+overlaps the categories, which layer 1 dedupe collapses.
+
+Attribution: Remotive and RemoteOK both ask for a backlink, and Himalayas asks
+not to be resubmitted elsewhere. Storing and displaying `source_url` satisfies
+this for a private tool. Nothing in the codebase redistributes.
+
+**Confirmed again:** harvesting 4530 aggregator-sourced jobs produced 2 new
+boards. Aggregators add jobs, not boards.
