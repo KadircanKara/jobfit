@@ -213,12 +213,14 @@ _PERIOD_TO_ANNUAL = {
 
 
 def _check_salary(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
-    """Reject a stated salary below the floor, in the same currency only.
+    """Reject a stated salary below the floor.
 
-    There is deliberately no FX table. A rate hardcoded today is wrong in a year
-    and would silently drop jobs with no visible cause, so a figure in another
-    currency is treated as unknown. Unknown is not a rejection, as everywhere
-    else, unless the profile explicitly says include_unstated: false.
+    There is still no hardcoded FX table: a rate written down once is wrong
+    later and would drop jobs with no visible cause. A run may pass a rate
+    snapshot it fetched itself under `salary.rates`, and only then is a figure
+    in another currency converted. Without a snapshot, or for a currency the
+    snapshot does not cover, the figure stays unknown — and unknown is never a
+    rejection, unless the profile says include_unstated: false.
     """
     rules = profile.get("salary") or {}
     floor = rules.get("min_annual")
@@ -233,16 +235,39 @@ def _check_salary(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
         return
 
     job_currency = (job.salary_currency or "").upper() or None
-    if wanted_currency and job_currency and job_currency != wanted_currency:
-        return  # different currency, treated as unknown rather than converted
+    rates = rules.get("rates") or {}
 
     factor = _PERIOD_TO_ANNUAL.get((job.salary_period or "annual").lower())
     if factor is None:
         return
     # Compare the top of the band: a job paying 80k-120k clears a 100k floor.
     top = float(job.salary_max or job.salary_min) * factor
+
+    if wanted_currency and job_currency and job_currency != wanted_currency:
+        converted = _convert(top, job_currency, wanted_currency, rates)
+        if converted is None:
+            return  # no usable rate, so the figure stays unknown
+        if converted < float(floor):
+            verdict.reasons.append(
+                f"salary {top:,.0f} {job_currency} "
+                f"({converted:,.0f} {wanted_currency}) below {float(floor):,.0f} {wanted_currency}"
+            )
+        return
+
     if top < float(floor):
         verdict.reasons.append(f"salary {top:,.0f} below {float(floor):,.0f}")
+
+
+def _convert(amount: float, frm: str, to: str, rates: dict[str, Any]) -> float | None:
+    """`amount` in `frm`, expressed in `to`, or None when the rates cannot say."""
+    try:
+        source = float(rates[frm])
+        target = float(rates[to])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if source <= 0:
+        return None
+    return amount / source * target
 
 
 def _check_timezone(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:

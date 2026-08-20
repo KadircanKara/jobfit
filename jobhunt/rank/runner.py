@@ -60,9 +60,20 @@ def run_deterministic(
     market: str | None = None,
     limit: int | None = None,
     rescore: bool = False,
+    rates: dict[str, float] | None = None,
 ) -> DeterministicResult:
-    """Stage 1 over every unscored active job. Cheap enough to run on everything."""
+    """Stage 1 over every unscored active job. Cheap enough to run on everything.
+
+    `rates` is one exchange-rate snapshot for this run. It is passed in rather
+    than read from disk so every job in a run is compared against the same
+    numbers, and so a stale file can never quietly become the rule.
+    """
     filters = deterministic.load_filters(config)
+    if rates:
+        for profile in (filters.get("profiles") or {}).values():
+            salary = profile.get("salary")
+            if isinstance(salary, dict):
+                salary["rates"] = rates
     result = DeterministicResult()
     passed_by_market: dict[str, int] = {}
 
