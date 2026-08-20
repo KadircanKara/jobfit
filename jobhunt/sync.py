@@ -41,6 +41,7 @@ class SourceResult:
     deactivated: int = 0
     clustered: int = 0
     dead_boards: int = 0
+    rejected: int = 0
     errors: int = 0
     status: str = "ok"
     error_detail: str | None = None
@@ -51,7 +52,7 @@ class SourceResult:
             f"normalized={self.normalized} new={self.new} updated={self.updated} "
             f"unchanged={self.unchanged} deactivated={self.deactivated} "
             f"clustered={self.clustered} errors={self.errors} "
-            f"dead_boards={self.dead_boards} run={self.run_key}"
+            f"rejected={self.rejected} dead_boards={self.dead_boards} run={self.run_key}"
         )
 
 
@@ -142,16 +143,22 @@ def fetch_pass(
 DEAD_AFTER_ERRORS = 3
 
 
-def record_fetch_failures(config: Config, source: str, tokens: list[str]) -> int:
+def record_fetch_failures(config: Config, source: str, tokens: list[str]) -> tuple[int, int]:
     """Age a failing board toward dead. PLAN.md section 3.5 validation loop.
 
     Three consecutive errors and the board is never fetched again. Without this
     the boards table fills with 404s that cost a request every run forever, which
     is the difference between a personal tool and a crawler.
+
+    Returns (newly_dead, rejected_candidates). A candidate that fails is a guess
+    that did not pan out, which is the validation loop working, not a fault. It
+    is counted separately so a run full of them does not read as degraded and
+    train the user to ignore the status.
     """
     if not tokens:
-        return 0
+        return 0, 0
     newly_dead = 0
+    rejected = 0
     with session_scope(config.db_path) as session:
         boards = session.scalars(
             select(Board).where(Board.provider == source, Board.token.in_(tokens))
@@ -163,6 +170,8 @@ def record_fetch_failures(config: Config, source: str, tokens: list[str]) -> int
             # not a flaky board. Giving it three strikes would mean every wrong
             # domain guess costs three requests instead of one, and Strategies C
             # and D are about to produce tens of thousands of guesses.
+            if board.status == "candidate":
+                rejected += 1
             if board.status == "candidate" or board.consecutive_errors >= DEAD_AFTER_ERRORS:
                 board.status = "dead"
                 board.tier = "cold"
@@ -170,7 +179,7 @@ def record_fetch_failures(config: Config, source: str, tokens: list[str]) -> int
                 newly_dead += 1
             else:
                 board.next_fetch_at = utcnow() + dt.timedelta(days=1)
-    return newly_dead
+    return newly_dead, rejected
 
 
 # --- pass 2: normalize and store ---------------------------------------------
@@ -271,8 +280,12 @@ def sync_source(
                 return result
             fetched, failed_tokens, messages = fetch_pass(config, source, refs, run_key)
             result.raw_fetched = fetched
-            result.errors = len(failed_tokens)
-            result.dead_boards = record_fetch_failures(config, source, failed_tokens)
+            result.dead_boards, result.rejected = record_fetch_failures(
+                config, source, failed_tokens
+            )
+            # A rejected guess is an expected outcome of the validation loop, so
+            # it is reported but never counted as an error.
+            result.errors = len(failed_tokens) - result.rejected
 
         normalized = normalize_pass(config, source, run_key, dry_run=dry_run)
         for field in ("normalized", "new", "updated", "unchanged", "deactivated", "clustered"):

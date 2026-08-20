@@ -208,8 +208,8 @@ def test_a_repeatedly_failing_board_is_marked_dead(cfg) -> None:
         board.status = "validated"
 
     for _ in range(sync.DEAD_AFTER_ERRORS - 1):
-        assert sync.record_fetch_failures(cfg, "ashby", ["gone"]) == 0
-    assert sync.record_fetch_failures(cfg, "ashby", ["gone"]) == 1
+        assert sync.record_fetch_failures(cfg, "ashby", ["gone"]) == (0, 0)
+    assert sync.record_fetch_failures(cfg, "ashby", ["gone"]) == (1, 0)
 
     with session_scope(cfg.db_path) as session:
         board = session.query(Board).filter_by(token="gone").one()
@@ -235,8 +235,38 @@ def test_a_candidate_board_dies_on_its_first_failure(cfg) -> None:
     with session_scope(cfg.db_path) as session:
         store.get_or_create_board(session, "ashby", "notacompany", "domain_guess", "global_remote")
 
-    assert sync.record_fetch_failures(cfg, "ashby", ["notacompany"]) == 1
+    # Reported as rejected, not as an error: the validation loop did its job.
+    assert sync.record_fetch_failures(cfg, "ashby", ["notacompany"]) == (1, 1)
     with session_scope(cfg.db_path) as session:
         board = session.query(Board).filter_by(token="notacompany").one()
         assert board.status == "dead"
     assert sync.due_boards(cfg, "ashby", force=True, limit=10) == []
+
+
+def test_a_run_of_rejected_guesses_is_not_degraded(cfg, monkeypatch) -> None:
+    """Wrong guesses dying is the validation loop working, not a fault.
+
+    If a normal discovery run reported "degraded", the status would stop meaning
+    anything and cron would train the user to ignore it.
+    """
+    seed_boards(cfg, ("ashby", "nope1"), ("ashby", "nope2"))
+
+    def fail_everything(config, source, refs, run_key):
+        return 0, [ref.token for ref in refs], ["404" for _ in refs]
+
+    monkeypatch.setattr(sync, "fetch_pass", fail_everything)
+    result = sync.sync_source(cfg, "ashby")
+
+    assert result.rejected == 2
+    assert result.errors == 0
+    assert result.dead_boards == 2
+    assert result.status == "ok"
+
+
+def test_a_validated_board_failing_still_degrades_the_run(cfg) -> None:
+    seed_boards(cfg, ("ashby", "waslive"))
+    with session_scope(cfg.db_path) as session:
+        session.query(Board).filter_by(token="waslive").one().status = "validated"
+
+    dead, rejected = sync.record_fetch_failures(cfg, "ashby", ["waslive"])
+    assert (dead, rejected) == (0, 0)
