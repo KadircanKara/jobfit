@@ -31,3 +31,4 @@ docs/specs/
 ui/node_modules/
 # built bundle, produced by `npm --prefix ui run build`
 jobhunt/web/static/
+ui/tsconfig.tsbuildinfo
