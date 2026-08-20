@@ -11,6 +11,7 @@ plenty of real titles contain a colon of their own.
 """
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from typing import Any
@@ -19,6 +20,14 @@ import httpx
 
 from jobhunt.pipeline import normalize as norm
 from jobhunt.sources.base import BoardRef, HttpAdapter, JobPosting, RateLimit
+
+# The feed's <region> is the category, not the posting's actual location: a job
+# whose own body says "United States - Remote" is still filed under "Anywhere in
+# the World". Measured on live data, that made the timezone filter useless for
+# every WWR job. The body's Headquarters line is the real answer.
+_HEADQUARTERS = re.compile(
+    r"<strong>\s*Headquarters:\s*</strong>\s*([^<\n]+)", re.I
+)
 
 SITE_FEED = "https://weworkremotely.com/remote-jobs.rss"
 CATEGORY_FEED = "https://weworkremotely.com/categories/{token}.rss"
@@ -66,7 +75,13 @@ class WeWorkRemotelyAdapter(HttpAdapter):
         description_text = norm.html_to_text(description_html)
 
         region = text("region")
-        country, city, parsed_remote = norm.parse_location(text("country") or region or None)
+        headquarters = self._headquarters(description_html)
+        # Order of trust: the body's own Headquarters line, then the feed's
+        # country field, then the category. The category is trusted last because
+        # it is the one that lies.
+        country, city, parsed_remote = norm.parse_location(
+            headquarters or text("country") or region or None
+        )
 
         return JobPosting(
             source=self.source_id,
@@ -75,10 +90,10 @@ class WeWorkRemotelyAdapter(HttpAdapter):
             market=ref.market,
             title=title,
             company_name=company,
-            location_raw=region or None,
+            location_raw=headquarters or region or None,
             country=country,
             city=city or (text("state") or None),
-            remote_type="remote" if not text("country") else parsed_remote,
+            remote_type="remote" if parsed_remote == "unknown" else parsed_remote,
             employment_type=norm.normalize_employment_type(text("type")),
             description_html=description_html,
             description_text=description_text,
@@ -90,6 +105,17 @@ class WeWorkRemotelyAdapter(HttpAdapter):
             source_url=link,
             departments=[c for c in (text("category"),) if c],
         )
+
+    @staticmethod
+    def _headquarters(description_html: str) -> str | None:
+        """The posting's real location, from the Headquarters line in the body."""
+        match = _HEADQUARTERS.search(description_html or "")
+        if not match:
+            return None
+        # Multi-site postings list every office separated by semicolons. The
+        # first one is enough to establish a country.
+        value = match.group(1).strip().split(";")[0].strip()
+        return value or None
 
     @staticmethod
     def _split_title(raw_title: str) -> tuple[str, str]:

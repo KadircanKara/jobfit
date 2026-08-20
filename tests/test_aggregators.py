@@ -182,3 +182,24 @@ def test_aggregators_capture_employment_type_where_they_state_it() -> None:
     }
     # RemoteOK does not state it anywhere in its payload.
     assert all(p.employment_type is None for p in remoteok_postings())
+
+
+def test_wwr_trusts_the_body_over_its_own_category() -> None:
+    """The feed files a US-only job under "Anywhere in the World". Measured on
+    live data, that made the timezone rule useless for every WWR posting, since
+    a worldwide marker short-circuits it."""
+    postings = wwr_postings()
+    assert all(p.location_raw != "Anywhere in the World" for p in postings)
+    assert {p.country for p in postings} & {"US", "CA"}
+
+
+def test_wwr_falls_back_to_the_category_when_the_body_says_nothing() -> None:
+    feed = """<rss><channel><item>
+      <title>Acme: Engineer</title>
+      <region>Anywhere in the World</region>
+      <country></country>
+      <description>&lt;p&gt;No headquarters line here.&lt;/p&gt;</description>
+      <link>https://weworkremotely.com/remote-jobs/acme-engineer</link>
+    </item></channel></rss>"""
+    posting = next(iter(WeWorkRemotelyAdapter().normalize(feed, BoardRef("wwr", "all"))))
+    assert posting.location_raw == "Anywhere in the World"

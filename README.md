@@ -2,10 +2,18 @@
 
 Local CLI job sourcing and application tracking. Full architecture in `PLAN.md`.
 
-Phases 1 to 5 are built. The tool is usable: it discovers boards, syncs jobs,
-ranks them in two stages, and hands a complete job description to the
-tailoring-cv skill. LinkedIn (phase 6) and the Turkish boards (phase 7) are
-not built yet.
+Phases 1 to 5 are built, plus the automation layer on top. From Claude Code it
+is one command; from a terminal it is a handful. LinkedIn (phase 6) and the
+Turkish boards (phase 7) are parked.
+
+```
+/jobhunt-config     set what you are looking for, conversationally
+/scrape-jobs        sync every board, rank, show the top matches, update the CSV
+```
+
+`/scrape-jobs` ends with checkboxes. Ticking a job records it, tailors a CV and
+cover letter into its folder, and flips `applied` to TRUE in the CSV. It never
+submits anything to an employer.
 
 **You never type a company name.** The board list is discovered, not curated.
 
@@ -54,6 +62,60 @@ jobhunt list --source greenhouse --limit 20
 jobhunt show <job_id>
 jobhunt stats
 ```
+
+## The automated flow
+
+`~/.claude/skills/scrape-jobs/SKILL.md` orchestrates the CLI and contributes the
+one thing it cannot do without an API key: scoring the fit gate.
+
+1. `jobhunt sync --fast` in the foreground, capped at 12 boards per source, which
+   measures at 2m17s on a 10000 board corpus. The full sweep runs in the
+   background; an advisory lock keeps the two off the same boards.
+2. `jobhunt rank`, then `rank --emit`, scored inline, then `rank --ingest`.
+3. `jobhunt shortlist --export` prints the table and upserts the CSV.
+4. Checkboxes. Then per selected job: `jobhunt apply <id> --no-tailor`, a
+   tailoring agent in unattended mode, and `cv-jd-reviewer` with fresh context
+   gating it. Up to 3 rounds, then it reports a failure rather than shipping.
+5. `jobhunt csv mark-applied <ids> --cv-status cv_ready`.
+
+The reviewer checks two things and only one of them is a gate. **Fabrication is
+a hard fail:** every claim in the CV must trace to a line in `master.tex`. That
+replaces the skill's own approval step, which exists for exactly this, and it is
+a stronger check than a human skimming a diff, because a reworded overclaim uses
+only words that are already in the master and passes the token verifier. Fit is
+a score, and a CV that honestly cannot match a posting any better is approved
+with a stated gap rather than looped until it invents something.
+
+## The CSV
+
+`~/.jobhunt/jobs.csv`, keyed by job id, one rolling file.
+
+```
+job_id,fit,title,company,location,work_model,employment_type,salary,url,
+source,applied,cv_status,first_seen,last_seen
+```
+
+An export refreshes scores and metadata and **never** touches `applied` or
+`cv_status`. That is what makes the file safe to regenerate on every run, and
+those two columns are the only thing in it nothing else can reconstruct. Writes
+are atomic. A job you applied to stays in the file even after it drops off the
+shortlist.
+
+## Settings
+
+```bash
+jobhunt config show
+jobhunt config set titles="backend,AI,platform" work_model=remote,hybrid     locations="Europe,remote worldwide" experience=senior job_types=full_time     min_salary=80k currency=USD top_n=15
+```
+
+Python owns the YAML. The wizard only collects answers, because a model
+hand-writing `filters.yaml` is how one bad indent silently drops every job. The
+writer owns a delimited block; anything you tune by hand elsewhere survives.
+
+One thing to watch: `titles` **replaces** the shipped engineering patterns rather
+than adding to them. `config set` prints how many active jobs the new list
+matches, because a job the title rule misses is never seen, never ranked, and
+never appears in the table.
 
 ## Daily use
 
@@ -260,7 +322,7 @@ earliest-seen member, so `review` can show a single card with an "also on" line.
 ## Development
 
 ```bash
-.venv/bin/pytest tests -q      # 312 tests, no network
+.venv/bin/pytest tests -q      # 392 tests, no network
 .venv/bin/ruff check jobhunt tests scripts
 ```
 

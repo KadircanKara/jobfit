@@ -233,3 +233,14 @@ def test_ambiguous_state_names_are_left_alone() -> None:
 def test_a_spaced_hyphen_separates_but_a_word_hyphen_does_not() -> None:
     assert norm.parse_location("Remote - Bangalore")[1] == "Bangalore"
     assert norm.parse_location("Saint-Denis, France") == ("FR", "Saint-Denis", "unknown")
+
+
+def test_a_country_buried_in_a_compound_string_is_still_found() -> None:
+    """Live WWR values: "US Remote National" and "NYC-Privy, US-Remote". Both
+    resolved to no country, so both skipped the timezone rule."""
+    assert norm.parse_location("US Remote National")[0] == "US"
+    assert norm.parse_location("NYC-Privy, US-Remote")[0] == "US"
+
+
+def test_the_token_scan_does_not_invent_a_country_from_a_place_name() -> None:
+    assert norm.parse_location("Georgia Tech Campus")[0] is None

@@ -294,6 +294,8 @@ def parse_location(location_raw: str | None) -> tuple[str | None, str | None, st
         if (len(key) == 2 and key in _US_STATES) or key in _US_STATE_NAMES:
             country = "US"
             break
+    if country is None:
+        country = _country_from_tokens(parts)
     for part in parts:
         key = part.lower().strip(". ")
         if key in _COUNTRY_ALIASES or _REMOTE_RE.match(key) or _HYBRID_RE.match(key):
@@ -302,6 +304,29 @@ def parse_location(location_raw: str | None) -> tuple[str | None, str | None, st
             city = part
             break
     return country, city, remote_type
+
+
+# Words that are a country name and also something else. Scanning tokens for
+# these would turn "Georgia Tech" or "Jordan Street" into a country.
+_AMBIGUOUS_COUNTRY_TOKENS = frozenset({"georgia", "jordan", "chad", "guinea", "mali", "niger"})
+
+
+def _country_from_tokens(parts: list[str]) -> str | None:
+    """Last resort: a country name buried inside a compound part.
+
+    Live examples this exists for: "US Remote National" and "NYC-Privy,
+    US-Remote", both of which are US postings that resolved to no country and so
+    skipped the timezone rule entirely.
+    """
+    for part in parts:
+        for token in re.split(r"[^A-Za-z]+", part.lower()):
+            if len(token) < 2 or token in _AMBIGUOUS_COUNTRY_TOKENS:
+                continue
+            if token in _COUNTRY_ALIASES:
+                return _COUNTRY_ALIASES[token]
+            if token in _US_STATE_NAMES:
+                return "US"
+    return None
 
 
 def _keep_place(match: re.Match[str]) -> str:
