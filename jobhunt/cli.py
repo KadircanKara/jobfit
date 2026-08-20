@@ -64,10 +64,17 @@ def init(force: bool = typer.Option(False, "--force", help="Rewrite an existing 
     cfg.raw_dir.mkdir(parents=True, exist_ok=True)
     upgrade_to_head(cfg.db_path)
     installed = rank_filters.install_user_copies(cfg)
+    # Register the aggregator feeds now. They need no discovery and no tokens, so
+    # a first sync has something to fetch instead of an empty boards table.
+    feeds = feeds_module.seed(cfg)
     console.print(f"init: config={path} db={cfg.db_path} data={cfg.data_dir}")
+    console.print(f"init: {feeds.summary()}")
     if installed:
         console.print(f"init: wrote {len(installed)} tunable files, starting with {installed[0]}")
-    console.print("next: `jobhunt discover --strategy yc` seeds boards from a public list.")
+    console.print(
+        "next: `jobhunt discover --strategy commoncrawl` then `--strategy yc` "
+        "fill the boards table, or just run /scrape-jobs."
+    )
 
 
 @app.command("sync")

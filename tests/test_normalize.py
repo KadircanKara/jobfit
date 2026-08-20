@@ -213,3 +213,23 @@ def test_a_work_mode_parenthetical_is_still_stripped() -> None:
 
 def test_a_us_state_in_parentheses_resolves_too() -> None:
     assert norm.parse_location("Remote (CA)")[0] == "US"
+
+
+def test_a_bare_us_state_name_resolves_to_the_us() -> None:
+    """Found live: We Work Remotely spells the location "Colorado", which parsed
+    to an unknown country, so a US-only job passed a GMT+3 overlap check."""
+    assert norm.parse_location("Colorado")[0] == "US"
+    assert norm.parse_location("Austin, Texas")[0] == "US"
+    assert norm.parse_location("Remote - California")[0] == "US"
+
+
+def test_ambiguous_state_names_are_left_alone() -> None:
+    """Georgia is also a country and Washington is also a city. A wrong country
+    is worse than an unknown one."""
+    assert norm.parse_location("Georgia")[0] != "US"
+    assert norm.parse_location("Washington")[0] is None
+
+
+def test_a_spaced_hyphen_separates_but_a_word_hyphen_does_not() -> None:
+    assert norm.parse_location("Remote - Bangalore")[1] == "Bangalore"
+    assert norm.parse_location("Saint-Denis, France") == ("FR", "Saint-Denis", "unknown")

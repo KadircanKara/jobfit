@@ -196,6 +196,7 @@ def _gate_record(job: Job, company: Company | None, score: Score) -> dict[str, A
         "location": job.location_raw,
         "country": job.country,
         "remote_type": job.remote_type,
+        "employment_type": job.employment_type,
         "seniority": job.seniority,
         "salary": _salary_text(job),
         "posted_at": job.posted_at.date().isoformat() if job.posted_at else None,

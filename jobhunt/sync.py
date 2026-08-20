@@ -215,9 +215,12 @@ def fetch_pass(
     return fetched, failed, messages
 
 
-# A fast pass is meant to return in minutes. Feeds sort first, so this slice
-# always includes them.
-FAST_MAX_BOARDS = 50
+# The cap is per source, and there are eleven sources, so this is roughly
+# 11 x 12 requests plus the feeds, which lands around two to three minutes at
+# one request per second. 50 per source would be a quarter of an hour, which is
+# not a thing to make someone wait for interactively. Feeds sort ahead of
+# everything, so a pass this small still refreshes all of them.
+FAST_MAX_BOARDS = 12
 
 DEAD_AFTER_ERRORS = 3
 

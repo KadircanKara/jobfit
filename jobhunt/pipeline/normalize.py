@@ -229,6 +229,27 @@ _COUNTRY_ALIASES = {
     "vietnam": "VN", "thailand": "TH", "malaysia": "MY", "pakistan": "PK",
 }
 
+# Full state names, because a posting that says "Colorado" or "Texas" is a US
+# posting and the timezone rule has to see that. Found live: WWR spells the
+# location as a bare state name, and those were passing a GMT+3 overlap check
+# because the country came back unknown.
+_US_STATE_NAMES = {
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
+    "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
+    "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine",
+    "maryland", "massachusetts", "michigan", "minnesota", "mississippi",
+    "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey",
+    "new mexico", "new york", "north carolina", "north dakota", "ohio",
+    "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina",
+    "south dakota", "tennessee", "texas", "utah", "vermont", "virginia",
+    "washington", "west virginia", "wisconsin", "wyoming",
+    "washington dc", "district of columbia",
+}
+# "Georgia" is also a country, and "Washington" is also a city. Neither is worth
+# a wrong answer, so both stay out of the name set used to infer the US.
+_AMBIGUOUS_STATE_NAMES = {"georgia", "washington"}
+_US_STATE_NAMES -= _AMBIGUOUS_STATE_NAMES
+
 _US_STATES = {
     "al", "ak", "az", "ar", "ca", "co", "ct", "de", "fl", "ga", "hi", "id", "il", "in",
     "ia", "ks", "ky", "la", "me", "md", "ma", "mi", "mn", "ms", "mo", "mt", "ne", "nv",
@@ -260,7 +281,9 @@ def parse_location(location_raw: str | None) -> tuple[str | None, str | None, st
     # parentheticals that carry no place name, or the timezone filter loses the
     # one signal that removes US-only remote listings.
     stripped = re.sub(r"\(([^)]*)\)", _keep_place, text)
-    parts = [p.strip() for p in re.split(r"[,/|]|\bor\b", stripped) if p.strip()]
+    # A spaced hyphen is a separator ("Remote - California"); a hyphen inside a
+    # word is part of the name ("Saint-Denis"), so it is not one.
+    parts = [p.strip() for p in re.split(r"[,/|]|\s+-\s+|\bor\b", stripped) if p.strip()]
     country: str | None = None
     city: str | None = None
     for part in reversed(parts):
@@ -268,7 +291,7 @@ def parse_location(location_raw: str | None) -> tuple[str | None, str | None, st
         if key in _COUNTRY_ALIASES:
             country = _COUNTRY_ALIASES[key]
             break
-        if len(key) == 2 and key in _US_STATES:
+        if (len(key) == 2 and key in _US_STATES) or key in _US_STATE_NAMES:
             country = "US"
             break
     for part in parts:
@@ -286,7 +309,7 @@ def _keep_place(match: re.Match[str]) -> str:
     inner = match.group(1).strip()
     for piece in re.split(r"[,/|]", inner):
         key = piece.strip().lower().strip(". ")
-        if key in _COUNTRY_ALIASES or (len(key) == 2 and key in _US_STATES):
+        if key in _COUNTRY_ALIASES or (len(key) == 2 and key in _US_STATES) or key in _US_STATE_NAMES:
             return f", {inner}"
     return " "
 
