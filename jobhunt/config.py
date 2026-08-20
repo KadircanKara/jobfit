@@ -49,6 +49,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "sync": {
         # Hard cap on board fetches per run. PLAN.md non-negotiable 8.
         "max_boards_per_run": 200,
+        # Of that cap, how many may go to unvalidated candidates. A Common Crawl
+        # backfill adds thousands at once and must drain in the background
+        # rather than starving the boards that actually produce jobs.
+        "max_candidates_per_run": 50,
     },
 }
 

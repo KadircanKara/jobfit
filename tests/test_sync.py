@@ -11,7 +11,7 @@ import json
 from conftest import load_fixture
 
 from jobhunt import store, sync
-from jobhunt.db.models import Board, Company, Job, Run
+from jobhunt.db.models import Board, Company, Job, Run, utcnow
 from jobhunt.db.session import session_scope
 from jobhunt.sources.base import JobPosting
 
@@ -301,3 +301,43 @@ def test_a_feed_board_is_refetched_daily_not_weekly(cfg) -> None:
         days=sync.FEED_REFETCH_DAYS
     )
     assert (ats.next_fetch_at - ats.last_fetched_at) == dt.timedelta(days=7)
+
+
+def test_a_backfill_of_candidates_never_starves_the_working_boards(cfg) -> None:
+    """The failure this prevents: a Common Crawl backfill drops thousands of
+    NULL next_fetch_at rows in at once. If candidates sorted first, every run
+    for weeks would be spent on unvalidated guesses while the boards actually
+    carrying jobs went stale.
+    """
+    import datetime as dt
+
+    from jobhunt.db.models import Board as BoardModel
+
+    past = utcnow() - dt.timedelta(days=1)
+    with session_scope(cfg.db_path) as session:
+        for index in range(5):
+            session.add(BoardModel(provider="ashby", token=f"live{index}", discovered_via="yc",
+                                   market="global_remote", status="validated", next_fetch_at=past))
+        for index in range(100):
+            session.add(BoardModel(provider="ashby", token=f"cand{index}",
+                                   discovered_via="commoncrawl", market="global_remote",
+                                   status="candidate", next_fetch_at=None))
+
+    refs = sync.due_boards(cfg, "ashby", force=False, limit=20, candidate_limit=3)
+    tokens = [ref.token for ref in refs]
+
+    assert tokens[:5] == ["live0", "live1", "live2", "live3", "live4"]
+    assert len([t for t in tokens if t.startswith("cand")]) == 3
+    assert len(refs) == 8
+
+
+def test_the_candidate_slice_is_capped_by_the_overall_run_cap(cfg) -> None:
+    from jobhunt.db.models import Board as BoardModel
+
+    with session_scope(cfg.db_path) as session:
+        for index in range(20):
+            session.add(BoardModel(provider="ashby", token=f"cand{index}",
+                                   discovered_via="commoncrawl", market="global_remote",
+                                   status="candidate", next_fetch_at=None))
+
+    assert len(sync.due_boards(cfg, "ashby", force=False, limit=4, candidate_limit=50)) == 4

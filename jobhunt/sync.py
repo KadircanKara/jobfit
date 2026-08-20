@@ -71,24 +71,44 @@ def due_boards(
     limit: int,
     only_status: str | None = None,
     market: str | None = None,
+    candidate_limit: int | None = None,
 ) -> list[BoardRef]:
-    """Boards this source owes a fetch, per next_fetch_at. Never the whole table.
+    """Boards this source owes a fetch. Never the whole table.
 
-    Newly discovered boards carry next_fetch_at NULL and sort first, so the
-    validation loop of PLAN.md 3.5 is not a separate mechanism: a candidate is
-    simply the most overdue board there is.
+    The run budget is split deliberately. Boards that already produce jobs are
+    served first, in due order, and unvalidated candidates get a bounded slice of
+    what is left.
+
+    Ordering candidates first would look right and be wrong: a Common Crawl
+    backfill puts thousands of NULL next_fetch_at rows in the table at once, and
+    they would monopolise every run for weeks while the boards actually carrying
+    the user's jobs went stale. A backfill must drain in the background, not in
+    front.
     """
     now = utcnow()
+    if candidate_limit is None:
+        candidate_limit = int(config.get("sync", "max_candidates_per_run", default=50))
+
     with session_scope(config.db_path) as session:
-        stmt = select(Board).where(Board.provider == source, Board.status != "dead")
-        if only_status:
-            stmt = stmt.where(Board.status == only_status)
-        if market:
-            stmt = stmt.where(Board.market == market)
-        if not force:
-            stmt = stmt.where((Board.next_fetch_at.is_(None)) | (Board.next_fetch_at <= now))
-        stmt = stmt.order_by(Board.next_fetch_at.is_(None).desc(), Board.id).limit(limit)
-        boards = session.scalars(stmt).all()
+        def query(is_candidate: bool, cap: int):
+            if cap <= 0:
+                return []
+            stmt = select(Board).where(Board.provider == source, Board.status != "dead")
+            if only_status:
+                stmt = stmt.where(Board.status == only_status)
+            if market:
+                stmt = stmt.where(Board.market == market)
+            if is_candidate:
+                stmt = stmt.where(Board.next_fetch_at.is_(None))
+            else:
+                stmt = stmt.where(Board.next_fetch_at.is_not(None))
+                if not force:
+                    stmt = stmt.where(Board.next_fetch_at <= now)
+                stmt = stmt.order_by(Board.next_fetch_at)
+            return list(session.scalars(stmt.order_by(Board.id).limit(cap)).all())
+
+        boards = query(False, limit)
+        boards += query(True, min(candidate_limit, limit - len(boards)))
         return [
             BoardRef(provider=b.provider, token=b.token, market=b.market, extra={"board_id": b.id})
             for b in boards
