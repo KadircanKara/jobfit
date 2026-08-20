@@ -252,7 +252,7 @@ def test_a_run_of_rejected_guesses_is_not_degraded(cfg, monkeypatch) -> None:
     """
     seed_boards(cfg, ("ashby", "nope1"), ("ashby", "nope2"))
 
-    def fail_everything(config, source, refs, run_key):
+    def fail_everything(config, source, refs, run_key, **hooks):
         return 0, [ref.token for ref in refs], ["404" for _ in refs]
 
     monkeypatch.setattr(sync, "fetch_pass", fail_everything)

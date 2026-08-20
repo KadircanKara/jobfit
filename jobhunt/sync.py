@@ -15,6 +15,7 @@ import json
 import os
 import pathlib
 import traceback
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -171,12 +172,24 @@ class SyncLock:
 
 
 def fetch_pass(
-    config: Config, source: str, refs: list[BoardRef], run_key: str
+    config: Config,
+    source: str,
+    refs: list[BoardRef],
+    run_key: str,
+    progress: Callable[[int, int, str], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> tuple[int, list[str], list[str]]:
     """Write one raw payload file per board.
 
     Returns (fetched_count, failed_tokens, messages). Failed tokens come back so
     the caller can age the board toward dead instead of retrying a 404 forever.
+
+    `progress` is called after every board, reached or not, with (done, total,
+    token). A dead board still advances the count, because a caller drawing a
+    bar is tracking boards attempted rather than boards that answered.
+
+    `should_stop` is checked before each board so a stop request lands within
+    one fetch rather than at the end of the source.
     """
     adapter = source_registry.get(source)()
     out_dir = raw_dir(config, source, run_key)
@@ -190,6 +203,8 @@ def fetch_pass(
 
     with httpx.Client(timeout=timeout, headers=headers, follow_redirects=True) as client:
         for index, ref in enumerate(refs):
+            if should_stop is not None and should_stop():
+                break
             if index:
                 adapter.rate_limit.sleep()
             try:
@@ -197,6 +212,8 @@ def fetch_pass(
             except Exception as exc:  # noqa: BLE001 - one board must never fail the source
                 failed.append(ref.token)
                 messages.append(f"{ref.provider}/{ref.token}: {type(exc).__name__}: {exc}")
+                if progress is not None:
+                    progress(index + 1, len(refs), ref.token)
                 continue
             envelope = {
                 "run_key": run_key,
@@ -212,6 +229,8 @@ def fetch_pass(
                 json.dumps(envelope, ensure_ascii=False), encoding="utf-8"
             )
             fetched += 1
+            if progress is not None:
+                progress(index + 1, len(refs), ref.token)
     return fetched, failed, messages
 
 
@@ -360,6 +379,8 @@ def sync_source(
     from_raw: str | None = None,
     only_status: str | None = None,
     market: str | None = None,
+    progress: Callable[[int, int, str], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> SourceResult:
     """Run one source end to end. Never raises: failures come back on the result."""
     run_key = from_raw or new_run_key()
@@ -376,7 +397,9 @@ def sync_source(
             if not refs:
                 result.status = "ok"
                 return result
-            fetched, failed_tokens, messages = fetch_pass(config, source, refs, run_key)
+            fetched, failed_tokens, messages = fetch_pass(
+                config, source, refs, run_key, progress=progress, should_stop=should_stop
+            )
             result.raw_fetched = fetched
             result.dead_boards, result.rejected = record_fetch_failures(
                 config, source, failed_tokens
