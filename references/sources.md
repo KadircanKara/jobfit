@@ -413,3 +413,29 @@ this for a private tool. Nothing in the codebase redistributes.
 
 **Confirmed again:** harvesting 4530 aggregator-sourced jobs produced 2 new
 boards. Aggregators add jobs, not boards.
+
+### Workable resolved (2026-08-20)
+
+Deferred in phase 2 and phase 3 because every guessed token returned 200 with an
+empty `jobs` array. That is not a broken endpoint, it is a working endpoint for
+an account that does not exist. The Common Crawl backfill supplied real ones:
+`apply.workable.com/*` returned 11662 URLs and 1654 distinct account tokens.
+
+Against real tokens:
+
+```
+GET  /api/v1/widget/accounts/1kosmos?details=true -> 200, 20 jobs, with description
+POST /api/v3/accounts/1kosmos/jobs                -> 200, 18 jobs, no description
+GET  /api/v1/widget/accounts/37signals            -> 200, 0 jobs (account with nothing open)
+```
+
+v1 is the one to use: v3 omits the description and would cost a detail fetch per
+posting. Job keys: `title`, `shortcode`, `employment_type`, `telecommuting`,
+`department`, `url`, `application_url`, `published_on`, `country`, `city`,
+`state`, `locations[]` (which carries the real ISO `countryCode`), `description`.
+
+Note the per-job URL is `apply.workable.com/j/{shortcode}` with no account in it,
+so a Workable posting cannot be used to rediscover its own board. Account tokens
+only appear in `apply.workable.com/{token}/j/{id}` URLs.
+
+Live validation: 49 of 50 backfilled tokens produced a live board, 1339 jobs.

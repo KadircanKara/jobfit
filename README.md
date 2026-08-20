@@ -128,8 +128,13 @@ re-fetched weekly, an empty one monthly, and a dead one never.
 | recruitee | JSON, token in subdomain | yes, split across two fields |
 | smartrecruiters | JSON, paged | **no**, detail fetched lazily in phase 5 |
 | personio | XML | yes |
+| workable | JSON widget API | yes |
 
-Workable and Workday are deferred: see `references/sources.md` for why.
+Workday is deferred: see `references/sources.md` for why.
+
+Workable took three phases to resolve. Every guessed account token answered 200
+with an empty jobs array, which is indistinguishable from a working endpoint
+with nothing to say. Real tokens from the Common Crawl backfill settled it.
 
 Tier 2 aggregators, registered as feed boards by `discover --strategy feeds` and
 re-fetched daily rather than weekly:
@@ -171,7 +176,7 @@ earliest-seen member, so `review` can show a single card with an "also on" line.
 ## Development
 
 ```bash
-.venv/bin/pytest tests -q      # 208 tests, no network
+.venv/bin/pytest tests -q      # 216 tests, no network
 .venv/bin/ruff check jobhunt tests scripts
 ```
 
@@ -212,7 +217,19 @@ jobhunt boards --list --status validated
 ```
 
 Candidates are validated by the ordinary sync, capped per run, so a backfill of
-several thousand drains over several runs rather than in one burst.
+several thousand drains over several runs rather than in one burst. Due boards
+are served first and candidates get a bounded slice, so a backfill never starves
+the boards that are actually producing jobs.
+
+State of a scratch corpus built this way, from empty, in one session:
+
+```
+jobs=17064 active=17064 canonical=16222 clustered_away=842
+companies=2389 boards=10142 full_jd=17013
+```
+
+Validation hit rates on Common Crawl tokens, measured: recruitee 182/200,
+greenhouse 138/200, ashby 34/50, workable 49/50.
 
 No company name appears anywhere in that sequence, which is the requirement the
 whole discovery layer exists to satisfy.
