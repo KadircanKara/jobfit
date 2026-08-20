@@ -3,6 +3,7 @@ reachable from a shell and testable without the CLI.
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 
@@ -14,9 +15,10 @@ from sqlalchemy import func, select
 from jobhunt import __version__, store, sync
 from jobhunt import applications as applications_module
 from jobhunt import config as config_module
+from jobhunt import preferences as preferences_module
 from jobhunt import sources as source_registry
 from jobhunt.db.models import Application, Board, Company, Job, Run, Score
-from jobhunt.db.session import session_scope, upgrade_to_head
+from jobhunt.db.session import ensure_current, session_scope, upgrade_to_head
 from jobhunt.discovery import commoncrawl as cc_module
 from jobhunt.discovery import feeds as feeds_module
 from jobhunt.discovery import harvest as harvest_module
@@ -25,14 +27,32 @@ from jobhunt.discovery import yc as yc_module
 from jobhunt.extract import ladder as ladder_module
 from jobhunt.rank import deterministic as rank_filters
 from jobhunt.rank import runner as rank_runner
+from jobhunt.render import csv_export
 from jobhunt.render import review as review_render
 
 app = typer.Typer(add_completion=False, help="Local job sourcing and application tracking.")
 console = Console()
 
 
+_SCHEMA_CHECKED = False
+
+
 def _config() -> config_module.Config:
-    return config_module.load()
+    """Load config, and bring the database to head if the package moved ahead.
+
+    Checked once per process. Every command below assumes a current schema, and
+    a stale one surfaces as a raw SQLite error that says nothing useful.
+    """
+    global _SCHEMA_CHECKED
+    cfg = config_module.load()
+    if not _SCHEMA_CHECKED:
+        _SCHEMA_CHECKED = True
+        try:
+            if ensure_current(cfg.db_path):
+                console.print("db: schema upgraded to head")
+        except Exception as exc:  # noqa: BLE001 - report, never block the command
+            console.print(f"db: could not check schema ({type(exc).__name__}: {exc})")
+    return cfg
 
 
 @app.command()
@@ -56,6 +76,10 @@ def sync_cmd(
     market: str = typer.Option(None, "--market", help="Restrict to one market: yc, global_remote, tr_local."),
     force: bool = typer.Option(False, "--force", help="Ignore next_fetch_at scheduling."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Fetch and normalize, write nothing."),
+    fast: bool = typer.Option(
+        False, "--fast", help="Feeds plus a small slice of boards. Minutes, not half an hour."
+    ),
+    max_boards: int = typer.Option(None, "--max-boards", help="Cap board fetches this run."),
     from_raw: str = typer.Option(
         None, "--from-raw", help="Re-normalize a stored run key without re-fetching."
     ),
@@ -66,6 +90,10 @@ def sync_cmd(
         console.print("sync: no database. run `jobhunt init` first.")
         raise typer.Exit(1)
 
+    cap = max_boards or (sync.FAST_MAX_BOARDS if fast else None)
+    if cap:
+        cfg.raw.setdefault("sync", {})["max_boards_per_run"] = cap
+
     targets = [source] if source else sorted(source_registry.REGISTRY)
     for name in targets:
         if name not in source_registry.REGISTRY:
@@ -73,6 +101,17 @@ def sync_cmd(
             console.print(f"sync: unknown source {name!r}. known: {known}")
             raise typer.Exit(2)
 
+    worst = "ok"
+    lock = sync.SyncLock(cfg)
+    with lock:
+        if not lock.acquired and from_raw is None:
+            console.print("sync: another sync is running, skipping this pass")
+            raise typer.Exit(0)
+        worst = _sync_targets(cfg, targets, force, dry_run, from_raw, market)
+    raise typer.Exit(1 if worst == "failed" else 0)
+
+
+def _sync_targets(cfg, targets, force, dry_run, from_raw, market) -> str:
     worst = "ok"
     for name in targets:
         try:
@@ -90,7 +129,7 @@ def sync_cmd(
             worst = "failed"
         elif result.status == "degraded" and worst == "ok":
             worst = "degraded"
-    raise typer.Exit(1 if worst == "failed" else 0)
+    return worst
 
 
 STRATEGIES = ("harvest", "yc", "commoncrawl", "feeds")
@@ -513,6 +552,169 @@ def status(
     except applications_module.ApplyBlocked as exc:
         console.print(f"status: {exc}")
         raise typer.Exit(1) from None
+
+
+
+config_app = typer.Typer(help="Search preferences. Written by the /jobhunt-config wizard.")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("show")
+def config_show(
+    as_json: bool = typer.Option(False, "--json", help="Machine readable, for the wizard."),
+) -> None:
+    """Current search preferences."""
+    cfg = _config()
+    prefs, _ = preferences_module.load(cfg)
+    if as_json:
+        payload = dict(prefs.as_dict())
+        payload["filters_path"] = str(preferences_module.filters_path(cfg))
+        print(json.dumps(payload, indent=2))
+        return
+    table = Table("setting", "value")
+    for name, value in prefs.display():
+        table.add_row(name, value)
+    console.print(table)
+
+
+@config_app.command("set")
+def config_set(
+    settings: list[str] = typer.Argument(..., metavar="KEY=VALUE...", help="e.g. titles=backend,AI"),
+) -> None:
+    """Update preferences and rewrite the managed block of filters.yaml."""
+    cfg = _config()
+    updates: dict[str, str] = {}
+    for item in settings:
+        if "=" not in item:
+            console.print(f"config: expected KEY=VALUE, got {item!r}")
+            raise typer.Exit(2)
+        key, _, value = item.partition("=")
+        updates[key.strip()] = value
+
+    prefs, _ = preferences_module.load(cfg)
+    try:
+        prefs = preferences_module.apply_updates(prefs, updates)
+        path = preferences_module.save(cfg, prefs)
+    except preferences_module.PreferenceError as exc:
+        console.print(f"config: {exc}")
+        raise typer.Exit(2) from None
+
+    table = Table("setting", "value")
+    for name, value in prefs.display():
+        table.add_row(name, value)
+    console.print(table)
+    console.print(f"written: {path}")
+
+    if prefs.titles and cfg.db_path.exists():
+        matching, total = preferences_module.title_impact(cfg, prefs)
+        share = f"{matching / total:.0%}" if total else "-"
+        console.print(f"titles match {matching:,} of {total:,} active jobs ({share})")
+        if total and matching / total < 0.02:
+            console.print(
+                "  that is a narrow list. anything it does not match is never seen, "
+                "so widen it if that looks wrong."
+            )
+    console.print("next: `jobhunt rank --rescore` applies the new rules to the corpus.")
+
+
+@app.command()
+def shortlist(
+    market: str = typer.Option(None, "--market"),
+    limit: int = typer.Option(None, "--limit"),
+    since: int = typer.Option(None, "--since", help="Only jobs first seen in the last N days."),
+    include_unscored: bool = typer.Option(False, "--include-unscored"),
+    export: bool = typer.Option(False, "--export", help="Upsert into the rolling CSV."),
+    output_format: str = typer.Option("table", "--format", help="table or json."),
+) -> None:
+    """The top matches, as a table, and optionally into the CSV."""
+    cfg = _config()
+    count = limit or int(cfg.get("digest", "limit", default=15))
+    cards = review_render.shortlist(
+        cfg, market=market, limit=count, since_days=since, include_unscored=include_unscored
+    )
+
+    result = csv_export.export(cfg, cards) if export else None
+
+    if output_format == "json":
+        print(json.dumps({
+            "count": len(cards),
+            "csv_path": str(result.path) if result else None,
+            "jobs": [
+                {
+                    "job_id": card.job_id, "fit": card.score, "title": card.title,
+                    "company": card.company, "location": card.location,
+                    "work_model": card.remote_type, "employment_type": card.employment_type,
+                    "salary": card.salary, "url": card.apply_url, "source": card.source,
+                    "reasoning": card.reasoning, "jd_completeness": card.jd_completeness,
+                }
+                for card in cards
+            ],
+        }, indent=2))
+        return
+    if output_format != "table":
+        console.print(f"shortlist: unknown format {output_format!r}. use table or json.")
+        raise typer.Exit(2)
+
+    if not cards:
+        console.print("shortlist: nothing above threshold yet.")
+        if result:
+            console.print(result.summary())
+        return
+
+    table = Table("id", "fit", "title", "company", "location", "mode", "type", "url")
+    for card in cards:
+        table.add_row(
+            str(card.job_id),
+            f"{card.score:.2f}" if card.score is not None else "-",
+            card.title[:46],
+            card.company[:20],
+            card.location[:22],
+            card.remote_type,
+            (card.employment_type or "-").replace("_", " "),
+            card.apply_url or "-",
+        )
+    console.print(table)
+    if result:
+        console.print(result.summary())
+
+
+csv_app = typer.Typer(help="The rolling jobs CSV.")
+app.add_typer(csv_app, name="csv")
+
+
+@csv_app.command("mark-applied")
+def csv_mark_applied(
+    job_ids: list[int] = typer.Argument(..., metavar="JOB_ID..."),
+    cv_status: str = typer.Option(None, "--cv-status", help="cv_pending, cv_ready, or cv_failed."),
+    record: bool = typer.Option(
+        True, "--record/--no-record", help="Also record the application so it stops resurfacing."
+    ),
+) -> None:
+    """Flip applied to TRUE for these jobs, and record them."""
+    cfg = _config()
+    path = csv_export.csv_path(cfg)
+    marked, missing = csv_export.mark_applied(path, job_ids, cv_status=cv_status)
+
+    recorded: list[int] = []
+    if record:
+        for job_id in marked:
+            try:
+                with session_scope(cfg.db_path) as session:
+                    applications_module.record_applied(session, job_id)
+                recorded.append(job_id)
+            except applications_module.ApplyBlocked as exc:
+                console.print(f"  job {job_id}: {exc}")
+
+    console.print(
+        f"csv: marked={len(marked)} recorded={len(recorded)} "
+        f"unknown={','.join(str(i) for i in missing) or '-'} -> {path}"
+    )
+
+
+@csv_app.command("path")
+def csv_show_path() -> None:
+    """Where the rolling CSV lives."""
+    console.print(str(csv_export.csv_path(_config())))
 
 
 @app.command()

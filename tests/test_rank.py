@@ -468,3 +468,91 @@ def test_the_packaged_filters_keep_engineering_titles_and_drop_the_rest(cfg) -> 
     for index, title in enumerate(drop):
         job_id = make_job(cfg, external_id=f"d{index}", title=title, country="DE")
         assert not verdict_for(cfg, job_id, filters).passed, title
+
+
+# --- salary floor -------------------------------------------------------------
+
+SALARY_FILTERS = {
+    "profiles": {"global_remote": {"salary": {"min_annual": 100000, "currency": "USD"}}},
+    "global": {},
+}
+
+
+def test_a_band_whose_top_clears_the_floor_passes(cfg) -> None:
+    """80k-120k clears a 100k floor. Comparing the bottom would drop it."""
+    job_id = make_job(cfg, salary_min=80000, salary_max=120000, salary_currency="USD",
+                      salary_period="annual", salary_is_stated=True)
+    assert verdict_for(cfg, job_id, SALARY_FILTERS).passed
+
+
+def test_a_band_entirely_below_the_floor_fails(cfg) -> None:
+    job_id = make_job(cfg, salary_min=50000, salary_max=70000, salary_currency="USD",
+                      salary_period="annual", salary_is_stated=True)
+    verdict = verdict_for(cfg, job_id, SALARY_FILTERS)
+    assert not verdict.passed
+    assert any("salary" in reason for reason in verdict.reasons)
+
+
+def test_a_monthly_band_is_converted_before_comparing(cfg) -> None:
+    job_id = make_job(cfg, salary_min=10000, salary_max=12000, salary_currency="USD",
+                      salary_period="monthly", salary_is_stated=True)
+    assert verdict_for(cfg, job_id, SALARY_FILTERS).passed
+
+
+def test_another_currency_is_treated_as_unknown_not_converted(cfg) -> None:
+    """No FX table on purpose: a rate hardcoded today is wrong in a year and
+    would drop jobs with no visible cause."""
+    job_id = make_job(cfg, salary_min=60000, salary_max=70000, salary_currency="EUR",
+                      salary_period="annual", salary_is_stated=True)
+    assert verdict_for(cfg, job_id, SALARY_FILTERS).passed
+
+
+def test_an_unstated_salary_passes_by_default(cfg) -> None:
+    assert verdict_for(cfg, make_job(cfg), SALARY_FILTERS).passed
+
+
+def test_an_unstated_salary_can_be_excluded_explicitly(cfg) -> None:
+    filters = {
+        "profiles": {"global_remote": {"salary": {"min_annual": 100000, "currency": "USD",
+                                                  "include_unstated": False}}},
+        "global": {},
+    }
+    verdict = verdict_for(cfg, make_job(cfg), filters)
+    assert not verdict.passed
+    assert "salary not stated" in verdict.reasons
+
+
+# --- seniority ceiling --------------------------------------------------------
+
+
+def test_a_role_above_the_ceiling_fails(cfg) -> None:
+    """A senior engineer applying to a principal posting wastes a gate call and
+    an application."""
+    filters = {"profiles": {"global_remote": {"seniority_min": "mid",
+                                              "seniority_max": "staff"}}, "global": {}}
+    job_id = make_job(cfg, title="Principal Backend Engineer")
+    verdict = verdict_for(cfg, job_id, filters)
+    assert not verdict.passed
+    assert any("above staff" in reason for reason in verdict.reasons)
+
+    ok = make_job(cfg, external_id="x2", title="Staff Backend Engineer")
+    assert verdict_for(cfg, ok, filters).passed
+
+
+# --- employment type ----------------------------------------------------------
+
+
+def test_employment_type_filters_through_the_existing_hard_requires(cfg) -> None:
+    filters = {
+        "profiles": {"global_remote": {"hard_requires": {"employment_type": ["full_time"]}}},
+        "global": {},
+    }
+    full = make_job(cfg, employment_type="full_time")
+    assert verdict_for(cfg, full, filters).passed
+
+    intern = make_job(cfg, external_id="x2", employment_type="internship")
+    assert not verdict_for(cfg, intern, filters).passed
+
+    # Greenhouse and RemoteOK never state it, and those jobs must survive.
+    unstated = make_job(cfg, external_id="x3", employment_type=None)
+    assert verdict_for(cfg, unstated, filters).passed

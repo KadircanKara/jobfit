@@ -82,6 +82,7 @@ def evaluate(
     _check_hard_requires(job, profile, verdict)
     _check_hard_excludes(haystack, profile, verdict)
     _check_seniority(job, profile, verdict)
+    _check_salary(job, profile, verdict)
     _check_timezone(job, profile, verdict)
     _apply_boosts(job, company, profile, verdict)
 
@@ -153,7 +154,15 @@ def _check_required_titles(
 
 
 def _check_hard_requires(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
+    # A posting that says "Remote, Worldwide" is open to the user wherever the
+    # company happens to be incorporated, so a country allow-list must not reject
+    # it on the head office. Only set when the user asked for worldwide.
+    worldwide_ok = bool(profile.get("allow_worldwide")) and timezones.is_worldwide(
+        job.location_raw
+    )
     for field, allowed in (profile.get("hard_requires") or {}).items():
+        if field == "country" and worldwide_ok:
+            continue
         value = getattr(job, field, None)
         if value in (None, "", "unknown"):
             continue  # unknown is never a rejection
@@ -181,13 +190,59 @@ def _phrase_pattern(phrase: str) -> re.Pattern[str]:
 
 
 def _check_seniority(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
+    if not job.seniority or job.seniority not in SENIORITY_ORDER:
+        return
+    level = SENIORITY_ORDER.index(job.seniority)
+
     minimum = profile.get("seniority_min")
-    if not minimum or not job.seniority:
-        return
-    if minimum not in SENIORITY_ORDER or job.seniority not in SENIORITY_ORDER:
-        return
-    if SENIORITY_ORDER.index(job.seniority) < SENIORITY_ORDER.index(str(minimum)):
+    if minimum in SENIORITY_ORDER and level < SENIORITY_ORDER.index(str(minimum)):
         verdict.reasons.append(f"seniority {job.seniority} below {minimum}")
+
+    # A ceiling is not symmetry for its own sake: a senior engineer applying to a
+    # principal or VP-level posting wastes a gate call and an application.
+    maximum = profile.get("seniority_max")
+    if maximum in SENIORITY_ORDER and level > SENIORITY_ORDER.index(str(maximum)):
+        verdict.reasons.append(f"seniority {job.seniority} above {maximum}")
+
+
+# Everything is compared as an annual figure. A job stating a monthly or hourly
+# band is converted with these, which are hours and months, not exchange rates.
+_PERIOD_TO_ANNUAL = {
+    "annual": 1.0, "monthly": 12.0, "weekly": 52.0, "daily": 260.0, "hourly": 2080.0,
+}
+
+
+def _check_salary(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
+    """Reject a stated salary below the floor, in the same currency only.
+
+    There is deliberately no FX table. A rate hardcoded today is wrong in a year
+    and would silently drop jobs with no visible cause, so a figure in another
+    currency is treated as unknown. Unknown is not a rejection, as everywhere
+    else, unless the profile explicitly says include_unstated: false.
+    """
+    rules = profile.get("salary") or {}
+    floor = rules.get("min_annual")
+    if floor is None:
+        return
+    wanted_currency = str(rules.get("currency") or "").upper() or None
+    include_unstated = rules.get("include_unstated", True)
+
+    if not job.salary_is_stated or job.salary_min is None:
+        if not include_unstated:
+            verdict.reasons.append("salary not stated")
+        return
+
+    job_currency = (job.salary_currency or "").upper() or None
+    if wanted_currency and job_currency and job_currency != wanted_currency:
+        return  # different currency, treated as unknown rather than converted
+
+    factor = _PERIOD_TO_ANNUAL.get((job.salary_period or "annual").lower())
+    if factor is None:
+        return
+    # Compare the top of the band: a job paying 80k-120k clears a 100k floor.
+    top = float(job.salary_max or job.salary_min) * factor
+    if top < float(floor):
+        verdict.reasons.append(f"salary {top:,.0f} below {float(floor):,.0f}")
 
 
 def _check_timezone(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:

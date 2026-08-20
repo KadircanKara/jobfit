@@ -218,3 +218,27 @@ def _application_for(session: Session, job: Job) -> Application | None:
     return session.scalars(
         select(Application).where(Application.job_id.in_(ids)).order_by(Application.id)
     ).first()
+
+
+def record_applied(session: Session, job_id: int, folder: str | None = None) -> Application:
+    """Record an application without preparing a tailoring folder.
+
+    Used by `csv mark-applied`, where the folder already exists (the tailoring
+    run made it) or is not wanted. Same cluster semantics as apply: the job stops
+    resurfacing on every board it appears on.
+    """
+    job = session.get(Job, job_id)
+    if job is None:
+        raise ApplyBlocked(f"no job {job_id}")
+    row = _application_for(session, job)
+    if row is not None and row.status in ACTED_ON:
+        return row
+    row = row or Application(job_id=job.id)
+    row.job_id = row.job_id or job.id
+    row.status = "applied"
+    row.applied_at = row.applied_at or utcnow()
+    row.last_status_change = utcnow()
+    if folder:
+        row.folder_path = folder
+    session.add(row)
+    return row

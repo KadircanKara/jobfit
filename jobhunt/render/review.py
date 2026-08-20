@@ -27,6 +27,7 @@ class Card:
     boost: float
     location: str
     remote_type: str
+    employment_type: str | None
     salary: str | None
     posted_at: dt.datetime | None
     reasoning: str | None
@@ -136,6 +137,7 @@ def _card(session, job: Job, company: Company | None, score: Score) -> Card:
         boost=float(notes.get("boost") or 1.0),
         location=job.location_raw or job.city or job.country or "?",
         remote_type=job.remote_type,
+        employment_type=job.employment_type,
         salary=_salary(job),
         posted_at=job.posted_at,
         reasoning=score.llm_reasoning,

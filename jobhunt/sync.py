@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import json
+import os
 import pathlib
 import traceback
 from typing import Any
@@ -98,14 +99,20 @@ def due_boards(
                 stmt = stmt.where(Board.status == only_status)
             if market:
                 stmt = stmt.where(Board.market == market)
+            # Aggregator feeds sort first, ahead of how overdue anything is.
+            # Under a small cap they would otherwise be crowded out by thousands
+            # of ATS boards, and a feed is where a job appears first, often days
+            # before the company's own board is next due.
+            order = [Board.discovered_via != "feed"]
             if is_candidate:
                 stmt = stmt.where(Board.next_fetch_at.is_(None))
             else:
                 stmt = stmt.where(Board.next_fetch_at.is_not(None))
                 if not force:
                     stmt = stmt.where(Board.next_fetch_at <= now)
-                stmt = stmt.order_by(Board.next_fetch_at)
-            return list(session.scalars(stmt.order_by(Board.id).limit(cap)).all())
+                order.append(Board.next_fetch_at)
+            order.append(Board.id)
+            return list(session.scalars(stmt.order_by(*order).limit(cap)).all())
 
         boards = query(False, limit)
         boards += query(True, min(candidate_limit, limit - len(boards)))
@@ -113,6 +120,51 @@ def due_boards(
             BoardRef(provider=b.provider, token=b.token, market=b.market, extra={"board_id": b.id})
             for b in boards
         ]
+
+
+# --- concurrency ---------------------------------------------------------------
+
+LOCK_STALE_SECONDS = 3600
+
+
+class SyncLock:
+    """Advisory lock so a foreground fast pass and a background backfill do not
+    fetch the same boards twice.
+
+    Advisory on purpose: a held lock degrades the second run to a no-op with a
+    message, it never kills it. Stale locks (a crashed run) expire after an hour
+    rather than needing manual cleanup.
+    """
+
+    def __init__(self, config: Config) -> None:
+        self.path = config.home / "sync.lock"
+        self.acquired = False
+
+    def __enter__(self) -> SyncLock:
+        if self._held_by_someone_else():
+            return self
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(f"{os.getpid()} {utcnow().isoformat()}\n", encoding="utf-8")
+        self.acquired = True
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        if self.acquired and self.path.exists():
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
+
+    def _held_by_someone_else(self) -> bool:
+        if not self.path.exists():
+            return False
+        try:
+            age = utcnow() - dt.datetime.fromisoformat(
+                self.path.read_text(encoding="utf-8").split(" ", 1)[1].strip()
+            )
+        except (OSError, ValueError, IndexError):
+            return False
+        return age.total_seconds() < LOCK_STALE_SECONDS
 
 
 # --- pass 1: fetch ------------------------------------------------------------
@@ -162,6 +214,10 @@ def fetch_pass(
             fetched += 1
     return fetched, failed, messages
 
+
+# A fast pass is meant to return in minutes. Feeds sort first, so this slice
+# always includes them.
+FAST_MAX_BOARDS = 50
 
 DEAD_AFTER_ERRORS = 3
 

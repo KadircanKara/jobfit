@@ -6,6 +6,7 @@ deduped -> stored path works independently of any endpoint being up.
 """
 from __future__ import annotations
 
+import datetime as dt_module
 import json
 
 from conftest import load_fixture
@@ -351,3 +352,43 @@ def test_a_second_writer_waits_instead_of_failing(cfg) -> None:
     with get_engine(cfg.db_path).connect() as connection:
         timeout = connection.exec_driver_sql("PRAGMA busy_timeout").scalar()
     assert timeout >= 30000
+
+
+def test_feed_boards_are_fetched_first_under_a_cap(cfg) -> None:
+    """A fast pass with a small cap must still refresh the aggregators. They are
+    where a job appears first, often days before the company board is due."""
+    from jobhunt.db.models import Board as BoardModel
+
+    with session_scope(cfg.db_path) as session:
+        for index in range(10):
+            session.add(BoardModel(provider="ashby", token=f"ats{index}", discovered_via="yc",
+                                   market="global_remote", status="validated",
+                                   next_fetch_at=utcnow() - dt_module.timedelta(days=1)))
+        session.add(BoardModel(provider="ashby", token="feed", discovered_via="feed",
+                               market="global_remote", status="validated",
+                               next_fetch_at=utcnow() - dt_module.timedelta(hours=1)))
+
+    refs = sync.due_boards(cfg, "ashby", force=False, limit=3)
+    assert refs[0].token == "feed"
+
+
+def test_a_second_sync_backs_off_while_one_is_running(cfg) -> None:
+    """The fast pass and the background backfill must not fetch the same boards."""
+    with sync.SyncLock(cfg) as first:
+        assert first.acquired
+        with sync.SyncLock(cfg) as second:
+            assert not second.acquired
+    # Released on exit, so the next run proceeds.
+    with sync.SyncLock(cfg) as third:
+        assert third.acquired
+
+
+def test_a_stale_lock_does_not_block_forever(cfg) -> None:
+    """A crashed run must not require manual cleanup."""
+    lock = sync.SyncLock(cfg)
+    lock.path.parent.mkdir(parents=True, exist_ok=True)
+    old = utcnow() - dt_module.timedelta(seconds=sync.LOCK_STALE_SECONDS + 60)
+    lock.path.write_text(f"999999 {old.isoformat()}\n", encoding="utf-8")
+
+    with sync.SyncLock(cfg) as fresh:
+        assert fresh.acquired

@@ -67,3 +67,36 @@ def upgrade_to_head(db_path: pathlib.Path | str) -> str:
     pathlib.Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     command.upgrade(cfg, "head")
     return "head"
+
+
+def ensure_current(db_path: pathlib.Path | str) -> bool:
+    """Bring an existing database up to head if it is behind. Returns True if it ran.
+
+    Migrations here are additive, and this tool is meant to run unattended from a
+    single command. Without this, upgrading the package and running `sync` fails
+    with a raw "no such column" from SQLite, which tells the user nothing about
+    what to do. Auto-upgrading removes that whole class of failure.
+    """
+    import sqlalchemy as sa
+    from alembic.config import Config as AlembicConfig
+    from alembic.script import ScriptDirectory
+
+    path = pathlib.Path(db_path)
+    if not path.exists():
+        return False
+
+    root = pathlib.Path(__file__).resolve().parent.parent.parent
+    cfg = AlembicConfig(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "jobhunt" / "db" / "migrations"))
+    head = ScriptDirectory.from_config(cfg).get_current_head()
+
+    engine = get_engine(path)
+    with engine.connect() as connection:
+        if not sa.inspect(engine).has_table("alembic_version"):
+            return False  # not an alembic-managed database, leave it alone
+        current = connection.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
+    if current == head:
+        return False
+
+    upgrade_to_head(path)
+    return True
