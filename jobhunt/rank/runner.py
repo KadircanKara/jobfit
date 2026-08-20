@@ -1,0 +1,298 @@
+"""Ranking orchestration: stage 1 in process, stage 2 over a file.
+
+There is no API key in this setup by design, so the LLM gate does not run
+inline. Instead:
+
+    jobhunt rank                       stage 1, deterministic, writes scores
+    jobhunt rank --emit batch.json     writes the survivors plus the prompt
+    <the gate runs in Claude Code, reading that file>
+    jobhunt rank --ingest verdicts.json  writes the scores back
+
+The alternative, calling out to a model from inside the CLI, would need a key
+this setup does not have, and would make `jobhunt rank` un-cronable anyway. The
+file protocol keeps cron doing pure `sync`, keeps the expensive step explicitly
+human-triggered, and makes every gate run inspectable and replayable after the
+fact, which an inline call would not be.
+"""
+from __future__ import annotations
+
+import dataclasses
+import json
+import pathlib
+from typing import Any
+
+from sqlalchemy import select
+
+from jobhunt.config import Config
+from jobhunt.db.models import Company, Job, Score, utcnow
+from jobhunt.db.session import session_scope
+from jobhunt.rank import deterministic, profile
+
+# The gate reads a truncated description. PLAN.md section 7 says roughly 1500
+# tokens; 6000 characters is that, and it keeps a 20 job batch inside a sane
+# context without the caller having to think about it.
+DESCRIPTION_CHARS = 6000
+DEFAULT_BATCH = 20
+
+
+@dataclasses.dataclass
+class DeterministicResult:
+    scored: int = 0
+    passed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    by_market: dict[str, int] = dataclasses.field(default_factory=dict)
+
+    def summary(self) -> str:
+        markets = " ".join(f"{k}={v}" for k, v in sorted(self.by_market.items())) or "-"
+        return (
+            f"rank: scored={self.scored} passed={self.passed} failed={self.failed} "
+            f"already_scored={self.skipped} [{markets}]"
+        )
+
+
+def run_deterministic(
+    config: Config,
+    market: str | None = None,
+    limit: int | None = None,
+    rescore: bool = False,
+) -> DeterministicResult:
+    """Stage 1 over every unscored active job. Cheap enough to run on everything."""
+    filters = deterministic.load_filters(config)
+    result = DeterministicResult()
+    passed_by_market: dict[str, int] = {}
+
+    with session_scope(config.db_path) as session:
+        stmt = (
+            select(Job, Company)
+            .join(Company, Job.company_id == Company.id, isouter=True)
+            .where(Job.is_active.is_(True))
+            # Only canonical rows. Scoring every duplicate would multiply the
+            # LLM batch by the number of sources a job appears on.
+            .where((Job.canonical_job_id == Job.id) | (Job.canonical_job_id.is_(None)))
+        )
+        if market:
+            stmt = stmt.where(Job.market == market)
+        stmt = stmt.order_by(Job.first_seen_at.desc(), Job.id.desc())
+        if limit:
+            stmt = stmt.limit(limit)
+
+        for job, company in session.execute(stmt).all():
+            score = _score_row(session, job.id, job.market)
+            if score is not None and not rescore and score.deterministic_notes is not None:
+                result.skipped += 1
+                continue
+
+            verdict = deterministic.evaluate(job, company, filters)
+            if score is None:
+                score = Score(job_id=job.id, profile=job.market)
+                session.add(score)
+            score.deterministic_pass = verdict.passed
+            score.deterministic_notes = verdict.as_notes()
+            score.scored_at = utcnow()
+            if verdict.tz_overlap_hours is not None:
+                job.tz_min_overlap_h = verdict.tz_overlap_hours
+
+            result.scored += 1
+            if verdict.passed:
+                result.passed += 1
+                passed_by_market[job.market] = passed_by_market.get(job.market, 0) + 1
+            else:
+                result.failed += 1
+
+    result.by_market = passed_by_market
+    return result
+
+
+def _score_row(session, job_id: int, market: str) -> Score | None:
+    return session.scalars(
+        select(Score).where(Score.job_id == job_id, Score.profile == market)
+    ).first()
+
+
+# --- stage 2, over a file -----------------------------------------------------
+
+
+def emit(
+    config: Config,
+    path: pathlib.Path,
+    market: str | None = None,
+    limit: int = DEFAULT_BATCH,
+) -> dict[str, Any]:
+    """Write a self-contained batch for the gate: prompt, profile, and jobs."""
+    filters = deterministic.load_filters(config)
+    candidate = profile.load(config)
+    batches: dict[str, list[dict[str, Any]]] = {}
+
+    with session_scope(config.db_path) as session:
+        stmt = (
+            select(Job, Company, Score)
+            .join(Score, Score.job_id == Job.id)
+            .join(Company, Job.company_id == Company.id, isouter=True)
+            .where(Job.is_active.is_(True))
+            .where(Score.deterministic_pass.is_(True))
+            .where(Score.llm_score.is_(None))
+        )
+        if market:
+            stmt = stmt.where(Job.market == market)
+        stmt = stmt.order_by(Job.first_seen_at.desc(), Job.id.desc()).limit(limit)
+
+        for job, company, score in session.execute(stmt).all():
+            batches.setdefault(job.market, []).append(_gate_record(job, company, score))
+
+    payload = {
+        "generated_at": utcnow().isoformat(),
+        "candidate_profile": candidate,
+        "response_contract": {
+            "format": "json_array",
+            "item": {
+                "job_id": "int, echo it back exactly",
+                "score": "float 0.0 to 1.0",
+                "reasoning": "one sentence, persisted, written for a human",
+                "red_flags": "list of short strings, only what the posting states",
+            },
+        },
+        "batches": [
+            {
+                "market": market_name,
+                "prompt": _prompt_text(config, filters, market_name, candidate),
+                "min_score_to_surface": (
+                    deterministic.profile_for(filters, market_name).get("min_score_to_surface")
+                ),
+                "jobs": jobs,
+            }
+            for market_name, jobs in sorted(batches.items())
+        ],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"batches": len(payload["batches"]), "jobs": sum(len(b) for b in batches.values())}
+
+
+def _gate_record(job: Job, company: Company | None, score: Score) -> dict[str, Any]:
+    description = job.description_en_md or job.description_md or job.description_text or ""
+    return {
+        "job_id": job.id,
+        "title": job.title,
+        "company": company.name if company else None,
+        "company_one_liner": None,
+        "yc_batch": company.yc_batch if company else None,
+        "location": job.location_raw,
+        "country": job.country,
+        "remote_type": job.remote_type,
+        "seniority": job.seniority,
+        "salary": _salary_text(job),
+        "posted_at": job.posted_at.date().isoformat() if job.posted_at else None,
+        "source": job.source,
+        "jd_completeness": job.jd_completeness,
+        "tz_overlap_hours": job.tz_min_overlap_h,
+        "deterministic_boost": (score.deterministic_notes or {}).get("boost"),
+        "description": description[:DESCRIPTION_CHARS],
+        "description_truncated": len(description) > DESCRIPTION_CHARS,
+    }
+
+
+def _salary_text(job: Job) -> str | None:
+    if not job.salary_is_stated or job.salary_min is None:
+        return None
+    high = job.salary_max or job.salary_min
+    currency = job.salary_currency or ""
+    period = job.salary_period or ""
+    return f"{int(job.salary_min):,}-{int(high):,} {currency}/{period}".strip("/")
+
+
+def _prompt_text(
+    config: Config, filters: dict[str, Any], market: str, candidate: str
+) -> str:
+    """The market's gate prompt with the candidate profile substituted in."""
+    relative = deterministic.profile_for(filters, market).get("llm_gate_prompt")
+    if not relative:
+        return ""
+    user_path = config.home / relative
+    packaged = deterministic.PACKAGED_FILTERS.parent / relative
+    source = user_path if user_path.exists() else packaged
+    if not source.exists():
+        return ""
+    return source.read_text(encoding="utf-8").replace("{profile}", candidate)
+
+
+@dataclasses.dataclass
+class IngestResult:
+    read: int = 0
+    written: int = 0
+    unknown: int = 0
+    invalid: int = 0
+
+    def summary(self) -> str:
+        return (
+            f"rank ingest: read={self.read} written={self.written} "
+            f"unknown_job_ids={self.unknown} invalid={self.invalid}"
+        )
+
+
+def ingest(config: Config, path: pathlib.Path, model: str | None = None) -> IngestResult:
+    """Write gate verdicts back. Tolerant of shape, strict about values.
+
+    The file is produced by a model, so it accepts either a bare array or the
+    emitted envelope, but a score outside 0..1 or a job id that is not in the
+    corpus is counted and skipped rather than written. Persisting a hallucinated
+    job id would be worse than losing a verdict.
+    """
+    result = IngestResult()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    verdicts = _flatten_verdicts(raw)
+    result.read = len(verdicts)
+
+    with session_scope(config.db_path) as session:
+        for verdict in verdicts:
+            job_id = verdict.get("job_id")
+            score_value = verdict.get("score")
+            try:
+                job_id = int(job_id)
+                score_value = float(score_value)
+            except (TypeError, ValueError):
+                result.invalid += 1
+                continue
+            if not 0.0 <= score_value <= 1.0:
+                result.invalid += 1
+                continue
+
+            job = session.get(Job, job_id)
+            if job is None:
+                result.unknown += 1
+                continue
+
+            row = _score_row(session, job_id, job.market)
+            if row is None:
+                row = Score(job_id=job_id, profile=job.market, deterministic_pass=True)
+                session.add(row)
+            row.llm_score = score_value
+            row.llm_reasoning = _reasoning(verdict)
+            row.llm_model = model or verdict.get("model") or "claude-code"
+            row.scored_at = utcnow()
+            result.written += 1
+    return result
+
+
+def _flatten_verdicts(raw: Any) -> list[dict[str, Any]]:
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, dict)]
+    if isinstance(raw, dict):
+        for key in ("verdicts", "results", "jobs", "scores"):
+            if isinstance(raw.get(key), list):
+                return [item for item in raw[key] if isinstance(item, dict)]
+        collected: list[dict[str, Any]] = []
+        for batch in raw.get("batches") or []:
+            if isinstance(batch, dict):
+                collected.extend(_flatten_verdicts(batch))
+        return collected
+    return []
+
+
+def _reasoning(verdict: dict[str, Any]) -> str:
+    text = str(verdict.get("reasoning") or "").strip()
+    flags = verdict.get("red_flags")
+    if isinstance(flags, list) and flags:
+        joined = ", ".join(str(flag) for flag in flags[:6])
+        text = f"{text} [red flags: {joined}]".strip()
+    return text or "(no reasoning returned)"

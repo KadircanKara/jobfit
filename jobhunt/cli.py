@@ -3,6 +3,8 @@ reachable from a shell and testable without the CLI.
 """
 from __future__ import annotations
 
+import pathlib
+
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -18,6 +20,8 @@ from jobhunt.discovery import feeds as feeds_module
 from jobhunt.discovery import harvest as harvest_module
 from jobhunt.discovery import patterns
 from jobhunt.discovery import yc as yc_module
+from jobhunt.rank import deterministic as rank_filters
+from jobhunt.rank import runner as rank_runner
 
 app = typer.Typer(add_completion=False, help="Local job sourcing and application tracking.")
 console = Console()
@@ -35,7 +39,10 @@ def init(force: bool = typer.Option(False, "--force", help="Rewrite an existing 
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.raw_dir.mkdir(parents=True, exist_ok=True)
     upgrade_to_head(cfg.db_path)
+    installed = rank_filters.install_user_copies(cfg)
     console.print(f"init: config={path} db={cfg.db_path} data={cfg.data_dir}")
+    if installed:
+        console.print(f"init: wrote {len(installed)} tunable files, starting with {installed[0]}")
     console.print("next: `jobhunt discover --strategy yc` seeds boards from a public list.")
 
 
@@ -179,6 +186,40 @@ def _discover_domain(cfg, domain: str, dry_run: bool) -> None:
     console.print(f"discover: token={token} candidates_added={len(added)} {' '.join(added) or '-'}")
     if added and not dry_run:
         _validate_candidates(cfg, None)
+
+
+@app.command()
+def rank(
+    market: str = typer.Option(None, "--market", help="Restrict to one market."),
+    limit: int = typer.Option(None, "--limit", help="Stop after this many jobs."),
+    rescore: bool = typer.Option(False, "--rescore", help="Re-run stage 1 on already-scored jobs."),
+    emit: str = typer.Option(None, "--emit", help="Write an LLM gate batch to this path."),
+    ingest: str = typer.Option(None, "--ingest", help="Read gate verdicts back from this path."),
+    batch: int = typer.Option(None, "--batch", help="Jobs per emitted batch."),
+) -> None:
+    """Stage 1 deterministic filter, and the file protocol for the stage 2 gate."""
+    cfg = _config()
+
+    if ingest:
+        path = pathlib.Path(ingest).expanduser()
+        if not path.exists():
+            console.print(f"rank: no such file {path}")
+            raise typer.Exit(1)
+        console.print(rank_runner.ingest(cfg, path).summary())
+        return
+
+    if emit is not None:
+        size = batch or int(cfg.get("ranking", "batch_size", default=rank_runner.DEFAULT_BATCH))
+        target = pathlib.Path(
+            emit or str(cfg.get("ranking", "batch_path", default=cfg.data_dir / "rank/batch.json"))
+        ).expanduser()
+        written = rank_runner.emit(cfg, target, market=market, limit=size)
+        console.print(f"rank emit: batches={written['batches']} jobs={written['jobs']} -> {target}")
+        if written["jobs"]:
+            console.print("next: score them in Claude Code, then `jobhunt rank --ingest <verdicts>`")
+        return
+
+    console.print(rank_runner.run_deterministic(cfg, market=market, limit=limit, rescore=rescore).summary())
 
 
 @app.command()

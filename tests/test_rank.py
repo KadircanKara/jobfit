@@ -1,0 +1,404 @@
+"""Stage 1 filtering and the stage 2 file protocol. No network, no model call.
+
+The rule these tests exist to protect: an unknown value is never a rejection.
+Aggregators drop fields that a company's own board states fully, so filtering on
+absence quietly discards exactly the postings the corpus works hardest to get.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+
+import pytest
+
+from jobhunt import store
+from jobhunt.db.models import Job, Score, utcnow
+from jobhunt.db.session import session_scope
+from jobhunt.rank import deterministic, profile, runner, timezones
+from jobhunt.sources.base import JobPosting
+
+FILTERS = {
+    "profiles": {
+        "global_remote": {
+            "hard_requires": {"remote_type": ["remote", "hybrid"]},
+            "hard_excludes": ["us only", "must reside in"],
+            "timezone": {"base": "Europe/Istanbul", "min_overlap_hours": 4},
+            "seniority_min": "mid",
+            "llm_gate_prompt": "prompts/remote_fit.md",
+            "min_score_to_surface": 0.7,
+        },
+        "yc": {
+            "seniority_min": "mid",
+            "boost": {"founding_engineer": 1.4, "tag_ai": 1.2, "recent_batch": 1.3},
+            "llm_gate_prompt": "prompts/yc_fit.md",
+        },
+    },
+    "global": {
+        "max_age_days": 30,
+        "exclude_companies": ["badco"],
+        "exclude_titles_regex": ["(?i)sales|recruiter"],
+    },
+}
+
+
+def make_job(cfg, **kwargs):
+    defaults = {
+        "source": "ashby", "external_id": "x1", "market": "global_remote",
+        "title": "Senior Backend Engineer", "company_name": "Acme",
+        "remote_type": "remote", "description_text": "We build things. " * 40,
+    }
+    defaults.update(kwargs)
+    with session_scope(cfg.db_path) as session:
+        job, _ = store.upsert_posting(session, JobPosting(**defaults))
+        session.flush()
+        return job.id
+
+
+def verdict_for(cfg, job_id, filters=FILTERS):
+    with session_scope(cfg.db_path) as session:
+        job = session.get(Job, job_id)
+        company = job.company
+        return deterministic.evaluate(job, company, filters)
+
+
+# --- timezone -----------------------------------------------------------------
+
+
+def test_us_roles_fail_a_four_hour_istanbul_overlap() -> None:
+    assert timezones.overlap_hours("US") < 4
+    assert timezones.overlap_hours("CA") < 4
+
+
+def test_european_roles_pass_comfortably() -> None:
+    for country in ("DE", "GB", "NL", "PL", "TR"):
+        assert timezones.overlap_hours(country) >= 6
+
+
+def test_asian_roles_land_where_expected() -> None:
+    assert timezones.overlap_hours("IN") >= 4
+    assert timezones.overlap_hours("SG") >= 4
+    assert timezones.overlap_hours("AU") < 4
+
+
+def test_unknown_country_is_not_zero_overlap() -> None:
+    """None means "no objection". Zero would mean "reject", which is a different
+    claim and one the data does not support."""
+    assert timezones.overlap_hours(None) is None
+    assert timezones.overlap_hours("ZZ") is None
+
+
+def test_worldwide_markers_are_recognised() -> None:
+    assert timezones.is_worldwide("Remote, Worldwide")
+    assert timezones.is_worldwide("Anywhere")
+    assert not timezones.is_worldwide("Berlin, Germany")
+
+
+# --- stage 1 ------------------------------------------------------------------
+
+
+def test_a_matching_job_passes(cfg) -> None:
+    job_id = make_job(cfg, country="DE")
+    assert verdict_for(cfg, job_id).passed
+
+
+def test_onsite_fails_the_remote_requirement(cfg) -> None:
+    job_id = make_job(cfg, remote_type="onsite", country="DE")
+    verdict = verdict_for(cfg, job_id)
+    assert not verdict.passed
+    assert any("remote_type" in reason for reason in verdict.reasons)
+
+
+def test_unknown_remote_type_is_not_a_rejection(cfg) -> None:
+    job_id = make_job(cfg, remote_type="unknown", country="DE")
+    assert verdict_for(cfg, job_id).passed
+
+
+def test_us_only_phrase_in_the_body_fails(cfg) -> None:
+    job_id = make_job(cfg, country="DE", description_text="Great role. US only. " * 20)
+    verdict = verdict_for(cfg, job_id)
+    assert not verdict.passed
+    assert any("us only" in reason for reason in verdict.reasons)
+
+
+def test_a_us_job_fails_on_timezone(cfg) -> None:
+    job_id = make_job(cfg, country="US", location_raw="New York, United States")
+    verdict = verdict_for(cfg, job_id)
+    assert not verdict.passed
+    assert any("timezone" in reason for reason in verdict.reasons)
+
+
+def test_worldwide_beats_an_unhelpful_country(cfg) -> None:
+    """"Remote, Worldwide" with a US head office is still open to GMT+3."""
+    job_id = make_job(cfg, country="US", location_raw="Remote, Worldwide")
+    verdict = verdict_for(cfg, job_id)
+    assert verdict.passed
+    assert verdict.tz_overlap_hours == timezones.FULL_OVERLAP
+
+
+def test_junior_fails_the_seniority_floor(cfg) -> None:
+    job_id = make_job(cfg, title="Junior Backend Engineer", country="DE")
+    verdict = verdict_for(cfg, job_id)
+    assert not verdict.passed
+    assert any("seniority" in reason for reason in verdict.reasons)
+
+
+def test_unknown_seniority_is_not_a_rejection(cfg) -> None:
+    job_id = make_job(cfg, title="Backend Engineer", country="DE")
+    assert verdict_for(cfg, job_id).passed
+
+
+def test_a_stale_posting_fails(cfg) -> None:
+    old = utcnow() - dt.timedelta(days=60)
+    job_id = make_job(cfg, country="DE", posted_at=old)
+    verdict = verdict_for(cfg, job_id)
+    assert not verdict.passed
+    assert any("older than" in reason for reason in verdict.reasons)
+
+
+def test_a_job_with_no_date_is_not_stale(cfg) -> None:
+    assert verdict_for(cfg, make_job(cfg, country="DE", posted_at=None)).passed
+
+
+def test_a_sales_title_fails(cfg) -> None:
+    job_id = make_job(cfg, title="Senior Sales Engineer", country="DE")
+    assert not verdict_for(cfg, job_id).passed
+
+
+def test_a_blocklisted_company_fails(cfg) -> None:
+    job_id = make_job(cfg, company_name="BadCo", country="DE")
+    verdict = verdict_for(cfg, job_id)
+    assert not verdict.passed
+    assert any("blocklisted" in reason for reason in verdict.reasons)
+
+
+def test_a_broken_regex_in_the_config_does_not_take_the_run_down(cfg) -> None:
+    filters = {"profiles": {}, "global": {"exclude_titles_regex": ["(unclosed"]}}
+    assert verdict_for(cfg, make_job(cfg), filters).passed
+
+
+def test_boosts_multiply_but_never_rescue(cfg) -> None:
+    job_id = make_job(cfg, market="yc", title="Founding AI Engineer", country="DE")
+    verdict = verdict_for(cfg, job_id)
+    assert verdict.passed
+    assert verdict.boost == pytest.approx(1.4 * 1.2)
+
+    failed = make_job(cfg, market="yc", external_id="x2", title="Founding Sales Engineer")
+    assert not verdict_for(cfg, failed).passed
+
+
+# --- the runner ---------------------------------------------------------------
+
+
+def test_run_deterministic_writes_scores_and_is_idempotent(cfg) -> None:
+    make_job(cfg, country="DE")
+    make_job(cfg, external_id="x2", country="US", location_raw="Austin, United States")
+
+    first = runner.run_deterministic(cfg)
+    assert first.scored == 2
+    assert (first.passed, first.failed) == (1, 1)
+
+    second = runner.run_deterministic(cfg)
+    assert second.scored == 0
+    assert second.skipped == 2
+
+    with session_scope(cfg.db_path) as session:
+        rows = session.query(Score).all()
+        assert len(rows) == 2
+        assert all(row.deterministic_notes is not None for row in rows)
+
+
+def test_rescore_reruns_stage_one(cfg) -> None:
+    make_job(cfg, country="DE")
+    runner.run_deterministic(cfg)
+    assert runner.run_deterministic(cfg, rescore=True).scored == 1
+
+
+def test_timezone_overlap_is_persisted_on_the_job(cfg) -> None:
+    job_id = make_job(cfg, country="DE")
+    runner.run_deterministic(cfg)
+    with session_scope(cfg.db_path) as session:
+        assert session.get(Job, job_id).tz_min_overlap_h >= 6
+
+
+def test_only_canonical_rows_are_scored(cfg) -> None:
+    """Scoring duplicates would multiply the gate batch by the number of sources
+    a job happens to appear on."""
+    first = make_job(cfg, country="DE")
+    second = make_job(cfg, source="lever", external_id="y1", country="DE")
+    with session_scope(cfg.db_path) as session:
+        session.get(Job, second).canonical_job_id = first
+
+    assert runner.run_deterministic(cfg).scored == 1
+
+
+# --- the file protocol --------------------------------------------------------
+
+
+def test_emit_writes_a_self_contained_batch(cfg, tmp_path) -> None:
+    make_job(cfg, country="DE")
+    runner.run_deterministic(cfg)
+
+    path = tmp_path / "batch.json"
+    written = runner.emit(cfg, path)
+    assert written == {"batches": 1, "jobs": 1}
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    batch = payload["batches"][0]
+    assert batch["market"] == "global_remote"
+    # The prompt travels with the batch, with the profile already substituted.
+    assert "Fit gate" in batch["prompt"]
+    assert "{profile}" not in batch["prompt"]
+    assert payload["candidate_profile"]
+    assert batch["jobs"][0]["title"] == "Senior Backend Engineer"
+    assert "job_id" in payload["response_contract"]["item"]
+
+
+def test_emit_skips_jobs_that_failed_stage_one(cfg, tmp_path) -> None:
+    make_job(cfg, country="US", location_raw="Austin, United States")
+    runner.run_deterministic(cfg)
+    assert runner.emit(cfg, tmp_path / "b.json") == {"batches": 0, "jobs": 0}
+
+
+def test_emit_skips_jobs_already_gated(cfg, tmp_path) -> None:
+    make_job(cfg, country="DE")
+    runner.run_deterministic(cfg)
+    path = tmp_path / "b.json"
+    runner.emit(cfg, path)
+
+    verdicts = tmp_path / "v.json"
+    job_id = json.loads(path.read_text())["batches"][0]["jobs"][0]["job_id"]
+    verdicts.write_text(json.dumps([{"job_id": job_id, "score": 0.8, "reasoning": "fits"}]))
+    runner.ingest(cfg, verdicts)
+
+    assert runner.emit(cfg, tmp_path / "b2.json") == {"batches": 0, "jobs": 0}
+
+
+def test_emit_truncates_long_descriptions_and_says_so(cfg, tmp_path) -> None:
+    make_job(cfg, country="DE", description_text="word " * 5000)
+    runner.run_deterministic(cfg)
+    path = tmp_path / "b.json"
+    runner.emit(cfg, path)
+    job = json.loads(path.read_text())["batches"][0]["jobs"][0]
+    assert job["description_truncated"] is True
+    assert len(job["description"]) == runner.DESCRIPTION_CHARS
+
+
+def test_ingest_writes_scores_and_reasoning(cfg, tmp_path) -> None:
+    job_id = make_job(cfg, country="DE")
+    runner.run_deterministic(cfg)
+
+    path = tmp_path / "v.json"
+    path.write_text(json.dumps([{
+        "job_id": job_id, "score": 0.82, "reasoning": "FastAPI and LLM work",
+        "red_flags": ["on-call"],
+    }]))
+    result = runner.ingest(cfg, path)
+    assert (result.read, result.written) == (1, 1)
+
+    with session_scope(cfg.db_path) as session:
+        row = session.query(Score).one()
+        assert row.llm_score == pytest.approx(0.82)
+        assert "FastAPI" in row.llm_reasoning
+        assert "on-call" in row.llm_reasoning
+        assert row.llm_model == "claude-code"
+
+
+def test_ingest_accepts_the_envelope_shape_too(cfg, tmp_path) -> None:
+    job_id = make_job(cfg, country="DE")
+    runner.run_deterministic(cfg)
+    path = tmp_path / "v.json"
+    path.write_text(json.dumps({"batches": [{"verdicts": [
+        {"job_id": job_id, "score": 0.5, "reasoning": "ok"}
+    ]}]}))
+    assert runner.ingest(cfg, path).written == 1
+
+
+def test_ingest_rejects_a_hallucinated_job_id(cfg, tmp_path) -> None:
+    """Writing a score against an id that is not in the corpus would be worse
+    than losing the verdict."""
+    make_job(cfg, country="DE")
+    runner.run_deterministic(cfg)
+    path = tmp_path / "v.json"
+    path.write_text(json.dumps([{"job_id": 999999, "score": 0.9, "reasoning": "x"}]))
+    result = runner.ingest(cfg, path)
+    assert (result.written, result.unknown) == (0, 1)
+
+
+def test_ingest_rejects_out_of_range_and_malformed_scores(cfg, tmp_path) -> None:
+    job_id = make_job(cfg, country="DE")
+    runner.run_deterministic(cfg)
+    path = tmp_path / "v.json"
+    path.write_text(json.dumps([
+        {"job_id": job_id, "score": 1.4, "reasoning": "x"},
+        {"job_id": job_id, "score": "high", "reasoning": "x"},
+        {"job_id": job_id},
+    ]))
+    result = runner.ingest(cfg, path)
+    assert (result.written, result.invalid) == (0, 3)
+
+
+# --- candidate profile --------------------------------------------------------
+
+
+def test_profile_strips_latex_to_prose() -> None:
+    latex = r"""
+\documentclass{article}
+\begin{document}
+\section{Experience}
+\textbf{Senior AI Engineer} at Acme % a comment
+FastAPI, Postgres, Redis
+\end{document}
+"""
+    summary = profile.summarize(latex)
+    assert "Senior AI Engineer" in summary
+    assert "FastAPI, Postgres, Redis" in summary
+    assert "\\section" not in summary
+    assert "a comment" not in summary
+
+
+def test_profile_falls_back_when_master_tex_is_missing(cfg, tmp_path) -> None:
+    """Ranking has to work on a machine where the CV lives somewhere else."""
+    cfg.raw["tailoring"]["master_tex"] = str(tmp_path / "nope.tex")
+    assert profile.load(cfg) == profile.FALLBACK
+
+
+def test_profile_summary_override_wins(cfg) -> None:
+    cfg.raw["ranking"]["profile_summary"] = "Backend engineer, Istanbul."
+    assert profile.load(cfg) == "Backend engineer, Istanbul."
+
+
+def test_profile_drops_latex_artifacts() -> None:
+    latex = r"""
+\begin{document}
+\begin{center}
+\vspace{5pt}
+Kadircan Kara $|$ Senior Engineer
+\end{center}
+\end{document}
+"""
+    summary = profile.summarize(latex)
+    assert "center" not in summary
+    assert "5pt" not in summary
+    assert "Kadircan Kara | Senior Engineer" in summary
+
+
+def test_profile_strips_contact_details() -> None:
+    """The gate scores a fit. A phone number and a home email have no business
+    in a file written to disk for another tool to read."""
+    latex = r"""
+\begin{document}
+Jane Doe - M.Sc.
++905550000000
+mailto:jane@example.com jane@example.com
+https://www.linkedin.com/in/jane/ LinkedIn
+Istanbul, Turkey
+PROFESSIONAL SUMMARY
+Senior backend engineer with eight years of Python.
+\end{document}
+"""
+    summary = profile.summarize(latex)
+    assert "example.com" not in summary
+    assert "linkedin" not in summary.lower()
+    assert "+9055" not in summary
+    assert "Senior backend engineer" in summary
+    assert "Istanbul, Turkey" in summary

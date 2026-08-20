@@ -1,0 +1,48 @@
+# Deterministic filter, stage 1 of ranking. PLAN.md section 7.
+#
+# This file is yours to tune. `jobhunt init` copies it to ~/.jobhunt/filters.yaml
+# and never overwrites it afterwards, so edits survive upgrades.
+#
+# Every rule here is free and runs on every job. The point is to kill the
+# obvious misses before anything expensive looks at them.
+
+profiles:
+  yc:
+    hard_excludes: ["unpaid", "equity only", "intern", "internship"]
+    seniority_min: mid
+    boost:
+      recent_batch: 1.3          # last 4 batches
+      founding_engineer: 1.4
+      tag_ai: 1.2
+    llm_gate_prompt: prompts/yc_fit.md
+    min_score_to_surface: 0.65
+
+  global_remote:
+    hard_requires:
+      remote_type: [remote, hybrid]
+    hard_excludes:
+      - "US only"
+      - "must reside in"
+      - "must be located in"
+      - "W2"
+      - "EST overlap required"
+      - "authorized to work in the United States"
+    timezone:
+      base: "Europe/Istanbul"
+      min_overlap_hours: 4
+    seniority_min: mid
+    llm_gate_prompt: prompts/remote_fit.md
+    min_score_to_surface: 0.7
+
+  tr_local:
+    hard_requires:
+      country: [TR]
+    hard_excludes: ["stajyer", "yarı zamanlı", "part time", "çağrı merkezi"]
+    seniority_min: mid
+    llm_gate_prompt: prompts/tr_fit.md
+    min_score_to_surface: 0.6
+
+global:
+  max_age_days: 30
+  exclude_companies: []          # your own blocklist, by name
+  exclude_titles_regex: ["(?i)sales|recruiter|account executive"]

@@ -35,6 +35,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # and keep the original next to it as jd.<lang>.txt.
         "jd_language": "en",
     },
+    "ranking": {
+        # Stage 2 runs through Claude Code rather than an API key, so the gate
+        # is a file protocol: rank --emit writes a batch, rank --ingest reads
+        # the verdicts back. See jobhunt/rank/runner.py.
+        "batch_size": 20,
+        "batch_path": str(HOME_DIR / "data/rank/batch.json"),
+        # Overrides the master.tex derived candidate summary when set.
+        "profile_summary": None,
+    },
     "digest": {
         "limit": 15,
         "allow_non_english": True,
