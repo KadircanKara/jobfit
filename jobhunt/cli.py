@@ -4,6 +4,7 @@ reachable from a shell and testable without the CLI.
 from __future__ import annotations
 
 import pathlib
+import sys
 
 import typer
 from rich.console import Console
@@ -11,17 +12,20 @@ from rich.table import Table
 from sqlalchemy import func, select
 
 from jobhunt import __version__, store, sync
+from jobhunt import applications as applications_module
 from jobhunt import config as config_module
 from jobhunt import sources as source_registry
-from jobhunt.db.models import Board, Company, Job, Run
+from jobhunt.db.models import Board, Company, Job, Run, Score
 from jobhunt.db.session import session_scope, upgrade_to_head
 from jobhunt.discovery import commoncrawl as cc_module
 from jobhunt.discovery import feeds as feeds_module
 from jobhunt.discovery import harvest as harvest_module
 from jobhunt.discovery import patterns
 from jobhunt.discovery import yc as yc_module
+from jobhunt.extract import ladder as ladder_module
 from jobhunt.rank import deterministic as rank_filters
 from jobhunt.rank import runner as rank_runner
+from jobhunt.render import review as review_render
 
 app = typer.Typer(add_completion=False, help="Local job sourcing and application tracking.")
 console = Console()
@@ -326,6 +330,186 @@ def list_jobs(
                 job.source,
             )
     console.print(table)
+
+
+@app.command()
+def review(
+    market: str = typer.Option(None, "--market"),
+    limit: int = typer.Option(None, "--limit"),
+    since: int = typer.Option(None, "--since", help="Only jobs first seen in the last N days."),
+    output_format: str = typer.Option(
+        "interactive", "--format", help="interactive or digest. digest is cron-safe."
+    ),
+    include_unscored: bool = typer.Option(
+        False, "--include-unscored", help="Show stage 1 survivors that the gate has not seen."
+    ),
+) -> None:
+    """Triage the shortlist. --format=digest makes no prompts and exits 0."""
+    cfg = _config()
+    count = limit or int(cfg.get("digest", "limit", default=15))
+    cards = review_render.shortlist(
+        cfg, market=market, limit=count, since_days=since, include_unscored=include_unscored
+    )
+
+    if output_format == "digest":
+        # Deliberately plain print, not rich: this gets piped into a file.
+        print(review_render.render_digest(cards), end="")
+        return
+    if output_format != "interactive":
+        console.print(f"review: unknown format {output_format!r}. use interactive or digest.")
+        raise typer.Exit(2)
+
+    if not cards:
+        console.print("review: nothing above threshold. try `jobhunt rank --emit`.")
+        return
+    _review_loop(cfg, cards)
+
+
+def _review_loop(cfg, cards) -> None:
+    """The main loop. Every action is the user's; nothing happens on its own."""
+    for index, card in enumerate(cards, start=1):
+        console.print("")
+        console.print(f"[dim]{index}/{len(cards)}[/dim]")
+        console.print(review_render.render_card(card))
+        choice = typer.prompt("      [a]pply [s]kip [d]etail [l]ater [q]uit", default="l").strip().lower()
+
+        if choice.startswith("q"):
+            return
+        if choice.startswith("d"):
+            show(card.job_id)
+            choice = typer.prompt("      [a]pply [s]kip [l]ater", default="l").strip().lower()
+        if choice.startswith("a"):
+            _apply_job(cfg, card.job_id, tailor=True, dry_run=False)
+        elif choice.startswith("s"):
+            reason = typer.prompt("      reason").strip()
+            try:
+                with session_scope(cfg.db_path) as session:
+                    applications_module.skip(session, card.job_id, reason)
+                console.print(f"      skipped {card.job_id}")
+            except applications_module.ApplyBlocked as exc:
+                console.print(f"      {exc}")
+
+
+@app.command()
+def jd(
+    job_id: int,
+    paste: bool = typer.Option(False, "--paste", help="Paste the JD from stdin or $EDITOR."),
+    force: bool = typer.Option(False, "--force", help="Re-extract even if already full."),
+    queue: bool = typer.Option(False, "--queue", help="Extract everything the ranker queued."),
+) -> None:
+    """Run the extraction ladder for one job. Rungs 1, 2, and 5."""
+    cfg = _config()
+    if queue:
+        _extract_queue(cfg)
+        return
+    with session_scope(cfg.db_path) as session:
+        job = session.get(Job, job_id)
+        if job is None:
+            console.print(f"jd: no job {job_id}")
+            raise typer.Exit(1)
+        if paste:
+            text = _read_pasted_jd()
+            result = ladder_module.paste(session, job, text)
+        else:
+            result = ladder_module.run(cfg, session, job, force=force)
+        console.print(result.summary())
+        if result.completeness != "full":
+            console.print(f"  not usable yet. try `jobhunt jd {job_id} --paste`.")
+
+
+def _read_pasted_jd() -> str:
+    """$EDITOR when there is a terminal, stdin when there is not, so this stays
+    usable from a pipe as well as by hand."""
+    if not sys.stdin.isatty():
+        return sys.stdin.read()
+    return typer.edit("\n# Paste the job description above. Lines starting with # are kept.\n") or ""
+
+
+def _extract_queue(cfg) -> None:
+    """Every stage 1 survivor whose JD is not full yet.
+
+    Bounded by the digest limit rather than unbounded: PLAN.md non-negotiable 10
+    forbids a bulk detail-fetch command, and this is the closest thing to one.
+    """
+    limit = int(cfg.get("digest", "limit", default=15))
+    with session_scope(cfg.db_path) as session:
+        rows = session.execute(
+            select(Job)
+            .join(Score, Score.job_id == Job.id)
+            .where(Job.is_active.is_(True))
+            .where(Score.deterministic_pass.is_(True))
+            .where(Job.jd_completeness != "full")
+            .order_by(Score.llm_score.desc().nullslast(), Job.id.desc())
+            .limit(limit)
+        ).scalars().all()
+        if not rows:
+            console.print("jd queue: nothing to extract.")
+            return
+        for job in rows:
+            console.print(ladder_module.run(cfg, session, job).summary())
+
+
+@app.command()
+def apply(
+    job_id: int,
+    no_tailor: bool = typer.Option(False, "--no-tailor", help="Record only, no handoff."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be written."),
+) -> None:
+    """Record that you applied, and hand the folder to the tailoring skill.
+
+    This never submits anything to an employer. You applied; this records it.
+    """
+    _apply_job(_config(), job_id, tailor=not no_tailor, dry_run=dry_run)
+
+
+def _apply_job(cfg, job_id: int, tailor: bool, dry_run: bool) -> None:
+    try:
+        with session_scope(cfg.db_path) as session:
+            result = applications_module.apply(
+                cfg, session, job_id, tailor=tailor, dry_run=dry_run
+            )
+    except applications_module.ApplyBlocked as exc:
+        console.print(f"apply: {exc}")
+        return
+    console.print(result.summary())
+    if result.extraction is not None:
+        console.print(f"  {result.extraction.summary()}")
+    if tailor and result.mode == "handoff":
+        console.print("")
+        console.print(f"  [bold]{result.instruction}[/bold]")
+
+
+@app.command()
+def skip(
+    job_id: int,
+    reason: str = typer.Option(..., "--reason", help="Why. This tunes the gate over time."),
+) -> None:
+    """Mark a job skipped. The reason is the point, so it is required."""
+    cfg = _config()
+    try:
+        with session_scope(cfg.db_path) as session:
+            applications_module.skip(session, job_id, reason)
+    except applications_module.ApplyBlocked as exc:
+        console.print(f"skip: {exc}")
+        raise typer.Exit(1) from None
+    console.print(f"skipped: job={job_id} reason={reason!r}")
+
+
+@app.command()
+def status(
+    job_id: int,
+    new_status: str = typer.Argument(..., metavar="STATUS"),
+    note: str = typer.Option(None, "--note"),
+) -> None:
+    """Advance an application: screening, interview, offer, rejected, ghosted."""
+    cfg = _config()
+    try:
+        with session_scope(cfg.db_path) as session:
+            row = applications_module.advance(session, job_id, new_status, note)
+            console.print(f"status: job={job_id} -> {row.status}")
+    except applications_module.ApplyBlocked as exc:
+        console.print(f"status: {exc}")
+        raise typer.Exit(1) from None
 
 
 @app.command()

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import functools
 import pathlib
 import re
 from typing import Any
@@ -140,8 +141,19 @@ def _check_hard_requires(job: Job, profile: dict[str, Any], verdict: Verdict) ->
 def _check_hard_excludes(haystack: str, profile: dict[str, Any], verdict: Verdict) -> None:
     for phrase in profile.get("hard_excludes") or []:
         text = str(phrase).strip().lower()
-        if text and text in haystack:
+        if text and _phrase_pattern(text).search(haystack):
             verdict.reasons.append(f"excluded phrase {text!r}")
+
+
+@functools.lru_cache(maxsize=256)
+def _phrase_pattern(phrase: str) -> re.Pattern[str]:
+    """Match a phrase as whole words, not as a substring.
+
+    Found live: the "W2" exclusion fired on 11 jobs because "w2" appears inside
+    unrelated tokens. Lookarounds rather than \\b so a phrase that starts or ends
+    with punctuation still behaves.
+    """
+    return re.compile(rf"(?<!\w){re.escape(phrase)}(?!\w)")
 
 
 def _check_seniority(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:

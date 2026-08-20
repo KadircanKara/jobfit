@@ -17,6 +17,7 @@ dependencies = [
     "python-dateutil>=2.9",
     "beautifulsoup4>=4.12",
     "markdownify>=0.13",
+    "trafilatura>=1.12",
 ]
 
 [project.optional-dependencies]

@@ -402,3 +402,14 @@ Senior backend engineer with eight years of Python.
     assert "+9055" not in summary
     assert "Senior backend engineer" in summary
     assert "Istanbul, Turkey" in summary
+
+
+def test_a_short_exclusion_does_not_match_inside_a_word(cfg) -> None:
+    """Found live: the "W2" exclusion fired on 11 jobs because "w2" turns up
+    inside unrelated tokens."""
+    filters = {"profiles": {"global_remote": {"hard_excludes": ["w2", "us only"]}}, "global": {}}
+    job_id = make_job(cfg, description_text="We run GW2 clusters and aw2 pipelines. " * 20)
+    assert verdict_for(cfg, job_id, filters).passed
+
+    real = make_job(cfg, external_id="x9", description_text="Employment is W2 only. " * 20)
+    assert not verdict_for(cfg, real, filters).passed
