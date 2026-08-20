@@ -256,8 +256,10 @@ def parse_location(location_raw: str | None) -> tuple[str | None, str | None, st
         remote_type = "remote"
 
     # Work mode often rides along in a parenthetical: "Berlin, Germany (Hybrid)".
-    # It is already captured above, so strip it before looking for a country.
-    stripped = re.sub(r"\([^)]*\)", " ", text)
+    # But so does the actual country: "Remote (United States)". Strip only the
+    # parentheticals that carry no place name, or the timezone filter loses the
+    # one signal that removes US-only remote listings.
+    stripped = re.sub(r"\(([^)]*)\)", _keep_place, text)
     parts = [p.strip() for p in re.split(r"[,/|]|\bor\b", stripped) if p.strip()]
     country: str | None = None
     city: str | None = None
@@ -277,6 +279,16 @@ def parse_location(location_raw: str | None) -> tuple[str | None, str | None, st
             city = part
             break
     return country, city, remote_type
+
+
+def _keep_place(match: re.Match[str]) -> str:
+    """Replacement for a parenthetical: keep it when it names a place."""
+    inner = match.group(1).strip()
+    for piece in re.split(r"[,/|]", inner):
+        key = piece.strip().lower().strip(". ")
+        if key in _COUNTRY_ALIASES or (len(key) == 2 and key in _US_STATES):
+            return f", {inner}"
+    return " "
 
 
 def country_code(name: str | None) -> str | None:

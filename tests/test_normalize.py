@@ -195,3 +195,21 @@ def test_employment_type_reads_several_fields() -> None:
 def test_an_internship_is_not_read_as_full_time() -> None:
     """"Internship, full time" is an internship. Order matters here."""
     assert norm.normalize_employment_type("Internship, full time") == "internship"
+
+
+def test_a_country_in_parentheses_is_not_thrown_away() -> None:
+    """Found live: "Remote (United States)" parsed to country None, so the
+    timezone rule skipped it, and US-only remote listings passed stage 1. That
+    rule is the main thing keeping US-anchored postings out."""
+    country, _, remote = norm.parse_location("Remote (United States)")
+    assert country == "US"
+    assert remote == "remote"
+
+
+def test_a_work_mode_parenthetical_is_still_stripped() -> None:
+    country, city, remote = norm.parse_location("Berlin, Germany (Hybrid)")
+    assert (country, city, remote) == ("DE", "Berlin", "hybrid")
+
+
+def test_a_us_state_in_parentheses_resolves_too() -> None:
+    assert norm.parse_location("Remote (CA)")[0] == "US"
