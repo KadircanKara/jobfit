@@ -4,10 +4,12 @@ from __future__ import annotations
 from jobhunt.sources.ashby import AshbyAdapter
 from jobhunt.sources.base import BoardRef, JobPosting, RateLimit, SourceAdapter
 from jobhunt.sources.greenhouse import GreenhouseAdapter
+from jobhunt.sources.lever import LeverAdapter
 
 REGISTRY: dict[str, type] = {
     GreenhouseAdapter.source_id: GreenhouseAdapter,
     AshbyAdapter.source_id: AshbyAdapter,
+    LeverAdapter.source_id: LeverAdapter,
 }
 
 __all__ = [
@@ -16,6 +18,7 @@ __all__ = [
     "BoardRef",
     "GreenhouseAdapter",
     "JobPosting",
+    "LeverAdapter",
     "RateLimit",
     "SourceAdapter",
 ]

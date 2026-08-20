@@ -8,12 +8,14 @@ from rich.console import Console
 from rich.table import Table
 from sqlalchemy import func, select
 
-from jobhunt import __version__, sync
+from jobhunt import __version__, store, sync
 from jobhunt import config as config_module
 from jobhunt import sources as source_registry
 from jobhunt.db.models import Board, Company, Job, Run
 from jobhunt.db.session import session_scope, upgrade_to_head
 from jobhunt.discovery import harvest as harvest_module
+from jobhunt.discovery import patterns
+from jobhunt.discovery import yc as yc_module
 
 app = typer.Typer(add_completion=False, help="Local job sourcing and application tracking.")
 console = Console()
@@ -31,11 +33,8 @@ def init(force: bool = typer.Option(False, "--force", help="Rewrite an existing 
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.raw_dir.mkdir(parents=True, exist_ok=True)
     upgrade_to_head(cfg.db_path)
-    seeded = sync.seed_fixture_boards(cfg)
-    console.print(
-        f"init: config={path} db={cfg.db_path} data={cfg.data_dir} "
-        f"fixture_boards_added={seeded}"
-    )
+    console.print(f"init: config={path} db={cfg.db_path} data={cfg.data_dir}")
+    console.print("next: `jobhunt discover --strategy yc` seeds boards from a public list.")
 
 
 @app.command("sync")
@@ -81,24 +80,39 @@ def sync_cmd(
     raise typer.Exit(1 if worst == "failed" else 0)
 
 
-STRATEGIES = ("harvest",)
+STRATEGIES = ("harvest", "yc")
 
 
 @app.command()
 def discover(
     strategy: str = typer.Option("harvest", "--strategy", help=f"One of: {', '.join(STRATEGIES)}."),
+    domain: str = typer.Option(None, "--domain", help="Probe one company I actually care about."),
     full: bool = typer.Option(False, "--full", help="Rescan every job, ignoring the watermark."),
-    limit: int = typer.Option(None, "--limit", help="Stop after this many jobs."),
+    limit: int = typer.Option(None, "--limit", help="Stop after this many records."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be written."),
+    from_raw: bool = typer.Option(False, "--from-raw", help="Re-parse the stored list, no fetch."),
     no_guess: bool = typer.Option(
         False, "--no-guess", help="Skip token guesses from employer-hosted URLs."
     ),
 ) -> None:
     """Run a discovery strategy. Writes boards, never companies typed by hand."""
     cfg = _config()
+    if domain:
+        _discover_domain(cfg, domain, dry_run)
+        return
     if strategy not in STRATEGIES:
         console.print(f"discover: unknown strategy {strategy!r}. known: {', '.join(STRATEGIES)}")
         raise typer.Exit(2)
+
+    if strategy == "yc":
+        try:
+            seeded = yc_module.run(cfg, limit=limit, dry_run=dry_run, from_raw=from_raw)
+        except Exception as exc:  # noqa: BLE001 - a strategy is isolated like a source
+            console.print(f"yc: failed {type(exc).__name__}: {exc}")
+            raise typer.Exit(1) from None
+        console.print(seeded.summary())
+        console.print("next: `jobhunt sync` validates the candidates, one request each.")
+        return
 
     result = harvest_module.harvest(
         cfg, full=full, limit=limit, dry_run=dry_run, guess_from_hints=not no_guess
@@ -106,6 +120,33 @@ def discover(
     console.print(result.summary())
     if not dry_run:
         console.print(f"report: {harvest_module.write_report(cfg, result)}")
+
+
+def _discover_domain(cfg, domain: str, dry_run: bool) -> None:
+    """Strategy E for one company. The only place a name is acceptable is here."""
+    clean = yc_module.domain_of(domain) or domain
+    token = patterns.guess_token(clean)
+    if not token:
+        console.print(f"discover: cannot derive a token from {domain!r}")
+        raise typer.Exit(2)
+
+    added = []
+    with session_scope(cfg.db_path) as session:
+        for provider in yc_module.GUESS_PROVIDERS:
+            existing = session.scalars(
+                select(Board).where(Board.provider == provider, Board.token == token)
+            ).first()
+            if existing is not None:
+                continue
+            added.append(provider)
+            if dry_run:
+                continue
+            board = store.get_or_create_board(session, provider, token, "domain_probe", "global_remote")
+            board.status = "candidate"
+            board.notes = f"guessed from {clean}"
+    console.print(f"discover: token={token} candidates_added={len(added)} {' '.join(added) or '-'}")
+    if added and not dry_run:
+        _validate_candidates(cfg, None)
 
 
 @app.command()

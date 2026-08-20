@@ -141,3 +141,9 @@ def test_domain_from_url_rejects_ats_hosts() -> None:
     assert norm.domain_from_url("https://jobs.ashbyhq.com/ramp/uuid") is None
     assert norm.domain_from_url("https://boards.greenhouse.io/acme/jobs/1") is None
     assert norm.domain_from_url(None) is None
+
+
+def test_parse_datetime_accepts_millisecond_epochs() -> None:
+    """Lever sends createdAt in milliseconds. Seconds would land in the year 58000."""
+    assert norm.parse_datetime(1787203369315).year == 2026
+    assert norm.parse_datetime(1787203369).year == 2026

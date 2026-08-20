@@ -172,15 +172,17 @@ def test_dry_run_writes_nothing(cfg) -> None:
         assert session.query(Job).count() == 0
 
 
-def test_fixture_seeding_is_idempotent(cfg) -> None:
-    assert sync.seed_fixture_boards(cfg) == len(sync.FIXTURE_BOARDS)
-    assert sync.seed_fixture_boards(cfg) == 0
+def seed_boards(cfg, *specs) -> None:
+    """Put boards in the table the way discovery would, without discovery."""
+    with session_scope(cfg.db_path) as session:
+        for provider, token in specs:
+            store.get_or_create_board(session, provider, token, "yc", "global_remote")
 
 
 def test_due_boards_respects_next_fetch_at(cfg) -> None:
     import datetime as dt
 
-    sync.seed_fixture_boards(cfg)
+    seed_boards(cfg, ("ashby", "ramp"), ("ashby", "openai"))
     assert len(sync.due_boards(cfg, "ashby", force=False, limit=100)) == 2
 
     with session_scope(cfg.db_path) as session:
@@ -193,7 +195,7 @@ def test_due_boards_respects_next_fetch_at(cfg) -> None:
 
 def test_per_run_board_cap_is_enforced(cfg) -> None:
     """No command ever iterates the full boards table. Non-negotiable 8."""
-    sync.seed_fixture_boards(cfg)
+    seed_boards(cfg, ("ashby", "ramp"), ("ashby", "openai"))
     assert len(sync.due_boards(cfg, "ashby", force=True, limit=1)) == 1
 
 

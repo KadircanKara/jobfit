@@ -11,6 +11,7 @@ from conftest import load_fixture
 from jobhunt.sources.ashby import AshbyAdapter
 from jobhunt.sources.base import BoardRef
 from jobhunt.sources.greenhouse import GreenhouseAdapter
+from jobhunt.sources.lever import LeverAdapter
 
 
 @pytest.fixture
@@ -160,3 +161,76 @@ def test_both_adapters_tolerate_an_empty_payload() -> None:
     assert list(GreenhouseAdapter().normalize({}, ref_gh)) == []
     assert list(GreenhouseAdapter().normalize(None, ref_gh)) == []
     assert list(AshbyAdapter().normalize({"jobs": []}, ref_ash)) == []
+
+
+# --- lever --------------------------------------------------------------------
+
+
+def lever_postings() -> list:
+    raw = load_fixture("lever_matchgroup.json")
+    ref = BoardRef("lever", "matchgroup")
+    return list(LeverAdapter().normalize(raw, ref))
+
+
+def test_lever_normalizes_a_bare_array() -> None:
+    """The top level is an array, not an object. Assuming otherwise yields zero jobs."""
+    postings = lever_postings()
+    assert len(postings) == 5
+    assert all(p.source == "lever" for p in postings)
+
+
+def test_lever_reads_the_title_from_text_not_title() -> None:
+    titles = {p.title for p in lever_postings()}
+    assert "Android Engineer III" in titles
+
+
+def test_lever_uses_the_iso_country_field_over_the_location_string() -> None:
+    posting = next(p for p in lever_postings() if p.title.startswith("Accountant"))
+    assert posting.country == "KR"
+    assert posting.city == "Seoul"
+
+
+def test_lever_reads_the_structured_salary_range() -> None:
+    posting = next(p for p in lever_postings() if p.title == "Android Engineer III")
+    assert (posting.salary_min, posting.salary_max) == (150000.0, 180000.0)
+    assert posting.salary_currency == "USD"
+    assert posting.salary_period == "annual"
+    assert posting.salary_is_stated
+
+
+def test_lever_absent_salary_is_not_stated() -> None:
+    posting = next(p for p in lever_postings() if p.title.startswith("Accountant"))
+    assert posting.salary_is_stated is False
+    assert posting.salary_min is None
+
+
+def test_lever_description_includes_the_list_blocks() -> None:
+    """`description` alone truncates the JD on boards that split it into lists."""
+    posting = next(p for p in lever_postings() if p.title.startswith("Accountant"))
+    assert "Key Responsibilities" in posting.description_html
+    assert "purchase orders" in posting.description_text.lower()
+    assert posting.jd_completeness == "full"
+
+
+def test_lever_created_at_is_milliseconds() -> None:
+    posting = lever_postings()[0]
+    assert posting.posted_at is not None
+    assert 2020 <= posting.posted_at.year <= 2030
+
+
+def test_lever_workplace_type_is_authoritative() -> None:
+    assert all(p.remote_type == "hybrid" for p in lever_postings())
+
+
+def test_lever_apply_url_leaks_its_own_token() -> None:
+    """Strategy A closes the loop: a lever posting proves the lever board."""
+    from jobhunt.discovery import patterns
+
+    posting = lever_postings()[0]
+    hits, _ = patterns.scan(posting.apply_url)
+    assert patterns.BoardHit("lever", "matchgroup") in hits
+
+
+def test_lever_error_body_yields_nothing() -> None:
+    assert list(LeverAdapter().normalize({"error": "not found"}, BoardRef("lever", "x"))) == []
+    assert list(LeverAdapter().normalize(None, BoardRef("lever", "x"))) == []

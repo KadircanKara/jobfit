@@ -27,14 +27,6 @@ from jobhunt.db.session import session_scope
 from jobhunt.pipeline.dedupe import apply_clustering
 from jobhunt.sources.base import BoardRef
 
-# Throwaway phase-2 fixtures. Verified live on 2026-08-20. These get deleted in
-# phase 3 the moment Strategy A harvesting produces real tokens.
-FIXTURE_BOARDS: list[tuple[str, str, str]] = [
-    ("greenhouse", "stripe", "global_remote"),
-    ("ashby", "ramp", "global_remote"),
-    ("ashby", "openai", "global_remote"),
-]
-
 
 @dataclasses.dataclass
 class SourceResult:
@@ -69,20 +61,6 @@ def new_run_key(now: dt.datetime | None = None) -> str:
 
 def raw_dir(config: Config, source: str, run_key: str) -> pathlib.Path:
     return config.raw_dir / source / run_key
-
-
-def seed_fixture_boards(config: Config) -> int:
-    """Ensure the phase-2 fixture boards exist. Idempotent."""
-    added = 0
-    with session_scope(config.db_path) as session:
-        for provider, token, market in FIXTURE_BOARDS:
-            existing = session.scalars(
-                select(Board).where(Board.provider == provider, Board.token == token)
-            ).first()
-            if existing is None:
-                store.get_or_create_board(session, provider, token, "fixture", market)
-                added += 1
-    return added
 
 
 def due_boards(
@@ -187,6 +165,7 @@ def record_fetch_failures(config: Config, source: str, tokens: list[str]) -> int
             # and D are about to produce tens of thousands of guesses.
             if board.status == "candidate" or board.consecutive_errors >= DEAD_AFTER_ERRORS:
                 board.status = "dead"
+                board.tier = "cold"
                 board.next_fetch_at = None
                 newly_dead += 1
             else:

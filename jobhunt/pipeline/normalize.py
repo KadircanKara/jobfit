@@ -295,7 +295,12 @@ def parse_datetime(value: object) -> dt.datetime | None:
         return None
     try:
         if isinstance(value, int | float):
-            parsed = dt.datetime.fromtimestamp(float(value), dt.UTC)
+            seconds = float(value)
+            # Lever and Himalayas both send epochs, but Lever's are milliseconds.
+            # 1e11 seconds is the year 5138, so anything above it is not seconds.
+            if abs(seconds) > 1e11:
+                seconds /= 1000.0
+            parsed = dt.datetime.fromtimestamp(seconds, dt.UTC)
         else:
             parsed = date_parser.parse(str(value))
     except (ValueError, OverflowError, TypeError):
