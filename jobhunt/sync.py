@@ -236,6 +236,11 @@ def normalize_pass(
     return result
 
 
+# An aggregator feed is the freshness source: it is where a job first appears,
+# often days before the company board is next due. Weekly would defeat it.
+FEED_REFETCH_DAYS = 1
+
+
 def _record_board_outcome(board: Board, job_count: int) -> None:
     """Tier promotion and next_fetch_at.
 
@@ -250,7 +255,8 @@ def _record_board_outcome(board: Board, job_count: int) -> None:
     if job_count > 0:
         board.status = "validated"
         board.tier = "warm"
-        board.next_fetch_at = now + dt.timedelta(days=7)
+        days = FEED_REFETCH_DAYS if board.discovered_via == "feed" else 7
+        board.next_fetch_at = now + dt.timedelta(days=days)
     else:
         board.status = "empty"
         board.tier = "cold"

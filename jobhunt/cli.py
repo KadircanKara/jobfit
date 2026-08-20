@@ -14,6 +14,7 @@ from jobhunt import sources as source_registry
 from jobhunt.db.models import Board, Company, Job, Run
 from jobhunt.db.session import session_scope, upgrade_to_head
 from jobhunt.discovery import commoncrawl as cc_module
+from jobhunt.discovery import feeds as feeds_module
 from jobhunt.discovery import harvest as harvest_module
 from jobhunt.discovery import patterns
 from jobhunt.discovery import yc as yc_module
@@ -81,7 +82,7 @@ def sync_cmd(
     raise typer.Exit(1 if worst == "failed" else 0)
 
 
-STRATEGIES = ("harvest", "yc", "commoncrawl")
+STRATEGIES = ("harvest", "yc", "commoncrawl", "feeds")
 
 
 @app.command()
@@ -112,6 +113,11 @@ def discover(
     if strategy not in STRATEGIES:
         console.print(f"discover: unknown strategy {strategy!r}. known: {', '.join(STRATEGIES)}")
         raise typer.Exit(2)
+
+    if strategy == "feeds":
+        registered = feeds_module.seed(cfg, dry_run=dry_run)
+        console.print(registered.summary())
+        return
 
     if strategy == "commoncrawl":
         providers = tuple(p.strip() for p in provider.split(",")) if provider else cc_module.DEFAULT_PROVIDERS

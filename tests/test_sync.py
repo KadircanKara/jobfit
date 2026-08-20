@@ -281,3 +281,23 @@ def test_due_boards_filters_by_market(cfg) -> None:
     assert len(sync.due_boards(cfg, "ashby", force=True, limit=10)) == 2
     yc_only = sync.due_boards(cfg, "ashby", force=True, limit=10, market="yc")
     assert [ref.token for ref in yc_only] == ["ycco"]
+
+
+def test_a_feed_board_is_refetched_daily_not_weekly(cfg) -> None:
+    """An aggregator is where a job first appears, often days before the company
+    board is next due. A weekly cadence would defeat the point of having one."""
+    import datetime as dt
+
+    from jobhunt.db.models import Board as BoardModel
+
+    feed = BoardModel(provider="remotive", token="all", discovered_via="feed",
+                      market="global_remote")
+    ats = BoardModel(provider="ashby", token="acme", discovered_via="yc",
+                     market="global_remote")
+    sync._record_board_outcome(feed, 30)
+    sync._record_board_outcome(ats, 30)
+
+    assert (feed.next_fetch_at - feed.last_fetched_at) == dt.timedelta(
+        days=sync.FEED_REFETCH_DAYS
+    )
+    assert (ats.next_fetch_at - ats.last_fetched_at) == dt.timedelta(days=7)

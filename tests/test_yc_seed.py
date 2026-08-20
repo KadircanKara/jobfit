@@ -115,3 +115,18 @@ def test_the_market_can_be_overridden(cfg) -> None:
     yc.seed(cfg, place_list(cfg), market="global_remote")
     with session_scope(cfg.db_path) as session:
         assert {b.market for b in session.query(Board).all()} == {"global_remote"}
+
+
+def test_feeds_register_as_boards_and_are_idempotent(cfg) -> None:
+    """An aggregator goes through the same scheduler as an ATS board, so it is a
+    board row. One fetch path, not two."""
+    from jobhunt.discovery import feeds
+
+    first = feeds.seed(cfg)
+    assert first.new == len(feeds.FEEDS)
+    assert feeds.seed(cfg).new == 0
+
+    with session_scope(cfg.db_path) as session:
+        rows = session.query(Board).all()
+        assert len(rows) == len(feeds.FEEDS)
+        assert all(b.discovered_via == "feed" for b in rows)
