@@ -891,5 +891,46 @@ def _list_boards(cfg, provider: str | None, status: str | None, limit: int) -> N
     console.print(table)
 
 
+@app.command("serve")
+def serve_cmd(
+    port: int = typer.Option(8765, "--port", help="Port to listen on."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Interface to bind. Loopback by default."),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open the page on start."),
+) -> None:
+    """Run the local web interface.
+
+    Binds to loopback, so nothing outside this machine can reach it. A run
+    started here keeps going with the browser closed.
+    """
+    try:
+        import uvicorn
+    except ImportError:
+        console.print("serve: the web extra is not installed. run: pip install -e '.[web]'")
+        raise typer.Exit(1) from None
+
+    from jobhunt.web.app import STATIC_DIR, create_app
+
+    cfg = _config()
+    if not cfg.db_path.exists():
+        console.print("serve: no database. run `jobhunt init` first.")
+        raise typer.Exit(1)
+
+    if not (STATIC_DIR / "index.html").exists():
+        console.print(
+            "serve: the interface is not built. "
+            "run: npm --prefix ui install && npm --prefix ui run build"
+        )
+
+    url = f"http://{host}:{port}"
+    console.print(f"serve: {url}  (ctrl-c to stop)")
+    if open_browser:
+        import threading
+        import webbrowser
+
+        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+
+    uvicorn.run(create_app(config=cfg), host=host, port=port, log_level="warning")
+
+
 if __name__ == "__main__":
     app()
