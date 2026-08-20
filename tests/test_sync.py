@@ -1,0 +1,221 @@
+"""End-to-end pipeline test with no network.
+
+Payloads are placed in data/raw by hand and normalization is run over them, which
+is exactly what `sync --from-raw` does. If this passes, the raw -> normalized ->
+deduped -> stored path works independently of any endpoint being up.
+"""
+from __future__ import annotations
+
+import json
+
+from conftest import load_fixture
+
+from jobhunt import store, sync
+from jobhunt.db.models import Board, Company, Job, Run
+from jobhunt.db.session import session_scope
+from jobhunt.sources.base import JobPosting
+
+
+def place_raw(cfg, source: str, token: str, run_key: str, payload: dict) -> None:
+    directory = sync.raw_dir(cfg, source, run_key)
+    directory.mkdir(parents=True, exist_ok=True)
+    envelope = {
+        "run_key": run_key, "source": source, "provider": source, "token": token,
+        "market": "global_remote", "board_id": None, "fetched_at": "2026-08-20T00:00:00",
+        "payload": payload,
+    }
+    (directory / f"{source}__{token}.json").write_text(json.dumps(envelope), encoding="utf-8")
+
+
+def test_normalize_pass_stores_jobs_companies_and_boards(cfg) -> None:
+    place_raw(cfg, "greenhouse", "stripe", "R1", load_fixture("greenhouse_stripe.json"))
+    result = sync.normalize_pass(cfg, "greenhouse", "R1")
+
+    assert result.normalized == 5
+    assert result.new == 5
+    with session_scope(cfg.db_path) as session:
+        assert session.query(Job).count() == 5
+        assert session.query(Company).count() == 1
+        board = session.query(Board).one()
+        assert (board.provider, board.token, board.status) == ("greenhouse", "stripe", "validated")
+        assert board.next_fetch_at is not None
+
+
+def test_second_pass_over_the_same_payload_creates_nothing_new(cfg) -> None:
+    """Layer 1 dedupe: (source, external_id) never produces a second row."""
+    place_raw(cfg, "ashby", "ramp", "R1", load_fixture("ashby_ramp.json"))
+    first = sync.normalize_pass(cfg, "ashby", "R1")
+    second = sync.normalize_pass(cfg, "ashby", "R1")
+
+    assert first.new == 5
+    assert (second.new, second.unchanged) == (0, 5)
+    with session_scope(cfg.db_path) as session:
+        assert session.query(Job).count() == 5
+
+
+def test_changed_description_counts_as_updated_not_new(cfg) -> None:
+    payload = load_fixture("ashby_ramp.json")
+    place_raw(cfg, "ashby", "ramp", "R1", payload)
+    sync.normalize_pass(cfg, "ashby", "R1")
+
+    payload["jobs"][0]["descriptionHtml"] = "<p>" + ("rewritten body " * 60) + "</p>"
+    payload["jobs"][0]["descriptionPlain"] = "rewritten body " * 60
+    place_raw(cfg, "ashby", "ramp", "R2", payload)
+    result = sync.normalize_pass(cfg, "ashby", "R2")
+
+    assert (result.new, result.updated) == (0, 1)
+
+
+def test_reparsing_stored_raw_never_needs_the_network(cfg) -> None:
+    """A parser bug costs a re-normalize, never a re-fetch. Non-negotiable 2."""
+    place_raw(cfg, "greenhouse", "stripe", "R1", load_fixture("greenhouse_stripe.json"))
+    sync.normalize_pass(cfg, "greenhouse", "R1")
+    again = sync.sync_source(cfg, "greenhouse", from_raw="R1")
+    assert again.status == "ok"
+    assert again.normalized == 5
+
+
+def test_missing_job_deactivates_only_after_two_runs(cfg) -> None:
+    """One flaky listing must never wipe a board. PLAN.md section 6."""
+    payload = load_fixture("ashby_ramp.json")
+    place_raw(cfg, "ashby", "ramp", "R1", payload)
+    sync.normalize_pass(cfg, "ashby", "R1")
+    dropped_id = payload["jobs"][0]["id"]
+
+    trimmed = {"jobs": payload["jobs"][1:], "apiVersion": payload.get("apiVersion")}
+    place_raw(cfg, "ashby", "ramp", "R2", trimmed)
+    first = sync.normalize_pass(cfg, "ashby", "R2")
+    assert first.deactivated == 0
+
+    place_raw(cfg, "ashby", "ramp", "R3", trimmed)
+    second = sync.normalize_pass(cfg, "ashby", "R3")
+    assert second.deactivated == 1
+
+    with session_scope(cfg.db_path) as session:
+        job = session.query(Job).filter_by(source="ashby", external_id=dropped_id).one()
+        assert job.is_active is False
+
+
+def test_a_returning_job_is_counted_as_a_repost(cfg) -> None:
+    payload = load_fixture("ashby_ramp.json")
+    trimmed = {"jobs": payload["jobs"][1:]}
+    place_raw(cfg, "ashby", "ramp", "R1", payload)
+    sync.normalize_pass(cfg, "ashby", "R1")
+    for run_key in ("R2", "R3"):
+        place_raw(cfg, "ashby", "ramp", run_key, trimmed)
+        sync.normalize_pass(cfg, "ashby", run_key)
+
+    place_raw(cfg, "ashby", "ramp", "R4", payload)
+    sync.normalize_pass(cfg, "ashby", "R4")
+    with session_scope(cfg.db_path) as session:
+        job = session.query(Job).filter_by(external_id=payload["jobs"][0]["id"]).one()
+        assert job.is_active is True
+        assert job.repost_count == 1
+
+
+def test_cross_source_duplicate_gets_one_canonical_head(cfg) -> None:
+    """The same role on two sources produces two rows and one cluster."""
+    shared_description = "<p>" + ("Build and operate the payments API in Python. " * 20) + "</p>"
+    with session_scope(cfg.db_path) as session:
+        for source, external_id in (("greenhouse", "g1"), ("ashby", "a1")):
+            store.upsert_posting(
+                session,
+                JobPosting(
+                    source=source,
+                    external_id=external_id,
+                    market="global_remote",
+                    title="Senior Backend Engineer" if source == "greenhouse" else "Backend Engineer",
+                    company_name="Acme, Inc.",
+                    company_domain="acme.com",
+                    location_raw="Remote",
+                    description_html=shared_description,
+                    description_text=shared_description,
+                ),
+            )
+    with session_scope(cfg.db_path) as session:
+        from jobhunt.pipeline.dedupe import apply_clustering
+
+        apply_clustering(session)
+    with session_scope(cfg.db_path) as session:
+        heads = {j.canonical_job_id for j in session.query(Job).all()}
+        assert session.query(Job).count() == 2
+        assert len(heads) == 1
+
+
+def test_unknown_source_raises_with_the_valid_list(cfg) -> None:
+    import pytest
+
+    from jobhunt import sources
+
+    with pytest.raises(KeyError, match="unknown source"):
+        sources.get("nope")
+
+
+def test_a_failing_source_degrades_and_does_not_raise(cfg, monkeypatch) -> None:
+    """Source isolation. Non-negotiable 3."""
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("endpoint on fire")
+
+    monkeypatch.setattr(sync, "due_boards", boom)
+    result = sync.sync_source(cfg, "ashby")
+    assert result.status == "failed"
+    assert "endpoint on fire" in result.error_detail
+    with session_scope(cfg.db_path) as session:
+        assert session.query(Run).one().status == "failed"
+
+
+def test_dry_run_writes_nothing(cfg) -> None:
+    place_raw(cfg, "greenhouse", "stripe", "R1", load_fixture("greenhouse_stripe.json"))
+    result = sync.normalize_pass(cfg, "greenhouse", "R1", dry_run=True)
+    assert result.normalized == 5
+    with session_scope(cfg.db_path) as session:
+        assert session.query(Job).count() == 0
+
+
+def test_fixture_seeding_is_idempotent(cfg) -> None:
+    assert sync.seed_fixture_boards(cfg) == len(sync.FIXTURE_BOARDS)
+    assert sync.seed_fixture_boards(cfg) == 0
+
+
+def test_due_boards_respects_next_fetch_at(cfg) -> None:
+    import datetime as dt
+
+    sync.seed_fixture_boards(cfg)
+    assert len(sync.due_boards(cfg, "ashby", force=False, limit=100)) == 2
+
+    with session_scope(cfg.db_path) as session:
+        for board in session.query(Board).filter_by(provider="ashby").all():
+            board.next_fetch_at = dt.datetime(2099, 1, 1)
+
+    assert sync.due_boards(cfg, "ashby", force=False, limit=100) == []
+    assert len(sync.due_boards(cfg, "ashby", force=True, limit=100)) == 2
+
+
+def test_per_run_board_cap_is_enforced(cfg) -> None:
+    """No command ever iterates the full boards table. Non-negotiable 8."""
+    sync.seed_fixture_boards(cfg)
+    assert len(sync.due_boards(cfg, "ashby", force=True, limit=1)) == 1
+
+
+def test_a_repeatedly_failing_board_is_marked_dead(cfg) -> None:
+    """Three consecutive errors and the board stops costing a request. PLAN.md 3.5."""
+    with session_scope(cfg.db_path) as session:
+        store.get_or_create_board(session, "ashby", "gone", "fixture", "global_remote")
+
+    for _ in range(sync.DEAD_AFTER_ERRORS - 1):
+        assert sync.record_fetch_failures(cfg, "ashby", ["gone"]) == 0
+    assert sync.record_fetch_failures(cfg, "ashby", ["gone"]) == 1
+
+    with session_scope(cfg.db_path) as session:
+        board = session.query(Board).filter_by(token="gone").one()
+        assert board.status == "dead"
+        assert board.next_fetch_at is None
+    assert sync.due_boards(cfg, "ashby", force=True, limit=10) == []
+
+
+def test_a_successful_fetch_resets_the_error_count(cfg) -> None:
+    place_raw(cfg, "ashby", "ramp", "R1", load_fixture("ashby_ramp.json"))
+    sync.record_fetch_failures(cfg, "ashby", ["ramp"])
+    sync.normalize_pass(cfg, "ashby", "R1")
+    with session_scope(cfg.db_path) as session:
+        assert session.query(Board).filter_by(token="ramp").one().consecutive_errors == 0
