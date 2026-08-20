@@ -185,3 +185,18 @@ def test_display_reports_no_restriction_as_any(cfg) -> None:
     assert rows["titles"] == "any"
     assert rows["min salary"] == "any"
     assert rows["show me"] == "15 per run"
+
+
+def test_loading_a_config_does_not_mutate_the_defaults() -> None:
+    """A shallow merge leaves untouched subsections aliased to DEFAULT_CONFIG, so
+    writing to one loaded config changes every later one in the process."""
+    from jobhunt import config as config_module
+
+    first = config_module._merge(config_module.DEFAULT_CONFIG, {})
+    first["sync"]["max_boards_per_run"] = 1
+    first["ranking"]["profile_summary"] = "leaked"
+
+    second = config_module._merge(config_module.DEFAULT_CONFIG, {})
+    assert second["sync"]["max_boards_per_run"] == 200
+    assert second["ranking"]["profile_summary"] is None
+    assert config_module.DEFAULT_CONFIG["sync"]["max_boards_per_run"] == 200

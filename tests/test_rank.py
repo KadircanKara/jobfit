@@ -556,3 +556,41 @@ def test_employment_type_filters_through_the_existing_hard_requires(cfg) -> None
     # Greenhouse and RemoteOK never state it, and those jobs must survive.
     unstated = make_job(cfg, external_id="x3", employment_type=None)
     assert verdict_for(cfg, unstated, filters).passed
+
+
+def test_regate_includes_jobs_that_already_have_a_verdict(cfg, tmp_path) -> None:
+    """Prompts and stated constraints change. A verdict produced under criteria
+    the user has since disagreed with must not be frozen in place."""
+    job_id = make_job(cfg, country="DE")
+    runner.run_deterministic(cfg)
+    verdicts = tmp_path / "v.json"
+    verdicts.write_text(json.dumps([{"job_id": job_id, "score": 0.5, "reasoning": "old"}]))
+    runner.ingest(cfg, verdicts)
+
+    assert runner.emit(cfg, tmp_path / "a.json") == {"batches": 0, "jobs": 0}
+    assert runner.emit(cfg, tmp_path / "b.json", regate=True) == {"batches": 1, "jobs": 1}
+
+
+def test_regate_puts_the_highest_previous_scores_first(cfg, tmp_path) -> None:
+    low = make_job(cfg, external_id="a", country="DE")
+    high = make_job(cfg, external_id="b", country="DE", title="Staff Backend Engineer")
+    runner.run_deterministic(cfg)
+    verdicts = tmp_path / "v.json"
+    verdicts.write_text(json.dumps([
+        {"job_id": low, "score": 0.3, "reasoning": "x"},
+        {"job_id": high, "score": 0.9, "reasoning": "x"},
+    ]))
+    runner.ingest(cfg, verdicts)
+
+    path = tmp_path / "b.json"
+    runner.emit(cfg, path, regate=True)
+    ids = [job["job_id"] for job in json.loads(path.read_text())["batches"][0]["jobs"]]
+    assert ids[0] == high
+
+
+def test_stated_constraints_reach_the_gate_prompt(cfg) -> None:
+    """A CV says what someone has done. It does not say what they will accept,
+    and the gate needs both."""
+    cfg.raw.setdefault("ranking", {})["constraints"] = ["Open to relocation."]
+    assert "Open to relocation." in profile.load(cfg)
+    assert "Stated constraints" in profile.load(cfg)

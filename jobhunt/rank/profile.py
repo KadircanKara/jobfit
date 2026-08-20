@@ -16,6 +16,11 @@ from jobhunt.config import Config
 
 MAX_CHARS = 2500
 
+# Facts about the candidate that master.tex does not carry, because they are
+# preferences and constraints rather than CV content. Appended to every gate
+# prompt, in every market, so a single edit here reaches all three.
+CONSTRAINTS_KEY = ("ranking", "constraints")
+
 _COMMENT = re.compile(r"(?<!\\)%.*$", re.MULTILINE)
 # \begin{center} must lose "center" too, or the environment names end up in the
 # summary as if they were content.
@@ -56,15 +61,25 @@ def load(config: Config) -> str:
         return str(override).strip()[:MAX_CHARS]
 
     path_value = config.get("tailoring", "master_tex")
-    if not path_value:
-        return FALLBACK
-    path = pathlib.Path(str(path_value)).expanduser()
-    if not path.exists():
-        return FALLBACK
-    try:
-        return summarize(path.read_text(encoding="utf-8", errors="replace"))
-    except OSError:
-        return FALLBACK
+    summary = FALLBACK
+    if path_value:
+        path = pathlib.Path(str(path_value)).expanduser()
+        if path.exists():
+            try:
+                summary = summarize(path.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                summary = FALLBACK
+    return _with_constraints(summary, config)
+
+
+def _with_constraints(summary: str, config: Config) -> str:
+    """Append the stated constraints. A CV says what someone has done; it does
+    not say what they will accept, and the gate needs both."""
+    lines = config.get(*CONSTRAINTS_KEY) or []
+    if not lines:
+        return summary
+    rendered = "\n".join(f"- {str(line).strip()}" for line in lines if str(line).strip())
+    return f"{summary}\n\nStated constraints and preferences:\n{rendered}"
 
 
 def summarize(latex: str, max_chars: int = MAX_CHARS) -> str:

@@ -5,6 +5,7 @@ Secrets live in .env and are never written here.
 """
 from __future__ import annotations
 
+import copy
 import dataclasses
 import os
 import pathlib
@@ -97,8 +98,14 @@ class Config:
 
 
 def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Deep merge override onto base. Missing keys in a user config fall back to defaults."""
-    out = dict(base)
+    """Deep merge override onto base. Missing keys in a user config fall back to defaults.
+
+    Deep copied, not aliased. A shallow copy leaves every subsection the user did
+    not override pointing at DEFAULT_CONFIG itself, so anything that writes to a
+    loaded config mutates the module-level defaults for the rest of the process.
+    `sync --fast` does exactly that when it overrides the per-run board cap.
+    """
+    out = copy.deepcopy(base)
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(out.get(key), dict):
             out[key] = _merge(out[key], value)

@@ -123,8 +123,14 @@ def emit(
     market: str | None = None,
     limit: int = DEFAULT_BATCH,
     max_per_company: int = MAX_PER_COMPANY,
+    regate: bool = False,
 ) -> dict[str, Any]:
-    """Write a self-contained batch for the gate: prompt, profile, and jobs."""
+    """Write a self-contained batch for the gate: prompt, profile, and jobs.
+
+    `regate` includes jobs that already carry a verdict. Prompts and stated
+    constraints change, and a verdict produced under criteria the user has since
+    disagreed with should not be frozen in place.
+    """
     filters = deterministic.load_filters(config)
     candidate = profile.load(config)
     batches: dict[str, list[dict[str, Any]]] = {}
@@ -136,13 +142,20 @@ def emit(
             .join(Company, Job.company_id == Company.id, isouter=True)
             .where(Job.is_active.is_(True))
             .where(Score.deterministic_pass.is_(True))
-            .where(Score.llm_score.is_(None))
         )
+        if not regate:
+            stmt = stmt.where(Score.llm_score.is_(None))
         if market:
             stmt = stmt.where(Job.market == market)
         # Over-fetch, then thin by company, so the cap does not just truncate
         # the newest company's postings off the end of the batch.
-        stmt = stmt.order_by(Job.first_seen_at.desc(), Job.id.desc()).limit(limit * 8)
+        # When re-gating, the highest previous scores go first: those are the
+        # verdicts most likely to change a decision.
+        if regate:
+            stmt = stmt.order_by(Score.llm_score.desc().nullslast(), Job.id.desc())
+        else:
+            stmt = stmt.order_by(Job.first_seen_at.desc(), Job.id.desc())
+        stmt = stmt.limit(limit * 8)
 
         per_company: dict[Any, int] = {}
         taken = 0

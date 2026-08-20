@@ -246,6 +246,9 @@ def rank(
     emit: str = typer.Option(None, "--emit", help="Write an LLM gate batch to this path."),
     ingest: str = typer.Option(None, "--ingest", help="Read gate verdicts back from this path."),
     batch: int = typer.Option(None, "--batch", help="Jobs per emitted batch."),
+    regate: bool = typer.Option(
+        False, "--regate", help="Include jobs already gated. Use after changing a prompt."
+    ),
 ) -> None:
     """Stage 1 deterministic filter, and the file protocol for the stage 2 gate."""
     cfg = _config()
@@ -263,7 +266,7 @@ def rank(
         target = pathlib.Path(
             emit or str(cfg.get("ranking", "batch_path", default=cfg.data_dir / "rank/batch.json"))
         ).expanduser()
-        written = rank_runner.emit(cfg, target, market=market, limit=size)
+        written = rank_runner.emit(cfg, target, market=market, limit=size, regate=regate)
         console.print(f"rank emit: batches={written['batches']} jobs={written['jobs']} -> {target}")
         if written["jobs"]:
             console.print("next: score them in Claude Code, then `jobhunt rank --ingest <verdicts>`")
