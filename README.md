@@ -2,9 +2,10 @@
 
 Local CLI job sourcing and application tracking. Full architecture in `PLAN.md`.
 
-Phases 1 to 4 are built: skeleton, schema, adapter protocol, dedupe, board
-discovery, six ATS adapters, and five aggregator feeds. Ranking (phase 5) and
-the tailoring handoff are not built yet.
+Phases 1 to 5 are built. The tool is usable: it discovers boards, syncs jobs,
+ranks them in two stages, and hands a complete job description to the
+tailoring-cv skill. LinkedIn (phase 6) and the Turkish boards (phase 7) are
+not built yet.
 
 **You never type a company name.** The board list is discovered, not curated.
 
@@ -39,10 +40,93 @@ jobhunt sync --source ashby --dry-run # fetch and normalize, write nothing
 jobhunt sync --source ashby --from-raw 20260820T000513   # re-normalize, no network
 jobhunt boards                        # counts by provider, status, tier
 jobhunt sources                       # per-source health
+jobhunt rank                          # stage 1, deterministic, free
+jobhunt rank --emit batch.json        # stage 2 batch for the gate
+jobhunt rank --ingest verdicts.json   # write the gate's scores back
+jobhunt review                        # interactive triage
+jobhunt review --format=digest        # cron-safe plain text
+jobhunt jd <job_id>                   # run the extraction ladder
+jobhunt jd <job_id> --paste           # paste the JD yourself
+jobhunt apply <job_id>                # record it and hand off to tailoring
+jobhunt skip <job_id> --reason "..."
+jobhunt status <job_id> screening
 jobhunt list --source greenhouse --limit 20
 jobhunt show <job_id>
 jobhunt stats
 ```
+
+## Daily use
+
+```bash
+jobhunt sync                              # cron: fetch what is due
+jobhunt rank                              # cron: stage 1, free
+jobhunt review --format=digest > today.txt
+
+jobhunt rank --emit ~/.jobhunt/data/rank/batch.json   # when you want the gate
+# score that file in Claude Code, save the verdicts
+jobhunt rank --ingest verdicts.json
+jobhunt review                            # triage what survived
+```
+
+`sync` and `rank` are safe in cron. The gate is not, and that is deliberate:
+there is no API key here, so stage 2 runs through Claude Code over a file. That
+also makes every gate run inspectable and replayable after the fact.
+
+## Ranking
+
+**Stage 1** is `filters.yaml`, free, and runs on everything. On a 16222 job
+corpus it took 20 seconds and left 689 survivors. The rules that do the work:
+
+| Rule | What it removes |
+|---|---|
+| `max_age_days` | 10257 postings older than 30 days |
+| `timezone.min_overlap_hours` | 7101 jobs whose working day does not overlap Istanbul |
+| `hard_requires.remote_type` | 2711 on-site roles |
+| `require_titles_regex` | doctors, translators, estimators, assistants |
+| `exclude_titles_regex` | 1601 sales and recruiting roles |
+| `seniority_min` | 1049 junior and intern postings |
+
+One rule governs all of them: **an unknown value is never a rejection.** A
+missing country, seniority, or date means "no objection", because aggregators
+drop fields that a company's own board states fully. A job wrongly kept costs
+one gate call. A job wrongly dropped is never seen.
+
+**Stage 2** is the LLM gate, over a file. `rank --emit` writes the survivors,
+the market's prompt, and a candidate summary derived from `master.tex` with
+contact details stripped. `rank --ingest` writes the verdicts back, rejecting
+any score outside 0..1 or any job id not in the corpus.
+
+## JD extraction
+
+The real output of this tool is clean, complete JD text, because that is what
+the tailoring skill takes as input. The ladder runs rungs 1 (JSON-LD), 2
+(readability), and 5 (manual paste); rungs 3 and 4 arrive with the Turkish
+sources in phase 7.
+
+Extraction is lazy on purpose: never at sync time, sometimes at rank time,
+always before apply. Detail HTML is cached under `data/raw/detail/` before
+anything parses it, so fixing an extractor costs no request.
+
+The quality gate sits **between** the rungs, and that is the whole point. A
+JSON-LD block containing a two-line SEO stub fails it, and the ladder falls
+through to readability rather than calling the stub a JD.
+
+## Applying
+
+`jobhunt apply` records that **you** applied. It never submits anything to an
+employer, and there is no code path that could.
+
+It refuses in three cases: a JD that is not full after the ladder runs, a
+quality score under 0.5, and a folder that already holds other files. A CV
+tailored against a truncated JD is worse than no CV, because it looks finished.
+
+The folder is `<Company> - <Position>` under `applications_root`, and the JD is
+`jd.txt`, because that is what the tailoring-cv skill's own scripts expect.
+PLAN.md section 10 proposed different names; the skill wins. `job.json` is
+written alongside as a sidecar the skill does not read yet.
+
+Acting on any row of a duplicate cluster covers the whole cluster, so a job
+applied to through Ashby does not resurface from Himalayas tomorrow.
 
 Every command prints one line or one table. Payloads go to disk, never to stdout.
 
@@ -176,7 +260,7 @@ earliest-seen member, so `review` can show a single card with an "also on" line.
 ## Development
 
 ```bash
-.venv/bin/pytest tests -q      # 216 tests, no network
+.venv/bin/pytest tests -q      # 312 tests, no network
 .venv/bin/ruff check jobhunt tests scripts
 ```
 
