@@ -413,3 +413,58 @@ def test_a_short_exclusion_does_not_match_inside_a_word(cfg) -> None:
 
     real = make_job(cfg, external_id="x9", description_text="Employment is W2 only. " * 20)
     assert not verdict_for(cfg, real, filters).passed
+
+
+def test_emit_does_not_let_one_company_fill_the_batch(cfg, tmp_path) -> None:
+    """Seen live: 11 of a 12 job batch were one translation agency's freelance
+    listings. That spends the gate on variations of a single decision."""
+    for index in range(8):
+        make_job(cfg, external_id=f"acme{index}", company_name="Acme", country="DE")
+    for index in range(3):
+        make_job(cfg, external_id=f"beta{index}", company_name="Beta", country="DE")
+    runner.run_deterministic(cfg)
+
+    path = tmp_path / "b.json"
+    runner.emit(cfg, path, limit=6, max_per_company=2)
+    jobs = json.loads(path.read_text())["batches"][0]["jobs"]
+    companies = [job["company"] for job in jobs]
+    assert companies.count("Acme") == 2
+    assert companies.count("Beta") == 2
+
+
+def test_a_title_matching_no_required_pattern_fails(cfg) -> None:
+    """Watched live: stage 1 was passing telehealth doctors and a construction
+    estimator to the gate. Each cost a gate call to reject."""
+    filters = {
+        "profiles": {"global_remote": {}},
+        "global": {"require_titles_regex": ["(?i)engineer|developer"]},
+    }
+    doctor = make_job(cfg, title="UK Doctor - Flexible Video Consultations")
+    assert not verdict_for(cfg, doctor, filters).passed
+
+    engineer = make_job(cfg, external_id="x2", title="Senior Backend Engineer")
+    assert verdict_for(cfg, engineer, filters).passed
+
+
+def test_a_profile_can_override_the_required_titles(cfg) -> None:
+    filters = {
+        "profiles": {"global_remote": {"require_titles_regex": ["(?i)designer"]}},
+        "global": {"require_titles_regex": ["(?i)engineer"]},
+    }
+    assert verdict_for(cfg, make_job(cfg, title="Product Designer"), filters).passed
+    assert not verdict_for(cfg, make_job(cfg, external_id="x2", title="Engineer"), filters).passed
+
+
+def test_the_packaged_filters_keep_engineering_titles_and_drop_the_rest(cfg) -> None:
+    """A guard on the shipped defaults, not on the mechanism."""
+    filters = deterministic.load_filters(cfg)
+    keep = ["Senior Backend Engineer", "Staff Software Engineer", "MLOps Engineer",
+            "Kıdemli Yazılım Geliştirici", "Head of Engineering", "Data Scientist"]
+    drop = ["UK Doctor - Telehealth", "Commercial Construction Estimator",
+            "Senior Somali Linguistic QA Tester", "Executive Assistant"]
+    for index, title in enumerate(keep):
+        job_id = make_job(cfg, external_id=f"k{index}", title=title, country="DE")
+        assert verdict_for(cfg, job_id, filters).passed, title
+    for index, title in enumerate(drop):
+        job_id = make_job(cfg, external_id=f"d{index}", title=title, country="DE")
+        assert not verdict_for(cfg, job_id, filters).passed, title

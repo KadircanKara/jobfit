@@ -43,6 +43,16 @@ profiles:
     min_score_to_surface: 0.6
 
 global:
+  # At least one of these must match the title. Without it, stage 1 hands the
+  # gate telehealth doctors and construction estimators, and each one costs a
+  # gate call to reject something a regex settles for free. Widen it freely:
+  # a job wrongly dropped here is never seen again.
+  require_titles_regex:
+    - "(?i)engineer|developer|programmer|architect|scientist"
+    - "(?i)\\b(sre|devops|mlops|backend|back-end|fullstack|full-stack|platform|infra)\\b"
+    - "(?i)yazılım|yazilim|geliştirici|gelistirici|mühendis|muhendis"
+    - "(?i)\\bcto\\b|head of engineering|engineering manager|tech lead"
+
   max_age_days: 30
   exclude_companies: []          # your own blocklist, by name
   exclude_titles_regex: ["(?i)sales|recruiter|account executive"]

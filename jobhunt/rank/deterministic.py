@@ -78,6 +78,7 @@ def evaluate(
     _check_age(job, global_rules, now, verdict)
     _check_excluded_company(company, global_rules, verdict)
     _check_excluded_titles(job, global_rules, verdict)
+    _check_required_titles(job, global_rules, profile, verdict)
     _check_hard_requires(job, profile, verdict)
     _check_hard_excludes(haystack, profile, verdict)
     _check_seniority(job, profile, verdict)
@@ -126,6 +127,29 @@ def _check_excluded_titles(job: Job, rules: dict[str, Any], verdict: Verdict) ->
             continue
         if compiled.search(job.title or ""):
             verdict.reasons.append(f"title matches {pattern}")
+
+
+def _check_required_titles(
+    job: Job, global_rules: dict[str, Any], profile: dict[str, Any], verdict: Verdict
+) -> None:
+    """At least one pattern must match the title.
+
+    Added after watching a real batch: stage 1 was handing the gate telehealth
+    doctors, Somali QA testers, and a construction estimator. Those cost a gate
+    call each to reject something a regex settles for free. The profile's list
+    overrides the global one so a market can widen or narrow it.
+    """
+    patterns = profile.get("require_titles_regex") or global_rules.get("require_titles_regex")
+    if not patterns:
+        return
+    title = job.title or ""
+    for pattern in patterns:
+        try:
+            if re.search(pattern, title):
+                return
+        except re.error:
+            continue
+    verdict.reasons.append("title matches no required pattern")
 
 
 def _check_hard_requires(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:

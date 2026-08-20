@@ -33,6 +33,10 @@ from jobhunt.rank import deterministic, profile
 # context without the caller having to think about it.
 DESCRIPTION_CHARS = 6000
 DEFAULT_BATCH = 20
+# One company posting 40 near-identical roles would otherwise fill an entire
+# batch, which wastes the gate on variations of one decision. Seen live: 11 of
+# a 12 job batch were one translation agency's freelance listings.
+MAX_PER_COMPANY = 3
 
 
 @dataclasses.dataclass
@@ -118,6 +122,7 @@ def emit(
     path: pathlib.Path,
     market: str | None = None,
     limit: int = DEFAULT_BATCH,
+    max_per_company: int = MAX_PER_COMPANY,
 ) -> dict[str, Any]:
     """Write a self-contained batch for the gate: prompt, profile, and jobs."""
     filters = deterministic.load_filters(config)
@@ -135,9 +140,20 @@ def emit(
         )
         if market:
             stmt = stmt.where(Job.market == market)
-        stmt = stmt.order_by(Job.first_seen_at.desc(), Job.id.desc()).limit(limit)
+        # Over-fetch, then thin by company, so the cap does not just truncate
+        # the newest company's postings off the end of the batch.
+        stmt = stmt.order_by(Job.first_seen_at.desc(), Job.id.desc()).limit(limit * 8)
 
+        per_company: dict[Any, int] = {}
+        taken = 0
         for job, company, score in session.execute(stmt).all():
+            if taken >= limit:
+                break
+            key = company.id if company else f"job:{job.id}"
+            if max_per_company and per_company.get(key, 0) >= max_per_company:
+                continue
+            per_company[key] = per_company.get(key, 0) + 1
+            taken += 1
             batches.setdefault(job.market, []).append(_gate_record(job, company, score))
 
     payload = {

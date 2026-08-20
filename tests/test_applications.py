@@ -174,6 +174,32 @@ def test_applying_twice_is_refused(cfg, tmp_path) -> None:
     assert "already recorded as applied" in str(exc.value)
 
 
+def test_applying_to_a_job_in_screening_does_not_reset_it(cfg, tmp_path) -> None:
+    """Found live: the guard only checked for "applied", so a job advanced to
+    screening could be applied to again, silently losing the interview state."""
+    apply_root(cfg, tmp_path)
+    job_id = make_job(cfg)
+    with session_scope(cfg.db_path) as session:
+        applications.apply(cfg, session, job_id)
+    with session_scope(cfg.db_path) as session:
+        applications.advance(session, job_id, "screening")
+
+    with session_scope(cfg.db_path) as session, pytest.raises(applications.ApplyBlocked) as exc:
+        applications.apply(cfg, session, job_id)
+    assert "already recorded as screening" in str(exc.value)
+    with session_scope(cfg.db_path) as session:
+        assert session.query(Application).one().status == "screening"
+
+
+def test_a_skipped_job_is_not_quietly_reopened_by_apply(cfg, tmp_path) -> None:
+    apply_root(cfg, tmp_path)
+    job_id = make_job(cfg)
+    with session_scope(cfg.db_path) as session:
+        applications.skip(session, job_id, "stack mismatch")
+    with session_scope(cfg.db_path) as session, pytest.raises(applications.ApplyBlocked):
+        applications.apply(cfg, session, job_id)
+
+
 def test_the_match_reasoning_travels_into_the_sidecar(cfg, tmp_path) -> None:
     root = apply_root(cfg, tmp_path)
     job_id = make_job(cfg)
@@ -291,3 +317,49 @@ def test_stale_applications_become_ghosted(cfg, tmp_path) -> None:
     with session_scope(cfg.db_path) as session:
         assert applications.ghost_stale(session, after_days=30) == 1
         assert session.query(Application).one().status == "ghosted"
+
+
+def test_a_job_the_source_handed_over_complete_needs_no_manual_paste(cfg, tmp_path) -> None:
+    """Found live: adapters set jd_completeness "full" and never set a quality
+    score, so every API-sourced job hit the quality guard with None."""
+    apply_root(cfg, tmp_path)
+    job_id = make_job(cfg)
+    with session_scope(cfg.db_path) as session:
+        session.get(Job, job_id).jd_quality_score = None
+
+    with session_scope(cfg.db_path) as session:
+        result = applications.apply(cfg, session, job_id)
+    assert result.jd_quality is not None and result.jd_quality >= 0.5
+
+    with session_scope(cfg.db_path) as session:
+        assert session.get(Job, job_id).jd_quality_score is not None
+
+
+def test_a_thin_unscored_jd_is_still_refused(cfg, tmp_path) -> None:
+    apply_root(cfg, tmp_path)
+    job_id = make_job(cfg, description_text="Two lines.", description_md="Two lines.")
+    with session_scope(cfg.db_path) as session:
+        session.get(Job, job_id).jd_quality_score = None
+    with session_scope(cfg.db_path) as session, pytest.raises(applications.ApplyBlocked) as exc:
+        applications.apply(cfg, session, job_id)
+    assert "quality" in str(exc.value)
+
+
+def test_response_rate_counts_only_progressed_applications(cfg, tmp_path) -> None:
+    """Skips are not applications, and an application with no reply is the
+    denominator, not an omission."""
+    apply_root(cfg, tmp_path)
+    first = make_job(cfg, external_id="a")
+    second = make_job(cfg, external_id="b", title="Staff Backend Engineer")
+    third = make_job(cfg, external_id="c", title="Platform Engineer")
+
+    with session_scope(cfg.db_path) as session:
+        applications.apply(cfg, session, first)
+        applications.apply(cfg, session, second)
+        applications.skip(session, third, "not interested")
+    with session_scope(cfg.db_path) as session:
+        applications.advance(session, first, "screening")
+
+    with session_scope(cfg.db_path) as session:
+        rows = {row.status: row for row in session.query(Application).all()}
+        assert set(rows) == {"screening", "applied", "skipped"}

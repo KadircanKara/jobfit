@@ -15,7 +15,7 @@ from jobhunt import __version__, store, sync
 from jobhunt import applications as applications_module
 from jobhunt import config as config_module
 from jobhunt import sources as source_registry
-from jobhunt.db.models import Board, Company, Job, Run, Score
+from jobhunt.db.models import Application, Board, Company, Job, Run, Score
 from jobhunt.db.session import session_scope, upgrade_to_head
 from jobhunt.discovery import commoncrawl as cc_module
 from jobhunt.discovery import feeds as feeds_module
@@ -471,6 +471,9 @@ def _apply_job(cfg, job_id: int, tailor: bool, dry_run: bool) -> None:
     except applications_module.ApplyBlocked as exc:
         console.print(f"apply: {exc}")
         return
+    except Exception as exc:  # noqa: BLE001 - a stack trace is for the log, not the terminal
+        console.print(f"apply: failed {type(exc).__name__}: {exc}")
+        return
     console.print(result.summary())
     if result.extraction is not None:
         console.print(f"  {result.extraction.summary()}")
@@ -572,6 +575,64 @@ def stats() -> None:
         f"companies={companies} boards={boards_count} full_jd={full_jd}"
     )
     console.print("markets: " + (" ".join(f"{m}={c}" for m, c in sorted(by_market)) or "-"))
+    _application_stats(cfg)
+
+
+def _application_stats(cfg) -> None:
+    """Applications by status and by week, plus the response rate.
+
+    The response rate is the only real feedback loop in a job search, so it is
+    printed even when it is zero.
+    """
+    with session_scope(cfg.db_path) as session:
+        by_status = dict(
+            session.execute(
+                select(Application.status, func.count(Application.id)).group_by(Application.status)
+            ).all()
+        )
+        rows = session.execute(
+            select(Job.market, Application.status)
+            .join(Job, Application.job_id == Job.id)
+        ).all()
+        recent = session.scalars(
+            select(Application)
+            .where(Application.applied_at.is_not(None))
+            .order_by(Application.applied_at.desc())
+            .limit(200)
+        ).all()
+
+    if not by_status:
+        console.print("applications: none recorded yet")
+        return
+
+    applied = sum(count for status, count in by_status.items() if status != "skipped")
+    responded = sum(
+        count for status, count in by_status.items()
+        if status in {"screening", "interview", "offer"}
+    )
+    rate = f"{responded / applied:.0%}" if applied else "-"
+    console.print(
+        "applications: "
+        + " ".join(f"{status}={count}" for status, count in sorted(by_status.items()))
+        + f" response_rate={rate}"
+    )
+
+    per_market: dict[str, int] = {}
+    for market, status in rows:
+        if status != "skipped":
+            per_market[market] = per_market.get(market, 0) + 1
+    if per_market:
+        console.print(
+            "applied by market: " + " ".join(f"{m}={c}" for m, c in sorted(per_market.items()))
+        )
+
+    weeks: dict[str, int] = {}
+    for row in recent:
+        key = row.applied_at.strftime("%G-W%V")
+        weeks[key] = weeks.get(key, 0) + 1
+    if weeks:
+        recent_weeks = sorted(weeks.items())[-6:]
+        console.print("applied by week: " + " ".join(f"{w}={c}" for w, c in recent_weeks))
 
 
 @app.command()

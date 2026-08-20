@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from jobhunt.config import Config
 from jobhunt.db.models import Application, Company, Job, Score, utcnow
-from jobhunt.extract import ladder
+from jobhunt.extract import ladder, quality
 from jobhunt.integrations import tailoring
 
 TRANSITIONS: dict[str, tuple[str, ...]] = {
@@ -37,6 +37,12 @@ TRANSITIONS: dict[str, tuple[str, ...]] = {
 }
 
 MIN_QUALITY = 0.5
+
+# Statuses that mean this job has already been dealt with. Re-applying to any of
+# them is refused. Checking only for "applied" was a bug: a job advanced to
+# "screening" could be applied to again, which silently reset it and lost the
+# interview state.
+ACTED_ON = frozenset({"applied", "screening", "interview", "offer", "rejected", "ghosted", "skipped"})
 
 
 class ApplyBlocked(Exception):
@@ -80,9 +86,11 @@ def apply(
         raise ApplyBlocked(f"no job {job_id}")
 
     existing = _application_for(session, job)
-    if existing is not None and existing.status == "applied":
+    if existing is not None and existing.status in ACTED_ON:
+        where = existing.folder_path or "no folder"
         raise ApplyBlocked(
-            f"job {job_id} is already recorded as applied ({existing.folder_path or 'no folder'})"
+            f"job {job_id} is already recorded as {existing.status} ({where}). "
+            f"use `jobhunt status {job_id} <next>` to move it along"
         )
 
     extraction: ladder.Result | None = None
@@ -94,7 +102,13 @@ def apply(
             f"job {job_id} has no full JD (completeness={job.jd_completeness}). "
             f"run `jobhunt jd {job_id} --paste` and try again"
         )
-    if (job.jd_quality_score or 0.0) < MIN_QUALITY:
+    # An adapter marks a listing "full" without ever scoring it, so most jobs in
+    # the corpus reach here with no quality score at all. Score it now rather
+    # than treating the missing value as a failure: a job the source handed over
+    # complete must not need a manual paste to get through.
+    if job.jd_quality_score is None:
+        job.jd_quality_score = quality.assess(job.description_text or job.description_md).score
+    if job.jd_quality_score < MIN_QUALITY:
         raise ApplyBlocked(
             f"job {job_id} JD quality is {job.jd_quality_score:.2f}, below {MIN_QUALITY}. "
             f"run `jobhunt jd {job_id} --paste` and try again"
