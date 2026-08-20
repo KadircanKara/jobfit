@@ -21,3 +21,13 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
+
+# Claude planning artefacts, never tracked
+docs/superpowers/
+docs/plans/
+docs/specs/
+
+# frontend
+ui/node_modules/
+# built bundle, produced by `npm --prefix ui run build`
+jobhunt/web/static/
