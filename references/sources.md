@@ -238,3 +238,64 @@ marking the strategy dead.
 RemoteOK, Arbeitnow, Jobicy, and WWR all check out; only Workable does not.
 
 Re-run any time with `python3 scripts/probe_sources.py [--only NAME]`.
+
+---
+
+## Discovery yield measurement (2026-08-20)
+
+PLAN.md 3.5 claims "a single Himalayas run of 200 jobs typically yields several
+dozen distinct tokens" and calls `applicationLink` the Strategy A goldmine.
+Measured with `scripts/probe_discovery_yield.py`, that is false.
+
+| Source | records scanned | distinct ATS tokens | hints |
+|---|---|---|---|
+| himalayas | 20 | 0 | 0 |
+| remotive | 17 | 0 | 0 |
+| remoteok | 101 | 0 | 0 |
+| arbeitnow | 175 | 0 | 0 |
+| jobicy | 50 | 0 | 0 |
+| weworkremotely | 100 | 1 | 0 |
+
+463 records, one token. Every aggregator routes its apply link through its own
+domain: Himalayas `applicationLink` is
+`https://himalayas.app/companies/{slug}/jobs/{slug}`, not the employer ATS.
+
+Following that link does not help either. `GET` on a Himalayas job page returns
+**403** to a non-browser User-Agent. Defeating that would mean spoofing a browser,
+which PLAN.md section 3 forbids, so the door is closed rather than expensive.
+
+Also note: Himalayas `limit=100` returns 20 records and Remotive `limit=100`
+returns 17. Neither honours the parameter. Pagination must be driven by `offset`
+and verified against the returned length, never assumed.
+
+### What actually seeds the flywheel: yc-oss plus domain guessing
+
+Strategies B and E together, measured on a random sample of 30 of the 1488
+companies in `yc-oss` `hiring.json`, guessing `token = website domain minus TLD`
+and trying greenhouse, then ashby, then lever:
+
+**10 of 30 resolved to a live board with open jobs.** A 33 percent hit rate for
+three requests per company, from a public list that requires no company name to
+be typed.
+
+```
+Inkeep              ashby/inkeep              3 jobs
+Cinder              ashby/cinder              7
+Windmill            ashby/windmill            3
+Canary Technologies lever/canarytechnologies  1
+SpruceID            ashby/spruceid            5
+Opencall            ashby/opencall            4
+Coperniq            ashby/coperniq            1
+Human Interest      greenhouse/humaninterest 56
+Conduit             ashby/conduit             2
+Langdock            ashby/langdock           20
+```
+
+Ashby dominates the YC cohort, which matches the phase-2 finding that Ashby
+boards are large and complete.
+
+**Consequence for the build order.** Strategy A stays: it is correct, it is
+cheap, and it will pay off in phase 6 when LinkedIn and employer career pages
+start supplying raw ATS URLs. But it cannot cold-start the corpus, because
+nothing in tier 2 leaks a token. The cold start is Strategy B plus E, which
+PLAN.md scheduled for phase 4. That ordering is inverted here.
