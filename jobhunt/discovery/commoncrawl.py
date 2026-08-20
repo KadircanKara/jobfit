@@ -51,7 +51,7 @@ PROVIDER_PATTERNS: dict[str, str] = {
     "smartrecruiters": "careers.smartrecruiters.com/*",
 }
 
-DEFAULT_PROVIDERS = ("greenhouse", "ashby", "recruitee", "personio")
+DEFAULT_PROVIDERS = ("greenhouse", "ashby", "recruitee", "personio", "workable")
 MAX_PAGES = 5
 PAGE_DELAY_SECONDS = 2.0
 RETRIES = 3

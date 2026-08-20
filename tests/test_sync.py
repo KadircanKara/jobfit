@@ -341,3 +341,13 @@ def test_the_candidate_slice_is_capped_by_the_overall_run_cap(cfg) -> None:
                                    status="candidate", next_fetch_at=None))
 
     assert len(sync.due_boards(cfg, "ashby", force=False, limit=4, candidate_limit=50)) == 4
+
+
+def test_a_second_writer_waits_instead_of_failing(cfg) -> None:
+    """WAL allows one writer. A cron sync overlapping a manual one must queue,
+    not blow up with "database is locked"."""
+    from jobhunt.db.session import get_engine
+
+    with get_engine(cfg.db_path).connect() as connection:
+        timeout = connection.exec_driver_sql("PRAGMA busy_timeout").scalar()
+    assert timeout >= 30000

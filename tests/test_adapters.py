@@ -15,6 +15,7 @@ from jobhunt.sources.lever import LeverAdapter
 from jobhunt.sources.personio import PersonioAdapter
 from jobhunt.sources.recruitee import RecruiteeAdapter
 from jobhunt.sources.smartrecruiters import SmartRecruitersAdapter
+from jobhunt.sources.workable import WorkableAdapter
 
 
 @pytest.fixture
@@ -361,3 +362,41 @@ def test_personio_malformed_feed_yields_nothing_instead_of_raising() -> None:
     assert list(PersonioAdapter().normalize("<not xml", BoardRef("personio", "x"))) == []
     assert list(PersonioAdapter().normalize("", BoardRef("personio", "x"))) == []
     assert list(PersonioAdapter().normalize(None, BoardRef("personio", "x"))) == []
+
+
+# --- workable -----------------------------------------------------------------
+
+
+def workable_postings() -> list:
+    raw = load_fixture("workable_1kosmos.json")
+    return list(WorkableAdapter().normalize(raw, BoardRef("workable", "1kosmos")))
+
+
+def test_workable_normalizes_the_widget_payload() -> None:
+    postings = workable_postings()
+    assert len(postings) == 4
+    assert all(p.jd_completeness == "full" for p in postings)
+
+
+def test_workable_company_name_comes_from_the_account_not_the_token() -> None:
+    assert {p.company_name for p in workable_postings()} == {"1Kosmos"}
+
+
+def test_workable_prefers_the_iso_code_in_locations() -> None:
+    """The top-level `country` is a display name; locations[] has the real code."""
+    posting = workable_postings()[0]
+    assert posting.country == "US"
+    assert posting.city == "Iselin"
+
+
+def test_workable_uses_the_shortcode_as_the_external_id() -> None:
+    posting = workable_postings()[0]
+    assert posting.external_id == "DDE33AFDAC"
+    assert posting.apply_url.endswith("/apply")
+
+
+def test_workable_empty_account_yields_nothing() -> None:
+    """Every guessed token in phase 3 answered 200 with this exact shape."""
+    adapter = WorkableAdapter()
+    assert list(adapter.normalize({"name": "x", "jobs": []}, BoardRef("workable", "x"))) == []
+    assert list(adapter.normalize(None, BoardRef("workable", "x"))) == []

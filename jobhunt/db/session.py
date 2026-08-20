@@ -24,6 +24,10 @@ def get_engine(db_path: pathlib.Path | str) -> Engine:
             cur = dbapi_conn.cursor()
             cur.execute("PRAGMA foreign_keys=ON")
             cur.execute("PRAGMA journal_mode=WAL")
+            # WAL allows one writer at a time. Without a busy timeout a second
+            # writer fails instantly with "database is locked", which is exactly
+            # what a cron sync overlapping a manual one produces. Wait instead.
+            cur.execute("PRAGMA busy_timeout=30000")
             cur.close()
 
         _engines[url] = engine
