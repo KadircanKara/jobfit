@@ -13,6 +13,7 @@ from jobhunt import config as config_module
 from jobhunt import sources as source_registry
 from jobhunt.db.models import Board, Company, Job, Run
 from jobhunt.db.session import session_scope, upgrade_to_head
+from jobhunt.discovery import harvest as harvest_module
 
 app = typer.Typer(add_completion=False, help="Local job sourcing and application tracking.")
 console = Console()
@@ -80,13 +81,51 @@ def sync_cmd(
     raise typer.Exit(1 if worst == "failed" else 0)
 
 
+STRATEGIES = ("harvest",)
+
+
+@app.command()
+def discover(
+    strategy: str = typer.Option("harvest", "--strategy", help=f"One of: {', '.join(STRATEGIES)}."),
+    full: bool = typer.Option(False, "--full", help="Rescan every job, ignoring the watermark."),
+    limit: int = typer.Option(None, "--limit", help="Stop after this many jobs."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be written."),
+    no_guess: bool = typer.Option(
+        False, "--no-guess", help="Skip token guesses from employer-hosted URLs."
+    ),
+) -> None:
+    """Run a discovery strategy. Writes boards, never companies typed by hand."""
+    cfg = _config()
+    if strategy not in STRATEGIES:
+        console.print(f"discover: unknown strategy {strategy!r}. known: {', '.join(STRATEGIES)}")
+        raise typer.Exit(2)
+
+    result = harvest_module.harvest(
+        cfg, full=full, limit=limit, dry_run=dry_run, guess_from_hints=not no_guess
+    )
+    console.print(result.summary())
+    if not dry_run:
+        console.print(f"report: {harvest_module.write_report(cfg, result)}")
+
+
 @app.command()
 def boards(
     provider: str = typer.Option(None, "--provider"),
     status: str = typer.Option(None, "--status"),
+    validate: bool = typer.Option(
+        False, "--validate", help="Fetch candidate boards once to prove them out."
+    ),
+    show_list: bool = typer.Option(False, "--list", help="List rows instead of counts."),
+    limit: int = typer.Option(50, "--limit"),
 ) -> None:
     """Counts by provider, status, and tier."""
     cfg = _config()
+    if validate:
+        _validate_candidates(cfg, provider)
+        return
+    if show_list:
+        _list_boards(cfg, provider, status, limit)
+        return
     with session_scope(cfg.db_path) as session:
         stmt = select(Board.provider, Board.status, Board.tier, func.count(Board.id))
         if provider:
@@ -230,6 +269,43 @@ def version() -> None:
     """Print the version and the resolved paths."""
     cfg = _config()
     console.print(f"jobhunt {__version__} config={cfg.path} db={cfg.db_path}")
+
+
+def _validate_candidates(cfg, provider: str | None) -> None:
+    """One fetch per candidate. Non-empty becomes validated, empty becomes cold,
+    an error kills the guess outright. PLAN.md 3.5 validation loop.
+    """
+    targets = [provider] if provider else sorted(source_registry.REGISTRY)
+    for name in targets:
+        if name not in source_registry.REGISTRY:
+            console.print(f"boards: no adapter for {name!r}, nothing to validate")
+            continue
+        result = sync.sync_source(cfg, name, only_status="candidate")
+        console.print(result.summary())
+
+
+def _list_boards(cfg, provider: str | None, status: str | None, limit: int) -> None:
+    with session_scope(cfg.db_path) as session:
+        stmt = select(Board, Company).join(Company, Board.company_id == Company.id, isouter=True)
+        if provider:
+            stmt = stmt.where(Board.provider == provider)
+        if status:
+            stmt = stmt.where(Board.status == status)
+        rows = session.execute(stmt.order_by(Board.id).limit(limit)).all()
+
+        table = Table("id", "provider", "token", "company", "via", "status", "tier", "jobs")
+        for board, company in rows:
+            table.add_row(
+                str(board.id),
+                board.provider,
+                board.token[:40],
+                (company.name if company else "-")[:24],
+                board.discovered_via,
+                board.status,
+                board.tier,
+                str(board.last_job_count if board.last_job_count is not None else "-"),
+            )
+    console.print(table)
 
 
 if __name__ == "__main__":

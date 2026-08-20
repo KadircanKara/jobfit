@@ -11,7 +11,7 @@ import dataclasses
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from jobhunt.db.models import Board, Company, Job, utcnow
+from jobhunt.db.models import Board, Company, Job, Meta, utcnow
 from jobhunt.pipeline import normalize as norm
 from jobhunt.pipeline import simhash
 from jobhunt.sources.base import JobPosting
@@ -169,3 +169,16 @@ def deactivate_missing(
             job.is_active = False
             deactivated += 1
     return deactivated
+
+
+def meta_get(session: Session, key: str, default: str | None = None) -> str | None:
+    row = session.get(Meta, key)
+    return row.value if row else default
+
+
+def meta_set(session: Session, key: str, value: str) -> None:
+    row = session.get(Meta, key)
+    if row is None:
+        session.add(Meta(key=key, value=value))
+    else:
+        row.value = value

@@ -200,7 +200,10 @@ def test_per_run_board_cap_is_enforced(cfg) -> None:
 def test_a_repeatedly_failing_board_is_marked_dead(cfg) -> None:
     """Three consecutive errors and the board stops costing a request. PLAN.md 3.5."""
     with session_scope(cfg.db_path) as session:
-        store.get_or_create_board(session, "ashby", "gone", "fixture", "global_remote")
+        board = store.get_or_create_board(session, "ashby", "gone", "fixture", "global_remote")
+        # A board that has produced jobs before earns the three strikes. Candidates
+        # do not, and that case has its own test below.
+        board.status = "validated"
 
     for _ in range(sync.DEAD_AFTER_ERRORS - 1):
         assert sync.record_fetch_failures(cfg, "ashby", ["gone"]) == 0
@@ -219,3 +222,19 @@ def test_a_successful_fetch_resets_the_error_count(cfg) -> None:
     sync.normalize_pass(cfg, "ashby", "R1")
     with session_scope(cfg.db_path) as session:
         assert session.query(Board).filter_by(token="ramp").one().consecutive_errors == 0
+
+
+def test_a_candidate_board_dies_on_its_first_failure(cfg) -> None:
+    """A wrong guess costs exactly one request, not three. PLAN.md 3.5.
+
+    Strategies C and D will produce tens of thousands of unvalidated tokens, so
+    the cost of being wrong has to stay at one.
+    """
+    with session_scope(cfg.db_path) as session:
+        store.get_or_create_board(session, "ashby", "notacompany", "domain_guess", "global_remote")
+
+    assert sync.record_fetch_failures(cfg, "ashby", ["notacompany"]) == 1
+    with session_scope(cfg.db_path) as session:
+        board = session.query(Board).filter_by(token="notacompany").one()
+        assert board.status == "dead"
+    assert sync.due_boards(cfg, "ashby", force=True, limit=10) == []

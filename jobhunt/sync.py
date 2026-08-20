@@ -85,11 +85,24 @@ def seed_fixture_boards(config: Config) -> int:
     return added
 
 
-def due_boards(config: Config, source: str, force: bool, limit: int) -> list[BoardRef]:
-    """Boards this source owes a fetch, per next_fetch_at. Never the whole table."""
+def due_boards(
+    config: Config,
+    source: str,
+    force: bool,
+    limit: int,
+    only_status: str | None = None,
+) -> list[BoardRef]:
+    """Boards this source owes a fetch, per next_fetch_at. Never the whole table.
+
+    Newly discovered boards carry next_fetch_at NULL and sort first, so the
+    validation loop of PLAN.md 3.5 is not a separate mechanism: a candidate is
+    simply the most overdue board there is.
+    """
     now = utcnow()
     with session_scope(config.db_path) as session:
         stmt = select(Board).where(Board.provider == source, Board.status != "dead")
+        if only_status:
+            stmt = stmt.where(Board.status == only_status)
         if not force:
             stmt = stmt.where((Board.next_fetch_at.is_(None)) | (Board.next_fetch_at <= now))
         stmt = stmt.order_by(Board.next_fetch_at.is_(None).desc(), Board.id).limit(limit)
@@ -168,7 +181,11 @@ def record_fetch_failures(config: Config, source: str, tokens: list[str]) -> int
         for board in boards:
             board.consecutive_errors += 1
             board.last_fetched_at = utcnow()
-            if board.consecutive_errors >= DEAD_AFTER_ERRORS:
+            # An unvalidated candidate that fails its first fetch is a bad guess,
+            # not a flaky board. Giving it three strikes would mean every wrong
+            # domain guess costs three requests instead of one, and Strategies C
+            # and D are about to produce tens of thousands of guesses.
+            if board.status == "candidate" or board.consecutive_errors >= DEAD_AFTER_ERRORS:
                 board.status = "dead"
                 board.next_fetch_at = None
                 newly_dead += 1
@@ -258,6 +275,7 @@ def sync_source(
     force: bool = False,
     dry_run: bool = False,
     from_raw: str | None = None,
+    only_status: str | None = None,
 ) -> SourceResult:
     """Run one source end to end. Never raises: failures come back on the result."""
     run_key = from_raw or new_run_key()
@@ -267,7 +285,7 @@ def sync_source(
     try:
         if from_raw is None:
             limit = int(config.get("sync", "max_boards_per_run", default=200))
-            refs = due_boards(config, source, force, limit)
+            refs = due_boards(config, source, force, limit, only_status=only_status)
             result.boards = len(refs)
             if not refs:
                 result.status = "ok"

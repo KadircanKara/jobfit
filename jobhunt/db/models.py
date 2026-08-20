@@ -198,3 +198,18 @@ class Run(Base):
     errors: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(10), default="ok")  # ok | degraded | failed
     error_detail: Mapped[str | None] = mapped_column(Text)
+
+
+class Meta(Base):
+    """Tiny key-value store for pipeline watermarks and cache timestamps.
+
+    Harvesting, the Common Crawl backfill, and the crt.sh cache all need to
+    remember where they stopped. A table beats a stray JSON file next to the
+    database, because it moves with the database and rolls back with it.
+    """
+
+    __tablename__ = "meta"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
