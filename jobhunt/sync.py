@@ -235,11 +235,16 @@ def normalize_pass(
         return result
 
     touched_ids: list[int] = []
-    with session_scope(config.db_path) as session:
-        for envelope in envelopes:
-            ref = BoardRef(envelope["provider"], envelope["token"], envelope["market"])
+    # One transaction per board, not one for the whole run. SQLite in WAL mode
+    # allows a single writer, and a run that holds the lock for the several
+    # minutes a 200-board pass takes makes every other command fail with
+    # "database is locked". Committing per board also means a crash halfway
+    # through keeps the boards already done.
+    for envelope in envelopes:
+        ref = BoardRef(envelope["provider"], envelope["token"], envelope["market"])
+        with session_scope(config.db_path) as session:
             board = store.get_or_create_board(
-                session, ref.provider, ref.token, "fixture", ref.market
+                session, ref.provider, ref.token, "sync", ref.market
             )
             seen: set[str] = set()
             count = 0
@@ -252,6 +257,8 @@ def normalize_pass(
             result.normalized += count
             result.deactivated += store.deactivate_missing(session, board, seen)
             _record_board_outcome(board, count)
+
+    with session_scope(config.db_path) as session:
         result.clustered = apply_clustering(session, touched_ids)
     return result
 
