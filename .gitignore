@@ -1,0 +1,23 @@
+# Claude Code local tooling, never tracked
+CLAUDE.md
+.claude/
+.mcp.json
+
+# secrets and local state
+.env
+*.db
+*.db-journal
+*.db-wal
+
+# fetched payloads and probe artifacts
+data/
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
