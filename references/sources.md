@@ -326,3 +326,62 @@ PLAN.md schedules Himalayas as the phase-3 seed. It cannot serve that role: it
 leaks no tokens (see the yield table above) and its job pages 403 non-browser
 clients. It remains a good breadth source for jobs and is deferred to phase 4,
 where seed expansion is the actual goal.
+
+---
+
+## Strategy C and D measured (2026-08-20)
+
+### Common Crawl CDX: works, and it is the backfill
+
+Latest index at time of writing: `CC-MAIN-2026-30`, from `collinfo.json` (126
+indices available). One request per provider, `page=0`, `fl=url`:
+
+| Pattern | records | distinct tokens |
+|---|---|---|
+| `boards.greenhouse.io/*` | 12075 | 1790 |
+| `jobs.ashbyhq.com/*` | 13865 | 1833 |
+| `*.recruitee.com` | 7128 | 707 |
+| `*.jobs.personio.de` | 5429 | 668 |
+| `jobs.lever.co/*` | 78 | 0 |
+| `apply.workable.com/*` | 502 | - |
+
+Subdomain wildcards (`*.recruitee.com`) work natively, which matters because that
+is the only shape that finds subdomain-keyed providers.
+
+`jobs.lever.co` is barely represented in this index: 78 records, the only
+"token" being `robots.txt`. Lever tokens have to come from elsewhere. Workable
+502s, like everything else on that server under load, and needs a retry.
+
+The index returns placeholder and file tokens (`YOUR_COMPANY`, `robots.txt`,
+16-plus-character hex ids). Each one would cost a validating fetch, so the
+pattern bank rejects them.
+
+**Live backfill, 4 providers, 4 requests, 23 seconds: 32491 records, 4130 tokens,
+4106 new candidate boards.** Validating the first 200 recruitee candidates
+resolved 182 live boards carrying 3056 jobs, a 91 percent hit rate. Common Crawl
+tokens are far better than domain guesses because they were real URLs.
+
+### Certificate transparency: does not work, do not build it
+
+PLAN.md 3.5 Strategy D says the customer list for subdomain-keyed providers "is
+sitting in public CT logs". It is not.
+
+```
+crt.sh?q=%.recruitee.com    -> 502, 502, then 200: 1625 records, 59 distinct labels
+crt.sh?q=%.teamtailor.com   -> 200: 80 names
+crt.sh?q=%.jobs.personio.de -> 502 on every attempt
+```
+
+Every label returned is the provider's own infrastructure: `api`, `app`,
+`argocd`, `atlantis`, `auth`, `analytics-staging`, `data-warehouse-docs`.
+`channable.recruitee.com`, a board confirmed live in phase 3, does not appear.
+
+The reason is simple: customer boards are served under a **wildcard certificate**
+(`*.recruitee.com`, `*.teamtailor.com`), which is present in the results. A
+wildcard names no customers, so CT logs cannot enumerate them.
+
+crt.sh is also 502-heavy: 5 of 8 requests failed across this measurement.
+
+**Strategy D is not built.** Its stated purpose, subdomain-keyed provider
+discovery, is served by Common Crawl `*.recruitee.com` and `*.jobs.personio.de`
+patterns, which returned 707 and 668 real tokens in one request each.

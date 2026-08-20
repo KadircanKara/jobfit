@@ -39,6 +39,13 @@ RESERVED_SEGMENTS = frozenset(
 
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
+# Common Crawl surfaces these alongside real boards. They are files and template
+# placeholders, not customers, and each one would otherwise cost a fetch.
+_JUNK_SUFFIXES = (".txt", ".xml", ".ico", ".json", ".php", ".html", ".js", ".css", ".png", ".svg")
+_JUNK_TOKENS = frozenset({"your_company", "yourcompany", "company_name", "companyname",
+                          "example", "test", "demo", "null", "undefined", "token"})
+_HEXISH = re.compile(r"^[0-9a-f]{16,}$")
+
 
 @dataclasses.dataclass(frozen=True, order=True)
 class BoardHit:
@@ -64,6 +71,9 @@ def _clean_token(token: str) -> str | None:
         return None
     # A bare number is a job id that leaked out of a malformed URL, never a token.
     if token.isdigit():
+        return None
+    lowered = token.lower()
+    if lowered in _JUNK_TOKENS or lowered.endswith(_JUNK_SUFFIXES) or _HEXISH.match(lowered):
         return None
     return token
 

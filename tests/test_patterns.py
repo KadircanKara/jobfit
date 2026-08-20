@@ -138,3 +138,18 @@ def test_scan_many_unions() -> None:
         ["https://jobs.lever.co/plaid/1", None, "https://jobs.lever.co/brex/2"]
     )
     assert found == {BoardHit("lever", "plaid"), BoardHit("lever", "brex")}
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://jobs.lever.co/robots.txt",
+        "https://boards.greenhouse.io/sitemap.xml",
+        "https://boards.greenhouse.io/YOUR_COMPANY/jobs/1",
+        "https://boards.greenhouse.io/a3c41b8b71eff8c4/jobs/1",
+    ],
+)
+def test_junk_tokens_from_common_crawl_are_rejected(url: str) -> None:
+    """Every junk token costs a validating fetch, and Common Crawl produces them
+    by the hundred."""
+    assert hits(url) == set()

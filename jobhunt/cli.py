@@ -13,6 +13,7 @@ from jobhunt import config as config_module
 from jobhunt import sources as source_registry
 from jobhunt.db.models import Board, Company, Job, Run
 from jobhunt.db.session import session_scope, upgrade_to_head
+from jobhunt.discovery import commoncrawl as cc_module
 from jobhunt.discovery import harvest as harvest_module
 from jobhunt.discovery import patterns
 from jobhunt.discovery import yc as yc_module
@@ -80,7 +81,7 @@ def sync_cmd(
     raise typer.Exit(1 if worst == "failed" else 0)
 
 
-STRATEGIES = ("harvest", "yc")
+STRATEGIES = ("harvest", "yc", "commoncrawl")
 
 
 @app.command()
@@ -92,6 +93,13 @@ def discover(
     dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be written."),
     from_raw: bool = typer.Option(False, "--from-raw", help="Re-parse the stored list, no fetch."),
     market: str = typer.Option(None, "--market", help="Override the market these boards belong to."),
+    provider: str = typer.Option(
+        None, "--provider", help="Restrict commoncrawl to one provider. Repeat with commas."
+    ),
+    max_pages: int = typer.Option(
+        cc_module.MAX_PAGES, "--max-pages", help="CDX pages per provider. Each is ~1 MB."
+    ),
+    run_key: str = typer.Option(None, "--run-key", help="Re-parse a stored commoncrawl run."),
     no_guess: bool = typer.Option(
         False, "--no-guess", help="Skip token guesses from employer-hosted URLs."
     ),
@@ -104,6 +112,20 @@ def discover(
     if strategy not in STRATEGIES:
         console.print(f"discover: unknown strategy {strategy!r}. known: {', '.join(STRATEGIES)}")
         raise typer.Exit(2)
+
+    if strategy == "commoncrawl":
+        providers = tuple(p.strip() for p in provider.split(",")) if provider else cc_module.DEFAULT_PROVIDERS
+        try:
+            backfill = cc_module.run(
+                cfg, providers=providers, market=market or "global_remote",
+                max_pages=max_pages, dry_run=dry_run, from_raw=run_key,
+            )
+        except Exception as exc:  # noqa: BLE001 - a strategy is isolated like a source
+            console.print(f"commoncrawl: failed {type(exc).__name__}: {exc}")
+            raise typer.Exit(1) from None
+        console.print(backfill.summary())
+        console.print("next: `jobhunt sync` validates the candidates, one request each.")
+        return
 
     if strategy == "yc":
         try:
