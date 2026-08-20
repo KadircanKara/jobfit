@@ -2,9 +2,11 @@
 
 Local CLI job sourcing and application tracking. Full architecture in `PLAN.md`.
 
-Phases 1 and 2 are built: skeleton, schema, adapter protocol, dedupe, and the
-Greenhouse and Ashby adapters. Discovery (phase 3), ranking (phase 5), and the
-tailoring handoff are not built yet.
+Phases 1 to 3 are built: skeleton, schema, adapter protocol, dedupe, board
+discovery, and six ATS adapters. Ranking (phase 5) and the tailoring handoff
+are not built yet.
+
+**You never type a company name.** The board list is discovered, not curated.
 
 ## Install
 
@@ -14,15 +16,20 @@ python3 -m venv .venv
 .venv/bin/jobhunt init
 ```
 
-`init` writes `~/.jobhunt/config.yaml`, runs the alembic migrations against
-`~/.jobhunt/jobhunt.db`, and seeds the three throwaway fixture boards.
+`init` writes `~/.jobhunt/config.yaml` and runs the alembic migrations against
+`~/.jobhunt/jobhunt.db`. The boards table starts empty.
 
 Point everything at a scratch directory with `JOBHUNT_HOME=/tmp/whatever`.
 
 ## Commands
 
 ```bash
-jobhunt init                          # config, database, fixture boards
+jobhunt init                          # config and database
+jobhunt discover --strategy yc        # seed boards from a public company list
+jobhunt discover --strategy harvest   # mine ATS tokens out of ingested URLs
+jobhunt discover --domain acme.com    # probe one company I actually care about
+jobhunt boards --list --status validated
+jobhunt boards --validate             # one fetch per candidate
 jobhunt sync                          # every source
 jobhunt sync --source ashby           # one source
 jobhunt sync --source ashby --force   # ignore next_fetch_at
@@ -55,6 +62,56 @@ A board that errors does not fail the run: the source is marked `degraded`, the
 error is recorded, and the other boards still land. Three consecutive errors and
 the board is marked `dead` and never fetched again.
 
+## Discovery: where boards come from
+
+`PLAN.md` 3.5 lists five strategies. Two are built, and the measured yield
+decided the order.
+
+**Strategy B plus E, the cold start.** `discover --strategy yc` pulls the
+`yc-oss` hiring list (1488 companies), derives a token from each company website
+(`inkeep.com` -> `inkeep`), and writes one candidate board per provider. It never
+fetches a board itself. The ordinary sync validation loop proves each candidate
+with a single request: jobs found means `validated`, a valid empty response means
+`empty`, an error means `dead` on the spot.
+
+From an empty database, 40 companies produced 120 candidates, of which 21
+validated into live boards carrying 1267 jobs. Nothing was named by hand.
+
+**Strategy A, apply-URL harvesting.** `discover --strategy harvest` runs the
+regex bank in `jobhunt/discovery/patterns.py` over every `apply_url`,
+`source_url`, and description body in the corpus. It is incremental: a watermark
+in the `meta` table means only new rows are scanned, and `--full` rescans after a
+pattern change.
+
+Only a structured field can attribute a board to a job's company. A link inside a
+description body is as likely to be a "see also" for a different company, and a
+wrong `company_id` is worse than none.
+
+**A measured caveat.** `PLAN.md` expects Strategy A to cold-start the corpus off
+Himalayas. It cannot. Measured across six aggregators, 463 job records produced
+one ATS token, because every aggregator wraps its apply link in its own domain.
+The write-up is in `references/sources.md`. Strategy A still earns its place: ATS
+postings do leak their own tokens, and phase 6 (LinkedIn via Unipile) supplies
+raw employer URLs, which is where it pays off.
+
+**Board scheduling.** Discovery can produce tens of thousands of tokens, so
+nothing iterates the boards table. `sync` selects boards where `next_fetch_at` is
+due, newest candidates first, with a hard per-run cap. A board with jobs is
+re-fetched weekly, an empty one monthly, and a dead one never.
+
+## Sources
+
+| Provider | Endpoint style | JD in the list response |
+|---|---|---|
+| greenhouse | JSON, token in path | yes, HTML-escaped on the wire |
+| ashby | JSON, token in path | yes |
+| lever | bare JSON array | yes, split across four fields |
+| recruitee | JSON, token in subdomain | yes, split across two fields |
+| smartrecruiters | JSON, paged | **no**, detail fetched lazily in phase 5 |
+| personio | XML | yes |
+
+Workable and Workday are deferred: see `references/sources.md` for why.
+
 ## Deduplication
 
 Two layers, per `PLAN.md` section 5.
@@ -82,7 +139,7 @@ earliest-seen member, so `review` can show a single card with an "also on" line.
 ## Development
 
 ```bash
-.venv/bin/pytest tests -q      # 92 tests, no network
+.venv/bin/pytest tests -q      # 172 tests, no network
 .venv/bin/ruff check jobhunt tests scripts
 ```
 
@@ -92,8 +149,9 @@ responses captured from the live endpoints, trimmed to five jobs each.
 To re-verify endpoints:
 
 ```bash
-python3 scripts/probe_sources.py            # all 20
+python3 scripts/probe_sources.py            # all 20 endpoints
 python3 scripts/probe_sources.py --only ashby
+python3 scripts/probe_discovery_yield.py    # how many tokens each aggregator leaks
 ```
 
 Results land in `data/probe/*.json` and the findings are written up in
@@ -109,9 +167,15 @@ Results land in `data/probe/*.json` and the findings are written up in
 
 The database URL comes from the jobhunt config, never from `alembic.ini`.
 
-## Phase 2 fixture boards
+## Cold start
 
-`greenhouse/stripe`, `ashby/ramp`, and `ashby/openai` are hardcoded in
-`jobhunt/sync.py` as `FIXTURE_BOARDS`, purely so phase 2 has real data. They are
-deleted in phase 3, when Strategy A harvesting starts producing tokens on its own.
-Nothing else in the codebase requires a company name.
+```bash
+jobhunt init
+jobhunt discover --strategy yc --limit 40
+jobhunt sync
+jobhunt discover --strategy harvest
+jobhunt boards --list --status validated
+```
+
+No company name appears anywhere in that sequence, which is the requirement the
+whole discovery layer exists to satisfy.

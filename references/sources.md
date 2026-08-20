@@ -299,3 +299,30 @@ cheap, and it will pay off in phase 6 when LinkedIn and employer career pages
 start supplying raw ATS URLs. But it cannot cold-start the corpus, because
 nothing in tier 2 leaks a token. The cold start is Strategy B plus E, which
 PLAN.md scheduled for phase 4. That ordering is inverted here.
+
+### Lever, Recruitee, SmartRecruiters, Personio - adapters built 2026-08-20
+
+Re-verified through the real sync path, not just against saved fixtures.
+
+| Provider | Token | Result |
+|---|---|---|
+| lever | matchgroup | 80 postings, `createdAt` in **milliseconds** |
+| recruitee | channable | 15 offers, `salary` values are strings |
+| smartrecruiters | Visa | 2 postings, no description, `ref` is the detail URL |
+| personio | personio | 1 position, XML, `jobDescriptions` is name/value pairs |
+
+Two things worth remembering:
+
+- Recruitee `careers_url` is the employer's own host (`jobs.channable.com`), not
+  `*.recruitee.com`. So a Recruitee posting does not leak its own Recruitee token,
+  and Strategy A cannot find Recruitee boards from Recruitee data. Strategy D
+  (certificate transparency on `%.recruitee.com`) is the one that can.
+- Lever `description` is the opening block only on some boards. The full JD is
+  `opening` + `descriptionBody` + `lists[]` + `additional`.
+
+### Himalayas deferred out of phase 3
+
+PLAN.md schedules Himalayas as the phase-3 seed. It cannot serve that role: it
+leaks no tokens (see the yield table above) and its job pages 403 non-browser
+clients. It remains a good breadth source for jobs and is deferred to phase 4,
+where seed expansion is the actual goal.
