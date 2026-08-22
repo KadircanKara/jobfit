@@ -622,3 +622,75 @@ def make_scored_for_shortlist(cfg) -> int:
             llm_score=0.9, llm_reasoning="strong",
         ))
     return job_id
+
+
+# --- applying to a job whose CV was already cut ---------------------------------
+#
+# The whole point of keeping `tailored` out of SETTLED is that a job you have
+# prepared but not sent stays on the shortlist. That only works if it can later
+# be moved to `applied`. Until now it could not: the guard refused any status in
+# ACTED_ON, and `tailored` is in ACTED_ON, so recording an application against a
+# tailored job silently did nothing while the CSV said otherwise.
+
+
+def _job_with_status(session, status: str) -> int:
+    job = Job(
+        external_id=f"ext-{status}",
+        source="wwr",
+        market="global_remote",
+        title="Software Engineer",
+        title_normalized="software engineer",
+        is_active=True,
+    )
+    session.add(job)
+    session.flush()
+    session.add(Application(job_id=job.id, status=status, folder_path="/tmp/cut"))
+    return job.id
+
+
+def test_a_tailored_job_can_be_marked_applied(cfg) -> None:
+    with session_scope(cfg.db_path) as session:
+        job_id = _job_with_status(session, "tailored")
+
+    with session_scope(cfg.db_path) as session:
+        row = applications.record_applied(session, job_id)
+
+        assert row.status == "applied", (
+            "cutting a CV must not be the thing that stops you recording the application"
+        )
+
+
+def test_marking_applied_stamps_the_time(cfg) -> None:
+    with session_scope(cfg.db_path) as session:
+        job_id = _job_with_status(session, "tailored")
+
+    with session_scope(cfg.db_path) as session:
+        assert applications.record_applied(session, job_id).applied_at is not None
+
+
+def test_a_job_already_further_along_is_not_dragged_back_to_applied(cfg) -> None:
+    """The guard's real job: re-applying must not clobber pipeline state."""
+    with session_scope(cfg.db_path) as session:
+        job_id = _job_with_status(session, "interview")
+
+    with session_scope(cfg.db_path) as session:
+        assert applications.record_applied(session, job_id).status == "interview"
+
+
+def test_a_skipped_job_stays_skipped(cfg) -> None:
+    with session_scope(cfg.db_path) as session:
+        job_id = _job_with_status(session, "skipped")
+
+    with session_scope(cfg.db_path) as session:
+        assert applications.record_applied(session, job_id).status == "skipped"
+
+
+def test_tailored_is_deliberately_not_a_settled_status() -> None:
+    """Pins the line the whole feature rests on.
+
+    A job whose CV is cut but never sent is exactly the one that must keep
+    showing up. Folding ACTED_ON and SETTLED into one set would look like a
+    tidy-up and would quietly hide every tailored job.
+    """
+    assert "tailored" in applications.ACTED_ON
+    assert "tailored" not in applications.SETTLED

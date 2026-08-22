@@ -1907,3 +1907,20 @@ tr.below:hover td {
 .rchip[data-outcome="failed"] .sub {
   color: var(--crit);
 }
+
+
+/* Mark applied. Reads quiet until it is set, because an unsent application is
+   the normal state and the button should not nag; once set it reads settled,
+   and stays clickable so the undo is never hidden. */
+.btn.sm.applied {
+  border-color: var(--ok, #2f7d54);
+  color: var(--ok, #2f7d54);
+  background: transparent;
+}
+.btn.sm.applied:hover {
+  background: color-mix(in srgb, var(--ok, #2f7d54) 12%, transparent);
+}
+td.sent {
+  white-space: nowrap;
+  text-align: right;
+}

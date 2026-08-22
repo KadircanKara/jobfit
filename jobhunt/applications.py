@@ -357,7 +357,14 @@ def record_applied(session: Session, job_id: int, folder: str | None = None) -> 
     if job is None:
         raise ApplyBlocked(f"no job {job_id}")
     row = _application_for(session, job)
-    if row is not None and row.status in ACTED_ON:
+    # SETTLED, not ACTED_ON. ACTED_ON also holds `tailored`, and a tailored job
+    # is the one case this has to let through: the CV is cut, the application is
+    # not sent, and recording that it now has been is the whole point. Guarding
+    # on ACTED_ON made this a silent no-op for exactly those jobs while
+    # `csv mark-applied` flipped the column, so the file said applied and the
+    # shortlist kept offering the job. SETTLED still protects a job that has
+    # moved past applying - screening, interview, offer - from being dragged back.
+    if row is not None and row.status in SETTLED:
         return row
     row = row or Application(job_id=job.id)
     row.job_id = row.job_id or job.id

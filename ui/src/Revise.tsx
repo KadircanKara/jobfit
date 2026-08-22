@@ -1,11 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MarkApplied } from "./MarkApplied";
 import { api, type RevisableJob, type ReviseSession, type ReviseTurn } from "./api";
 
 /** How often the thread is pulled while the agent is working. An edit plus a
  *  LaTeX build is slow enough that anything tighter is wasted. */
 const POLL_MS = 1500;
 
-export function ReviseStudio({ jobs, focus }: { jobs: RevisableJob[]; focus?: number | null }) {
+export function ReviseStudio({
+  jobs,
+  focus,
+  applied,
+  onApplied,
+}: {
+  jobs: RevisableJob[];
+  focus?: number | null;
+  applied: Set<number>;
+  onApplied: (jobId: number, applied: boolean) => void;
+}) {
   const [at, setAt] = useState(0);
   const [session, setSession] = useState<ReviseSession | null>(null);
   const [pdf, setPdf] = useState<string | null>(null);
@@ -106,6 +117,13 @@ export function ReviseStudio({ jobs, focus }: { jobs: RevisableJob[]; focus?: nu
             ? `${jobs.filter((row) => row.ready).length} of ${jobs.length} ready`
             : "optional · the folder already has a finished CV"}
         </div>
+        {jobId != null && (
+          <MarkApplied
+            jobId={jobId}
+            applied={applied.has(jobId)}
+            onChange={(on) => onApplied(jobId, on)}
+          />
+        )}
       </div>
 
       <div className="stepper">

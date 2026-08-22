@@ -40,6 +40,10 @@ export default function App() {
   const [run, setRun] = useState<RunState>(EMPTY_RUN);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [picked, setPicked] = useState<Set<number>>(new Set());
+  const [applied, setApplied] = useState<Set<number>>(new Set());
+  // The feed is the loudest thing on the page and the least often wanted, so
+  // it starts shut and the phase strip above it carries the run's state.
+  const [feedOpen, setFeedOpen] = useState(false);
   const [valid, setValid] = useState(true);
   const [screen, setScreen] = useState<"hunt" | "profile">("hunt");
   const [tailor, setTailor] = useState<{ jobs: JobRun[]; running: boolean }>({ jobs: [], running: false });
@@ -67,6 +71,14 @@ export default function App() {
       setVocab(body.vocab);
     });
     api.run().then(setRun);
+    // Which jobs are already recorded as sent. Studio and the tailor chat show
+    // jobs whose application state they cannot infer from their own payloads.
+    api
+      .appliedJobs()
+      .then((body) => setApplied(new Set(body.applied)))
+      .catch(() => {
+        /* the buttons simply start unmarked; pressing one still works */
+      });
   }, []);
 
   // The run outlives the tab, so the stream is opened whenever the page is,
@@ -358,9 +370,19 @@ export default function App() {
               <div className="panel">
                 <div className="panel-head">
                   <h2>Run feed</h2>
-                  <div className="note">every phase, in order</div>
+                  <div className="note">
+                    {events.length} {events.length === 1 ? "line" : "lines"} · every phase, in order
+                  </div>
+                  <button
+                    type="button"
+                    className="btn sm ghost"
+                    aria-expanded={feedOpen}
+                    onClick={() => setFeedOpen((open) => !open)}
+                  >
+                    {feedOpen ? "Hide" : "Show"}
+                  </button>
                 </div>
-                <Log events={events} />
+                {feedOpen && <Log events={events} />}
               </div>
             )}
 
@@ -407,6 +429,14 @@ export default function App() {
 
               <Shortlist
                 rows={run.results}
+                applied={applied}
+                onApplied={(id, on) =>
+                  setApplied((current) => {
+                    const next = new Set(current);
+                    on ? next.add(id) : next.delete(id);
+                    return next;
+                  })
+                }
                 picked={picked}
                 bar={run.gate?.plan.bar ?? null}
                 onPick={(id, on) =>
@@ -421,6 +451,14 @@ export default function App() {
             </div>
 
             <TailorBatch
+              applied={applied}
+                onApplied={(id, on) =>
+                  setApplied((current) => {
+                    const next = new Set(current);
+                    on ? next.add(id) : next.delete(id);
+                    return next;
+                  })
+                }
               jobs={tailor.jobs}
               running={tailor.running}
               onStop={async () => {
@@ -438,7 +476,18 @@ export default function App() {
             />
 
             <div ref={studio}>
-              <ReviseStudio jobs={revisable} focus={reviewing} />
+              <ReviseStudio
+                jobs={revisable}
+                focus={reviewing}
+                applied={applied}
+                onApplied={(id, on) =>
+                  setApplied((current) => {
+                    const next = new Set(current);
+                    on ? next.add(id) : next.delete(id);
+                    return next;
+                  })
+                }
+              />
             </div>
           </div>
         )}

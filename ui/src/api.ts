@@ -298,6 +298,18 @@ export const api = {
       }),
     );
   },
+  async appliedJobs(): Promise<{ applied: number[] }> {
+    return json(await fetch("/api/applied"));
+  },
+  async setApplied(jobId: number, applied: boolean): Promise<{ job_id: number; applied: boolean }> {
+    return json(
+      await fetch(`/api/applied/${jobId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ applied }),
+      }),
+    );
+  },
   async revisionPreview(jobId: number): Promise<RevisePreview> {
     return json(await fetch(`/api/revise/${jobId}/preview`));
   },

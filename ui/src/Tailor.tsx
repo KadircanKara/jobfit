@@ -1,4 +1,5 @@
 import type { JobRun } from "./api";
+import { MarkApplied } from "./MarkApplied";
 
 const STAGES = ["Reading the posting", "Cutting the CV", "Reviewer gate", "Fit to two pages"];
 
@@ -8,6 +9,8 @@ export function TailorBatch({
   onStop,
   onReview,
   readyIds,
+  applied,
+  onApplied,
 }: {
   jobs: JobRun[];
   running: boolean;
@@ -15,6 +18,9 @@ export function TailorBatch({
   onReview: (jobId: number) => void;
   /** Jobs whose cv.tex is finished. Only these can be opened in the studio. */
   readyIds: Set<number>;
+  /** Jobs already recorded as sent, so the button reads the right way round. */
+  applied: Set<number>;
+  onApplied: (jobId: number, applied: boolean) => void;
 }) {
   if (!jobs.length) return null;
   const approved = jobs.filter((job) => job.state === "approved").length;
@@ -42,6 +48,11 @@ export function TailorBatch({
             <span className="who">{job.title ?? `job ${job.job_id}`}</span>
             {job.company && <span className="at">{job.company}</span>}
             <span className="status">{statusOf(job)}</span>
+            <MarkApplied
+              jobId={job.job_id}
+              applied={applied.has(job.job_id)}
+              onChange={(on) => onApplied(job.job_id, on)}
+            />
           </div>
 
           <div className="stages">

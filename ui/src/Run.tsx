@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef } from "react";
 import type { GateReport, RankReport, RunEvent, RunState, ShortlistRow } from "./api";
+import { MarkApplied } from "./MarkApplied";
 
 const PHASES: [string, string][] = [
   ["sync", "Sync"],
@@ -342,12 +343,16 @@ export function Shortlist({
   bar,
   onPick,
   onPickAll,
+  applied,
+  onApplied,
 }: {
   rows: ShortlistRow[];
   picked: Set<number>;
   bar: number | null;
   onPick: (id: number, on: boolean) => void;
   onPickAll: (on: boolean) => void;
+  applied: Set<number>;
+  onApplied: (id: number, on: boolean) => void;
 }) {
   if (!rows.length) {
     return <div className="empty">No jobs above the bar yet. Start a run to fill this.</div>;
@@ -373,6 +378,7 @@ export function Shortlist({
             <th>Where</th>
             <th>Why it ranked here</th>
             <th>Posting</th>
+            <th>Sent</th>
           </tr>
         </thead>
         <tbody>
@@ -383,7 +389,7 @@ export function Shortlist({
                   market, and that is invisible if the rejected rows are gone. */}
               {row.below_bar && index > 0 && !rows[index - 1].below_bar && (
                 <tr className="cutrow">
-                  <td colSpan={7}>
+                  <td colSpan={8}>
                     <div className="cut">
                       <span>{bar != null ? `The bar · ${bar.toFixed(2)}` : "The bar"}</span>
                       <span className="aside">
@@ -430,6 +436,13 @@ export function Shortlist({
                 ) : (
                   <span className="co">no link</span>
                 )}
+              </td>
+              <td className="sent">
+                <MarkApplied
+                  jobId={row.job_id}
+                  applied={applied.has(row.job_id)}
+                  onChange={(on) => onApplied(row.job_id, on)}
+                />
               </td>
             </tr>
             </Fragment>

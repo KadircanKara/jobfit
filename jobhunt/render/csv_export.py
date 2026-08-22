@@ -128,6 +128,21 @@ def mark_applied(
     return marked, missing
 
 
+def set_applied(path: pathlib.Path, job_id: int, applied: bool) -> bool:
+    """Flip one row's applied column either way.
+
+    `mark_applied` only ever sets TRUE, which suits the CLI's one-way command.
+    The browser button toggles, so it needs to be able to clear the column too.
+    """
+    rows = read(path)
+    key = str(job_id)
+    if key not in rows:
+        return False
+    rows[key]["applied"] = TRUE if applied else FALSE
+    _write(path, rows)
+    return True
+
+
 def set_cv_status(path: pathlib.Path, job_id: int, status: str) -> bool:
     rows = read(path)
     key = str(job_id)

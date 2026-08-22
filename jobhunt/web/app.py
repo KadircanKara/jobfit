@@ -23,6 +23,7 @@ from jobhunt.db.models import Board, utcnow
 from jobhunt.db.session import session_scope
 from jobhunt.discovery import categories as categories_module
 from jobhunt.web import agent as agent_module
+from jobhunt.web import applied as applied_module
 from jobhunt.web import filters as webfilters
 from jobhunt.web import history as history_module
 from jobhunt.web import profile as profile_module
@@ -260,6 +261,33 @@ def create_app(*, config: Config | None = None) -> FastAPI:
             "filters": _filters_payload(cfg),
             "title_impact": {"matched": matched, "total": total},
         }
+
+    # --- applied ------------------------------------------------------
+
+    @app.get("/api/applied")
+    def read_applied() -> dict[str, Any]:
+        return {"applied": applied_module.applied_job_ids(cfg)}
+
+    @app.post("/api/applied/{job_id}")
+    def set_applied(job_id: int, payload: dict[str, Any]) -> Any:
+        """Record that an application went out, or take that back.
+
+        The only action that removes a job from the shortlist for good, so it
+        toggles rather than committing one way.
+        """
+        wanted = payload.get("applied")
+        if not isinstance(wanted, bool):
+            return JSONResponse(
+                status_code=422,
+                content={"message": "'applied' must be true or false"},
+            )
+        try:
+            state = applied_module.set_applied(cfg, job_id, wanted)
+        except applied_module.UnknownJob as exc:
+            return JSONResponse(
+                status_code=422, content={"message": f"no job {exc.job_id}"}
+            )
+        return {"job_id": job_id, "applied": state}
 
     # --- feeds --------------------------------------------------------
 
