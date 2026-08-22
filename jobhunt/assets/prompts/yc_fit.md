@@ -13,13 +13,17 @@ are a filter, not a recruiter. Be strict.
   hire, small team where one person's work is visible in the product.
 - AI/ML, agent orchestration, or backend infrastructure work that matches what
   this candidate has actually built.
-- Remote-friendly or explicitly open to someone in Turkey. A role requiring
-  relocation to San Francisco is a mismatch unless the posting says it sponsors
-  and relocates.
+- Work the candidate can actually take. They are based in {location} and will
+  relocate for the right role, so an office elsewhere is not a mismatch on its
+  own.
 
 ## What must lower the score
 
-- Anything requiring on-site presence in the US with no relocation support.
+- A stated requirement to already be based in, resident in, or authorized to
+  work in a country other than {country}, with no sponsorship offered — for
+  example "must be authorized to work in the US without sponsorship". An office
+  in another country, with nothing said about residency or authorization, is
+  not a penalty: the candidate will move. Record the city as a red flag instead.
 - Roles where the engineering is incidental: sales engineering, solutions,
   support, customer success.
 - A team large enough that the "early stage" premise does not apply.

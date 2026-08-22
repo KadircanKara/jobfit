@@ -13,12 +13,15 @@ from jobhunt.web.events import EventLog
 class FakeSteps:
     """Stands in for `apply`, the tailoring agent, and the reviewer."""
 
-    def __init__(self, *, verdicts=None, apply_fails=False):
+    def __init__(self, *, verdicts=None, apply_fails=False, page_counts=None):
         self.verdicts = verdicts or ["approve"]
         self.apply_fails = apply_fails
+        # One entry per measurement, so a trim round can come back shorter.
+        self.page_counts = list(page_counts or [2])
         self.prepared: list[int] = []
         self.tailored: list[str] = []
         self.reviewed = 0
+        self.measured = 0
         self.marked: list[tuple[int, str]] = []
 
     def prepare(self, job_id):
@@ -46,6 +49,11 @@ class FakeSteps:
 
     def mark(self, job_id, status):
         self.marked.append((job_id, status))
+
+    def pages(self, folder):
+        index = min(self.measured, len(self.page_counts) - 1)
+        self.measured += 1
+        return self.page_counts[index]
 
 
 def batch(steps, ids=(1,), rounds=3):
@@ -136,3 +144,84 @@ def test_a_stop_request_leaves_the_rest_untouched():
 
     assert steps.prepared == []
     assert all(row.state == "cancelled" for row in result)
+
+
+# --- two pages ----------------------------------------------------------------
+
+
+def test_a_two_page_cv_is_approved_as_it_stands():
+    steps = FakeSteps(verdicts=["approve"], page_counts=[2])
+
+    rows = batch(steps).run()
+
+    assert rows[0].state == "approved"
+    assert rows[0].pages == 2
+    assert rows[0].rounds == 1
+
+
+def test_an_over_long_cv_is_cut_again_rather_than_shipped():
+    """Length is answered the same way a reviewer objection is: as a finding
+    the next cut has to deal with."""
+    steps = FakeSteps(verdicts=["approve"], page_counts=[3, 2])
+
+    rows = batch(steps).run()
+
+    assert rows[0].rounds == 2, "the long cut spends a round being trimmed"
+    assert rows[0].pages == 2
+    assert rows[0].state == "approved"
+    assert any("3 pages" in finding for finding in rows[0].findings)
+
+
+def test_a_cv_that_stays_long_still_ships_rather_than_failing():
+    """The rounds are the budget. A CV the reviewer approved is not thrown away
+    for being a page over."""
+    steps = FakeSteps(verdicts=["approve"], page_counts=[3, 3, 3])
+
+    rows = batch(steps, rounds=3).run()
+
+    assert rows[0].state == "approved"
+    assert rows[0].pages == 3
+    assert ("cv_ready") in [status for _, status in steps.marked]
+
+
+def test_a_toolchain_that_cannot_measure_does_not_hold_up_the_cv():
+    class NoLatex(FakeSteps):
+        def pages(self, folder):
+            raise RuntimeError("no LaTeX toolchain found")
+
+    steps = NoLatex(verdicts=["approve"])
+    rows = batch(steps).run()
+
+    assert rows[0].state == "approved"
+    assert rows[0].pages is None
+
+
+def test_preparing_a_folder_calls_apply_the_way_apply_is_defined(cfg, monkeypatch):
+    """Regression: this passed (session, job_id) to a function whose signature
+    is (config, session, job_id), so every browser-started tailoring run died
+    on `apply() missing 1 required positional argument: 'job_id'`."""
+    import inspect
+
+    from jobhunt import applications
+    from jobhunt.web import tailor as module
+
+    seen = {}
+
+    def fake_apply(config, session, job_id, tailor=True, dry_run=False, status="applied"):
+        seen.update(config=config, job_id=job_id, tailor=tailor, status=status)
+        return type("R", (), {"folder": f"/folder/{job_id}"})()
+
+    # The fake must take the real parameters, in order, or it cannot catch this
+    # class of bug. Names and order only: the annotations are not the point.
+    assert list(inspect.signature(fake_apply).parameters) == list(
+        inspect.signature(applications.apply).parameters
+    )
+    monkeypatch.setattr(applications, "apply", fake_apply)
+
+    folder = module.ClaudeSteps(cfg).prepare(41)
+
+    assert folder == "/folder/41"
+    assert seen["job_id"] == 41
+    assert seen["config"] is cfg
+    assert seen["tailor"] is False
+    assert seen["status"] == "tailored", "cutting a CV is not applying for anything"

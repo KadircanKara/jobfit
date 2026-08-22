@@ -9,12 +9,29 @@ for context with the jobs themselves, so it is deliberately capped.
 """
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 import re
 
 from jobhunt.config import Config
+from jobhunt.rank import regions
 
 MAX_CHARS = 2500
+
+# Where an explicitly stated location lives. Set it and nothing is inferred.
+# This is the seam: if the Profile screen ever becomes structured fields rather
+# than a LaTeX document, it writes here and every reader below is unaffected.
+LOCATION_KEY = ("ranking", "candidate_location")
+
+# The name to show for a country code. COUNTRY_NAMES maps many names onto one
+# code, so the first spelling of each is taken as the one to print.
+_DISPLAY_NAMES: dict[str, str] = {}
+for _name, _code in regions.COUNTRY_NAMES.items():
+    _DISPLAY_NAMES.setdefault(_code, _name.title())
+
+# A line long enough to be prose is a sentence that mentions a country, not an
+# address. Only short lines are quoted back verbatim.
+_LOCATION_LINE_CHARS = 60
 
 # Facts about the candidate that master.tex does not carry, because they are
 # preferences and constraints rather than CV content. Appended to every gate
@@ -70,6 +87,70 @@ def load(config: Config) -> str:
             except OSError:
                 summary = FALLBACK
     return _with_constraints(summary, config)
+
+
+@dataclasses.dataclass(frozen=True)
+class Location:
+    """Where the candidate is, as the gate needs to read it.
+
+    `text` is for the prompt, `country` is the ISO code the same rules elsewhere
+    already speak in. Either may be absent: an unknown location is a reason to
+    say nothing about location, never a reason to guess.
+    """
+
+    text: str
+    country: str | None = None
+
+    @property
+    def country_name(self) -> str:
+        """The country as a prompt should say it.
+
+        The rules that turn on location are about countries, not cities: "a
+        country other than Istanbul, Turkey" is not a sentence a model can apply.
+        """
+        if self.country and self.country in _DISPLAY_NAMES:
+            return _DISPLAY_NAMES[self.country]
+        return self.country or self.text
+
+
+def location(config: Config) -> Location | None:
+    """The candidate's own location, stated or inferred.
+
+    Stated wins outright. Otherwise the profile is read for the first line that
+    names a country the project already knows, which on a CV is the address
+    under the name, and failing that the stated constraints, which is where
+    someone writes "Based in Istanbul" when the CV does not say.
+    """
+    stated = config.get(*LOCATION_KEY)
+    if stated:
+        text = str(stated).strip()
+        codes, _ = regions.resolve([part.strip() for part in text.split(",")])
+        return Location(text=text, country=codes[-1] if codes else None)
+    return _location_in(load(config))
+
+
+def _location_in(profile_text: str) -> Location | None:
+    for line in profile_text.splitlines():
+        line = line.strip().lstrip("- ").strip()
+        if not line:
+            continue
+        code = _country_named_in(line)
+        if not code:
+            continue
+        if len(line) <= _LOCATION_LINE_CHARS:
+            return Location(text=line, country=code)
+        # A whole sentence would drag its own claims into the prompt, so only
+        # the country it named is kept.
+        return Location(text=_DISPLAY_NAMES.get(code, code), country=code)
+    return None
+
+
+def _country_named_in(line: str) -> str | None:
+    lowered = line.lower()
+    for name, code in regions.COUNTRY_NAMES.items():
+        if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", lowered):
+            return code
+    return None
 
 
 def _with_constraints(summary: str, config: Config) -> str:

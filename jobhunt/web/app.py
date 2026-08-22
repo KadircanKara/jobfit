@@ -18,8 +18,12 @@ from fastapi.staticfiles import StaticFiles
 from jobhunt import preferences as prefs_module
 from jobhunt.config import Config
 from jobhunt.config import load as load_config
+from jobhunt.db.models import utcnow
+from jobhunt.web import agent as agent_module
 from jobhunt.web import filters as webfilters
+from jobhunt.web import history as history_module
 from jobhunt.web import profile as profile_module
+from jobhunt.web import revise as revise_module
 from jobhunt.web import tailor as tailor_module
 from jobhunt.web import vocab as vocab_module
 from jobhunt.web.events import EventLog, to_sse
@@ -36,12 +40,20 @@ class AppState:
         self.log = EventLog()
         self.supervisor: RunSupervisor | None = None
         self.batch: tailor_module.TailorBatch | None = None
+        # Revision sessions outlive the tab, the same way a run does.
+        self.desk = revise_module.ReviseDesk(config)
 
     def state_dict(self) -> dict[str, Any]:
         if self.supervisor is None:
+            # No run in this process, but the corpus outlives the process. The
+            # shortlist is rebuilt from the database rather than showing an
+            # empty screen for work that was already done.
             return {
-                "phase": "idle", "running": False, "outcome": None, "error": None,
-                "degraded": [], "counters": {}, "results": [], "last_seq": self.log.latest_seq(),
+                "phase": "idle", "running": False, "outcome": _restored_outcome(self.config),
+                "error": None, "degraded": [], "counters": {}, "rank": None, "gate": None,
+                "run_id": "", "started_at": "", "finished_at": None,
+                "resumable": False, "paused": False,
+                "results": _last_shortlist(self.config), "last_seq": self.log.latest_seq(),
             }
         state = self.supervisor.state
         return {
@@ -51,10 +63,116 @@ class AppState:
             "error": state.error,
             "degraded": list(state.degraded),
             "counters": dict(state.counters),
+            "run_id": state.run_id,
+            "started_at": state.started_at,
+            "finished_at": state.finished_at,
+            "resumable": state.resumable,
+            "paused": self.supervisor.pausing and state.running,
+            "rank": dataclasses.asdict(state.rank) if state.rank else None,
+            "gate": dataclasses.asdict(state.gate, dict_factory=_without_payload)
+            if state.gate
+            else None,
             "results": list(state.results),
             "stopping": self.supervisor.stopping,
             "last_seq": self.log.latest_seq(),
         }
+
+
+# Marks a state the browser did not watch happen. The hero says so rather than
+# claiming a run finished in this session.
+RESTORED = "restored"
+
+
+def _last_shortlist(config: Config) -> list[dict[str, Any]]:
+    """The shortlist as it stands on disk, in the shape a run would have left.
+
+    Deliberately the same call the run itself makes, so a restored screen and a
+    live one cannot disagree about what is above the bar.
+    """
+    from jobhunt import preferences as prefs
+    from jobhunt.render import review
+    from jobhunt.web.engine import NEAR_MISSES, row_from_card
+
+    try:
+        wanted, _ = prefs.load(config)
+        cards = review.shortlist(config, limit=wanted.top_n)
+        rows = [row_from_card(card) for card in cards]
+        rows += [
+            row_from_card(card) | {"below_bar": True}
+            for card in review.near_misses(config, limit=NEAR_MISSES)
+        ]
+        return rows
+    except Exception:
+        # A corpus that cannot be read is not a reason to fail the page. The
+        # screen simply shows nothing until a run fills it.
+        return []
+
+
+def _restored_outcome(config: Config) -> str | None:
+    return RESTORED if _last_shortlist(config) else None
+
+
+def _row_for(state: AppState, job_id: int) -> dict[str, Any] | None:
+    rows = state.batch.state() if state.batch is not None else []
+    return next((row for row in rows if row["job_id"] == job_id), None)
+
+
+def _name_the_rows(config: Config, batch: Any) -> None:
+    """Give each row a title and a company, so the studio has something to call
+    it. One query for the whole batch, before any work starts."""
+    from sqlalchemy import select
+
+    from jobhunt.db.models import Company, Job
+    from jobhunt.db.session import session_scope
+
+    ids = [row.job_id for row in batch.rows]
+    with session_scope(config.db_path) as session:
+        found = session.execute(
+            select(Job.id, Job.title, Company.name)
+            .join(Company, Job.company_id == Company.id, isouter=True)
+            .where(Job.id.in_(ids))
+        ).all()
+    named = {job_id: (title, company) for job_id, title, company in found}
+    for row in batch.rows:
+        title, company = named.get(row.job_id, ("", ""))
+        row.title = title or ""
+        row.company = company or ""
+
+
+def _run_payload(state: Any, jh: AppState) -> dict[str, Any]:
+    """A run, in the shape the browser already reads a live one in.
+
+    Deliberately the same shape as `state_dict`, so looking at a run from
+    yesterday goes through the same components as watching one now.
+    """
+    return {
+        "phase": state.phase,
+        "running": False,  # a saved run is never the one currently going
+        "outcome": state.outcome,
+        "error": state.error,
+        "degraded": list(state.degraded),
+        "counters": dict(state.counters),
+        "run_id": state.run_id,
+        "started_at": state.started_at,
+        "finished_at": state.finished_at,
+        "resumable": state.resumable,
+        "paused": False,
+        "rank": dataclasses.asdict(state.rank) if state.rank else None,
+        "gate": dataclasses.asdict(state.gate, dict_factory=_without_payload)
+        if state.gate
+        else None,
+        "results": list(state.results),
+        "last_seq": jh.log.latest_seq(),
+    }
+
+
+def _without_payload(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Drop a batch's payload on the way out.
+
+    It is the whole prompt plus every job description in the batch — tens of
+    kilobytes the page polls every two seconds and never reads.
+    """
+    return {key: value for key, value in pairs if key != "payload"}
 
 
 def build_pipeline(config: Config, state: AppState) -> Any:
@@ -76,7 +194,15 @@ def build_pipeline(config: Config, state: AppState) -> Any:
             boards_total=total,
         )
 
+    def on_rank(report: Any) -> None:
+        # Stage 1 reports itself while it runs. It goes to the state the page
+        # polls rather than to the event log: at one line per fifty jobs a
+        # four-thousand job pass would bury every other message in the feed.
+        if state.supervisor is not None:
+            state.supervisor.state.rank = report
+
     pipeline.on_board = on_board
+    pipeline.on_rank = on_rank
     pipeline.should_stop = lambda: bool(state.supervisor and state.supervisor.stopping)
     return pipeline
 
@@ -88,6 +214,9 @@ def _filters_payload(config: Config) -> dict[str, Any]:
 
 def create_app(*, config: Config | None = None) -> FastAPI:
     cfg = config or load_config()
+    # Fail here rather than one confusing run at a time: a bad effort level
+    # would otherwise surface as every call in that phase dying.
+    agent_module.check(cfg)
     app = FastAPI(title="jobhunt", docs_url=None, redoc_url=None)
     app.state.jh = AppState(cfg)
 
@@ -126,9 +255,21 @@ def create_app(*, config: Config | None = None) -> FastAPI:
                 status_code=409,
                 content={"started": False, "message": "a run is already going"},
             )
+        # A run already paused is resumed rather than restarted, so pressing
+        # Start after a pause does not throw away the boards already fetched.
+        if jh.supervisor is not None and jh.supervisor.state.resumable:
+            jh.supervisor.resume()
+            return {"started": True, "resumed": True}
+
         pipeline = build_pipeline(cfg, jh)
-        jh.supervisor = RunSupervisor(pipeline=pipeline, log=jh.log)
-        jh.supervisor.start()
+        run_id = history_module.new_id()
+        jh.supervisor = RunSupervisor(
+            pipeline=pipeline,
+            log=jh.log,
+            store=lambda state: history_module.save(cfg, state.run_id, _run_payload(state, jh)),
+            clock=lambda: utcnow().isoformat(),
+        )
+        jh.supervisor.start(run_id=run_id)
         return {"started": True}
 
     @app.get("/api/fx")
@@ -141,6 +282,36 @@ def create_app(*, config: Config | None = None) -> FastAPI:
     @app.get("/api/runs/current")
     def current_run() -> dict[str, Any]:
         return app.state.jh.state_dict()
+
+    @app.get("/api/runs")
+    def run_history() -> dict[str, Any]:
+        return {"runs": history_module.listing(cfg)}
+
+    @app.get("/api/runs/{run_id}")
+    def one_run(run_id: str) -> Any:
+        body = history_module.load(cfg, run_id)
+        if body is None:
+            return JSONResponse(status_code=404, content={"message": f"no run {run_id} on file"})
+        return body
+
+    @app.post("/api/runs/current/pause")
+    def pause_run() -> dict[str, Any]:
+        jh: AppState = app.state.jh
+        if jh.supervisor is None or not jh.supervisor.state.running:
+            return {"paused": False, "reason": "nothing is running"}
+        jh.supervisor.request_pause()
+        return {"paused": True}
+
+    @app.post("/api/runs/current/resume")
+    def resume_run() -> Any:
+        jh: AppState = app.state.jh
+        if jh.supervisor is None or not jh.supervisor.state.resumable:
+            return JSONResponse(
+                status_code=409,
+                content={"resumed": False, "message": "there is no paused run to resume"},
+            )
+        jh.supervisor.resume()
+        return {"resumed": True}
 
     @app.post("/api/runs/current/stop")
     def stop_run() -> dict[str, Any]:
@@ -254,6 +425,7 @@ def create_app(*, config: Config | None = None) -> FastAPI:
         jh.batch = tailor_module.TailorBatch(
             job_ids=job_ids, steps=tailor_module.ClaudeSteps(cfg), log=jh.log
         )
+        _name_the_rows(cfg, jh.batch)
         jh.batch.start()
         return {"started": True, "jobs": jh.batch.state()}
 
@@ -264,6 +436,94 @@ def create_app(*, config: Config | None = None) -> FastAPI:
             return {"stop_requested": False, "reason": "nothing is tailoring"}
         jh.batch.request_stop()
         return {"stop_requested": True}
+
+    # --- the revision studio ------------------------------------------
+    # Optional, and always after the fact: the batch has already shipped every
+    # CV by the time any of this is reachable.
+
+    def _refused(exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=422, content={"field": "revise", "message": str(exc)})
+
+    @app.get("/api/revise")
+    def revisable() -> dict[str, Any]:
+        """Every CV with a folder, which is every CV worth opening."""
+        jh: AppState = app.state.jh
+        rows = jh.batch.state() if jh.batch is not None else []
+        open_now = {session.job_id: session for session in jh.desk.sessions()}
+        return {
+            "jobs": [
+                row | {
+                    "ahead": open_now[row["job_id"]].ahead if row["job_id"] in open_now else 0,
+                    "opened": row["job_id"] in open_now,
+                    # Three things have to be true, and existence is only one:
+                    # the folder appears when tailoring starts, the CV is
+                    # written gradually, and a later round overwrites it. A
+                    # draft taken at any of those moments is unusable.
+                    "ready": (
+                        row.get("state") not in ("queued", "running")
+                        and revise_module.has_cv(row.get("folder"))
+                    ),
+                }
+                for row in rows
+                if row.get("folder")
+            ]
+        }
+
+    @app.post("/api/revise/{job_id}")
+    def open_revision(job_id: int) -> Any:
+        jh: AppState = app.state.jh
+        row = _row_for(jh, job_id)
+        if row is None or not row.get("folder"):
+            return _refused(revise_module.ReviseError(f"job {job_id} has no tailored CV yet"))
+        try:
+            session = jh.desk.open(
+                job_id,
+                folder=str(row["folder"]),
+                title=str(row.get("title") or ""),
+                company=str(row.get("company") or ""),
+                fit=row.get("fit"),
+            )
+        except revise_module.ReviseError as exc:
+            return _refused(exc)
+        return session.as_dict()
+
+    @app.get("/api/revise/{job_id}")
+    def revision_state(job_id: int) -> Any:
+        session = app.state.jh.desk.get(job_id)
+        if session is None:
+            return _refused(revise_module.ReviseError(f"no revision open for job {job_id}"))
+        return session.as_dict()
+
+    @app.post("/api/revise/{job_id}/message")
+    def send_revision(job_id: int, payload: dict[str, Any]) -> Any:
+        try:
+            session = app.state.jh.desk.send(job_id, str(payload.get("message", "")))
+        except revise_module.ReviseError as exc:
+            return _refused(exc)
+        return session.as_dict()
+
+    @app.get("/api/revise/{job_id}/preview")
+    def revision_preview(job_id: int) -> Any:
+        try:
+            return app.state.jh.desk.preview(job_id)
+        except revise_module.ReviseError as exc:
+            return _refused(exc)
+
+    @app.post("/api/revise/{job_id}/sync")
+    def sync_revision(job_id: int) -> Any:
+        try:
+            session = app.state.jh.desk.sync(job_id)
+        except revise_module.ReviseError as exc:
+            return _refused(exc)
+        return session.as_dict()
+
+    @app.post("/api/revise/{job_id}/discard")
+    def discard_revision(job_id: int) -> Any:
+        try:
+            session = app.state.jh.desk.discard(job_id)
+        except revise_module.ReviseError as exc:
+            return _refused(exc)
+        return session.as_dict()
 
     # --- the built ui -------------------------------------------------
 

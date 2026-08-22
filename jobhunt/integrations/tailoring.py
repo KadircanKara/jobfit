@@ -4,9 +4,10 @@ The contract here follows the skill as it actually is on disk, not PLAN.md
 section 10, and the difference was confirmed with the user:
 
 - The **skill** owns the folder, and its own scripts hardcode
-  `~/Career/Job_Applications/Tailored CVs/<Company> - <Position>/`. PLAN.md
-  proposed `{date}-{company-slug}-{title-slug}`. The skill wins: jobhunt
-  conforms to the tool that already works.
+  `~/Career/Job_Applications/Tailored CVs/<Company> - <Position> @ <Location>/`.
+  PLAN.md proposed `{date}-{company-slug}-{title-slug}`. The skill wins: jobhunt
+  conforms to the tool that already works. The location suffix was added to both
+  at once, on 2026-08-22; changing it here alone would split the two apart.
 - The skill reads the posting from **`jd.txt`**, verbatim. PLAN.md proposed
   `job.md`. Again the skill wins.
 - `job.json` is written alongside as a sidecar. The skill does not read it; it
@@ -41,16 +42,45 @@ class Handoff:
     mode: str
 
 
-def folder_name(company: str, title: str) -> str:
-    """`<Company> - <Position>`, spelled as the posting spells them.
+# Postings repeat themselves in the location field: "Singapore, Singapore,
+# Singapore" and "Ho Chi Minh City, Ho Chi Minh City, Vietnam" are both real.
+# The folder says each part once.
+_UNKNOWN_PLACES = {"", "n a", "na", "unknown", "remote", "-"}
+
+
+def folder_name(company: str, title: str, location: str | None = None) -> str:
+    """`<Company> - <Position> @ <Location>`, spelled as the posting spells them.
 
     Only characters a filesystem cannot take are removed. Deliberately not
     slugified: the skill's own scripts cd into this folder by the same name, and
-    the user reads it.
+    the user reads it. The separator stays " - " so a hyphen inside a company
+    name ("Île-de-France GmbH") does not read as the separator.
+
+    A posting with no usable location keeps the older two-part name rather than
+    growing an empty suffix.
     """
     company = _clean(company) or "Unknown"
     title = _clean(title) or "Role"
-    return f"{company} - {title}"
+    where = place(location)
+    return f"{company} - {title} @ {where}" if where else f"{company} - {title}"
+
+
+def place(location: str | None) -> str:
+    """The location as a folder can carry it, or "" when it says nothing.
+
+    Slashes matter here beyond tidiness: "São Paulo / SP / Brasil" is a real
+    value, and unstripped it would make three nested directories instead of one
+    folder.
+    """
+    cleaned = _clean(location or "")
+    seen: list[str] = []
+    for part in cleaned.split(","):
+        part = part.strip()
+        if not part or part.lower() in _UNKNOWN_PLACES:
+            continue
+        if part.lower() not in {kept.lower() for kept in seen}:
+            seen.append(part)
+    return ", ".join(seen)[:70]
 
 
 def _clean(value: str) -> str:
@@ -68,7 +98,9 @@ def prepare(
 ) -> Handoff:
     """Write the interface files. Never overwrites an existing folder."""
     root = pathlib.Path(str(config.get("tailoring", "applications_root"))).expanduser()
-    folder = root / folder_name(company.name if company else job.source, job.title)
+    folder = root / folder_name(
+        company.name if company else job.source, job.title, job.location_raw
+    )
     jd_filename = str(config.get("tailoring", "jd_filename", default="jd.txt"))
     target_language = str(config.get("tailoring", "jd_language", default="en"))
     mode = str(config.get("tailoring", "mode", default="handoff"))

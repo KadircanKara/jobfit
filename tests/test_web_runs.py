@@ -15,11 +15,21 @@ from jobhunt.web import runs as runs_module
 class FakePipeline:
     """Stands in for sync/rank/gate/shortlist without touching the network."""
 
-    def __init__(self, *, sources=None, boards=2, failing_source=None, rank_raises=False):
+    def __init__(
+        self,
+        *,
+        sources=None,
+        boards=2,
+        failing_source=None,
+        rank_raises=False,
+        unreadable_batch=None,
+    ):
         self.sources = sources or ["greenhouse", "ashby"]
         self.boards = boards
         self.failing_source = failing_source
         self.rank_raises = rank_raises
+        # The label of a batch the gate cannot read, as a live one behaves.
+        self.unreadable_batch = unreadable_batch
         self.fetched: list[tuple[str, int]] = []
         self.ranked = False
         self.gated: list[int] = []
@@ -41,17 +51,46 @@ class FakePipeline:
         if self.rank_raises:
             raise RuntimeError("rank exploded")
         self.ranked = True
-        return 12
+        return runs_module.RankReport(
+            corpus=40,
+            scored=30,
+            passed=12,
+            failed=18,
+            skipped=10,
+            by_market={"eu": 8, "uk": 4},
+            reasons=[
+                runs_module.DropReason("salary_below", "salary below the floor", 11, True),
+                runs_module.DropReason("tz_overlap", "timezone overlap below the minimum", 7),
+            ],
+        )
 
     def gate_batches(self):
-        return [[1, 2], [3, 4]]
+        return runs_module.GatePlan(
+            batches=[
+                runs_module.GateBatch(label="eu", size=2, payload=[1, 2]),
+                runs_module.GateBatch(label="uk", size=2, payload=[3, 4]),
+            ],
+            jobs=4,
+            held_by_company_cap=3,
+            bar=0.7,
+        )
 
     def gate(self, batch):
-        self.gated.append(len(batch))
+        self.gated.append(batch.size)
+        if batch.label == self.unreadable_batch:
+            return []
+        return [
+            {"job_id": job_id, "title": f"job {job_id}", "company": "Acme",
+             "score": 0.8, "reasoning": "fits", "red_flags": []}
+            for job_id in batch.payload
+        ]
 
     def shortlist(self):
         self.shortlisted = True
-        return [{"id": 1, "fit": 0.88}]
+        return [
+            {"job_id": 1, "fit": 0.88, "below_bar": False},
+            {"job_id": 2, "fit": 0.41, "below_bar": True},
+        ]
 
 
 def supervisor(pipeline):
@@ -91,25 +130,108 @@ def test_a_stop_during_sync_stops_fetching_more_boards():
     assert len(pipeline.fetched) == 3
 
 
-def test_a_stopped_run_still_produces_a_shortlist():
+def test_stop_kills_the_run_where_it_stands():
+    """Stop is a kill: no ranking, no gating, no shortlist built from half a
+    corpus. Pause is the one that keeps the work."""
     pipeline = FakePipeline(sources=["greenhouse"], boards=10)
     sup = supervisor(pipeline)
     pipeline.on_fetch = lambda count: sup.request_stop() if count == 1 else None
 
     sup.run()
 
+    assert not pipeline.ranked and not pipeline.gated and not pipeline.shortlisted
+    assert sup.state.phase == "stopped"
+    assert sup.state.outcome == "killed"
+
+
+def test_a_kill_lands_within_one_board():
+    pipeline = FakePipeline(sources=["greenhouse"], boards=10)
+    sup = supervisor(pipeline)
+    pipeline.on_fetch = lambda count: sup.request_stop() if count == 3 else None
+
+    sup.run()
+
+    assert len(pipeline.fetched) == 3
+
+
+def test_a_killed_run_is_not_resumable():
+    pipeline = FakePipeline(sources=["greenhouse"], boards=10)
+    sup = supervisor(pipeline)
+    pipeline.on_fetch = lambda count: sup.request_stop() if count == 1 else None
+    sup.run()
+
+    assert not sup.state.resumable
+    with pytest.raises(runs_module.RunInProgress, match="no paused run"):
+        sup.resume()
+
+
+# --- pause and resume -----------------------------------------------------------
+
+
+def test_a_pause_stops_where_it_is_and_says_it_can_be_resumed():
+    pipeline = FakePipeline(sources=["greenhouse", "ashby"], boards=2)
+    sup = supervisor(pipeline)
+    pipeline.on_fetch = lambda count: sup.request_pause() if count == 2 else None
+
+    sup.run()
+
+    assert sup.state.phase == "paused"
+    assert sup.state.outcome is None
+    assert sup.state.resumable
+    assert not pipeline.shortlisted, "a paused run has not finished"
+
+
+def test_resuming_does_not_refetch_a_source_it_already_finished():
+    """The whole point of resume: the boards already paid for stay paid for."""
+    pipeline = FakePipeline(sources=["greenhouse", "ashby"], boards=2)
+    sup = supervisor(pipeline)
+    pipeline.on_fetch = lambda count: sup.request_pause() if count == 2 else None
+    sup.run()
+    assert sup.state.done_sources == ["greenhouse"]
+
+    pipeline.on_fetch = None
+    sup.run_resumed()
+
+    assert [source for source, _ in pipeline.fetched] == [
+        "greenhouse", "greenhouse", "ashby", "ashby",
+    ], "greenhouse was fetched once, before the pause"
+    assert sup.state.outcome == "completed"
     assert pipeline.shortlisted
-    assert sup.state.outcome == "stopped_early"
 
 
-def test_a_stopped_run_still_gates_what_it_collected():
-    pipeline = FakePipeline(sources=["greenhouse"], boards=10)
+def test_a_source_abandoned_partway_is_fetched_again_on_resume():
+    """Half a source is not a finished source, and recording it as one would
+    silently drop the rest of its boards."""
+    pipeline = FakePipeline(sources=["greenhouse"], boards=4)
     sup = supervisor(pipeline)
-    pipeline.on_fetch = lambda count: sup.request_stop() if count == 1 else None
+    pipeline.on_fetch = lambda count: sup.request_pause() if count == 2 else None
 
     sup.run()
 
-    assert pipeline.gated, "a partial corpus is still worth ranking and gating"
+    assert sup.state.done_sources == [], "it never got to the end of greenhouse"
+
+
+def test_resuming_a_run_that_was_never_paused_is_refused():
+    sup = supervisor(FakePipeline())
+
+    with pytest.raises(runs_module.RunInProgress, match="no paused run"):
+        sup.resume()
+
+
+def test_a_pause_between_phases_is_honoured():
+    pipeline = FakePipeline()
+    sup = supervisor(pipeline)
+    original = pipeline.rank
+
+    def rank_then_pause():
+        sup.request_pause()
+        return original()
+
+    pipeline.rank = rank_then_pause
+    sup.run()
+
+    assert sup.state.phase == "paused"
+    assert pipeline.ranked and not pipeline.gated
 
 
 def test_a_source_that_fails_is_recorded_and_the_run_carries_on():
@@ -160,3 +282,140 @@ def test_counters_track_jobs_seen_across_sources():
 
     assert sup.state.counters["jobs_total"] == 4 * 7
     assert sup.state.counters["boards_done"] == 4
+
+
+# --- what the run says about rank, the gate and the bar ------------------------
+
+
+def test_the_rank_report_survives_on_the_state():
+    sup = supervisor(FakePipeline())
+
+    sup.run()
+
+    assert sup.state.rank.scored == 30
+    assert sup.state.rank.passed == 12
+    assert sup.state.counters["passed"] == 12, "the phase strip still reads this"
+    assert sup.state.rank.reasons[0].code == "salary_below"
+
+
+def test_the_heaviest_drop_reasons_reach_the_feed():
+    sup = supervisor(FakePipeline())
+
+    sup.run()
+
+    messages = [event.message for event in sup.log if event.phase == "rank"]
+    assert any("12 of 30" in message for message in messages)
+    assert any("salary below the floor (11)" in message for message in messages)
+
+
+def test_the_gate_plan_is_known_before_the_first_batch_runs():
+    sup = supervisor(FakePipeline())
+
+    sup.run()
+
+    plan = sup.state.gate.plan
+    assert [batch.label for batch in plan.batches] == ["eu", "uk"]
+    assert plan.jobs == 4
+    assert plan.held_by_company_cap == 3
+    assert plan.bar == 0.7
+
+
+def test_every_gated_batch_ends_marked_done_with_its_verdicts_kept():
+    sup = supervisor(FakePipeline())
+
+    sup.run()
+
+    assert [batch.status for batch in sup.state.gate.plan.batches] == ["done", "done"]
+    assert sup.state.gate.scored == 4
+    assert [verdict["job_id"] for verdict in sup.state.gate.verdicts] == [1, 2, 3, 4]
+
+
+def test_an_unreadable_batch_is_marked_rather_than_passed_over():
+    """The gate already gives up on a batch after one retry. Until now the run
+    said nothing, and those jobs looked like they had simply scored badly."""
+    pipeline = FakePipeline(unreadable_batch="uk")
+    sup = supervisor(pipeline)
+
+    sup.run()
+
+    statuses = [batch.status for batch in sup.state.gate.plan.batches]
+    assert statuses == ["done", "ungated"]
+    assert sup.state.gate.ungated == 2
+    assert sup.state.gate.scored == 2
+    assert any(
+        event.level == "warning" and "ungated" in event.message
+        for event in sup.log
+    )
+
+
+def test_an_empty_gate_plan_says_so_and_gates_nothing():
+    pipeline = FakePipeline()
+    pipeline.gate_batches = lambda: runs_module.GatePlan()
+    sup = supervisor(pipeline)
+
+    sup.run()
+
+    assert pipeline.gated == []
+    assert sup.state.outcome == "completed"
+    assert any("nothing new to gate" in event.message for event in sup.log)
+
+
+def test_only_jobs_above_the_bar_are_counted_as_shortlisted():
+    """Near misses ride along in the same list so the table can draw the cut,
+    but they were never exported and must not be counted as kept."""
+    sup = supervisor(FakePipeline())
+
+    sup.run()
+
+    assert len(sup.state.results) == 2
+    message = next(event.message for event in sup.log if event.phase == "shortlist")
+    assert message.startswith("1 jobs above the bar")
+    assert "1 near misses" in message
+
+
+def test_verdicts_do_not_grow_without_bound():
+    pipeline = FakePipeline()
+    big = list(range(runs_module.VERDICT_CAP * 2))
+    pipeline.gate_batches = lambda: runs_module.GatePlan(
+        batches=[runs_module.GateBatch(label="eu", size=len(big), payload=big)],
+        jobs=len(big),
+    )
+    sup = supervisor(pipeline)
+
+    sup.run()
+
+    assert len(sup.state.gate.verdicts) == runs_module.VERDICT_CAP
+    assert sup.state.gate.scored == len(big), "the count is not capped, only the list"
+
+
+# --- what gets written down -----------------------------------------------------
+
+
+def test_every_resting_point_is_saved():
+    """A run that is only in memory is a run that a restart throws away."""
+    saved = []
+    sup = runs_module.RunSupervisor(
+        pipeline=FakePipeline(), log=events_module.EventLog(),
+        store=lambda state: saved.append(state.phase), clock=lambda: "2026-08-22T10:00:00",
+    )
+
+    sup.run(run_id="20260822-100000")
+
+    assert saved[-1] == "done"
+    assert "sync" in saved and "rank" in saved
+    assert sup.state.run_id == "20260822-100000"
+    assert sup.state.started_at and sup.state.finished_at
+
+
+def test_a_paused_run_is_saved_so_it_survives_a_restart():
+    saved = []
+    pipeline = FakePipeline(sources=["greenhouse"], boards=4)
+    sup = runs_module.RunSupervisor(
+        pipeline=pipeline, log=events_module.EventLog(), store=saved.append,
+    )
+    pipeline.on_fetch = lambda count: sup.request_pause() if count == 2 else None
+
+    sup.run()
+
+    assert saved[-1].phase == "paused"
+    assert saved[-1].finished_at is None, "a paused run has not finished"

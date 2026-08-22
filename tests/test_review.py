@@ -135,3 +135,31 @@ def test_digest_is_plain_text_and_survives_an_empty_corpus(cfg) -> None:
     assert digest.endswith("\n")
     assert "[" in digest and "score 0.80" in digest
     assert "\x1b[" not in digest  # no colour codes: this gets piped into a file
+
+
+def test_near_misses_are_the_jobs_the_bar_turned_away(cfg) -> None:
+    kept = make_scored(cfg, external_id="kept", score_value=0.9)
+    missed = make_scored(cfg, external_id="missed", score_value=0.4)
+
+    shortlisted = [card.job_id for card in review.shortlist(cfg, min_score=0.7)]
+    below = [card.job_id for card in review.near_misses(cfg, min_score=0.7)]
+
+    assert shortlisted == [kept]
+    assert below == [missed]
+
+
+def test_near_misses_come_back_best_first(cfg) -> None:
+    make_scored(cfg, external_id="weak", score_value=0.1)
+    close = make_scored(cfg, external_id="close", score_value=0.65)
+
+    below = review.near_misses(cfg, min_score=0.7)
+
+    assert below[0].job_id == close
+
+
+def test_a_near_miss_never_reaches_the_shortlist(cfg) -> None:
+    """The two lists share a query but not a destination: the CSV and the
+    digest are built from the shortlist alone."""
+    make_scored(cfg, external_id="missed", score_value=0.4)
+
+    assert review.shortlist(cfg, min_score=0.7) == []

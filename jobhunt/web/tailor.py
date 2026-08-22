@@ -16,17 +16,20 @@ from __future__ import annotations
 import dataclasses
 import json
 import pathlib
-import shutil
-import subprocess
 import threading
 from typing import Any, Protocol
 
 from jobhunt.config import Config
+from jobhunt.web import agent
 from jobhunt.web.events import EventLog
 
 MAX_ROUNDS = 3
 CONCURRENCY = 2
 STEP_TIMEOUT = 1800.0
+
+# A tailored CV ships at two pages. Enforced here, while the loop still has
+# rounds to spend, rather than left for the person to discover in the studio.
+MAX_PAGES = 2
 
 UNATTENDED = "unattended run, reviewer agent gates"
 
@@ -42,8 +45,13 @@ class JobRun:
     rounds: int = 0
     folder: str | None = None
     fit: float | None = None
+    pages: int | None = None
     findings: list[str] = dataclasses.field(default_factory=list)
     error: str | None = None
+    # Filled in by whoever starts the batch, so the browser has something to
+    # call each row besides its id.
+    title: str = ""
+    company: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -54,6 +62,7 @@ class Steps(Protocol):
     def tailor(self, folder: str, findings: list[str]) -> str: ...
     def review(self, folder: str, verifier: str) -> dict[str, Any]: ...
     def mark(self, job_id: int, status: str) -> None: ...
+    def pages(self, folder: str) -> int | None: ...
 
 
 class TailorBatch:
@@ -65,11 +74,13 @@ class TailorBatch:
         log: EventLog,
         max_rounds: int = MAX_ROUNDS,
         concurrency: int = CONCURRENCY,
+        max_pages: int = MAX_PAGES,
     ) -> None:
         self.rows = [JobRun(job_id=job_id) for job_id in job_ids]
         self.steps = steps
         self.log = log
         self.max_rounds = max_rounds
+        self.max_pages = max_pages
         self.concurrency = max(1, concurrency)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -155,9 +166,24 @@ class TailorBatch:
             row.fit = _fit_of(verdict)
 
             if str(verdict.get("verdict", "")).lower() == "approve":
+                row.pages = self._pages(row)
+                if self._runs_long(row) and row.rounds < self.max_rounds:
+                    # Length is handled the same way a reviewer objection is:
+                    # as a finding the next cut has to answer.
+                    note = f"the CV runs to {row.pages} pages and must fit {self.max_pages}"
+                    if note not in row.findings:
+                        row.findings.append(note)
+                    self._say(
+                        row,
+                        f"approved on content but {row.pages} pages · cutting it to "
+                        f"{self.max_pages}",
+                        level="warning",
+                    )
+                    continue
                 row.state = "approved"
                 self.steps.mark(row.job_id, "cv_ready")
-                self._say(row, f"approved after {row.rounds} round(s) · fit {row.fit}")
+                length = f" · {row.pages} pages" if row.pages else ""
+                self._say(row, f"approved after {row.rounds} round(s) · fit {row.fit}{length}")
                 return
             self._say(row, f"reviewer asked for changes · {'; '.join(findings) or 'see findings'}",
                       level="warning")
@@ -169,6 +195,18 @@ class TailorBatch:
             f"not approved after {self.max_rounds} rounds · folder kept for you to finish",
             level="warning",
         )
+
+    def _runs_long(self, row: JobRun) -> bool:
+        return bool(row.pages and row.pages > self.max_pages)
+
+    def _pages(self, row: JobRun) -> int | None:
+        """Pages in the compiled CV. A toolchain that cannot say is not a
+        reason to hold up a CV the reviewer already approved."""
+        try:
+            return self.steps.pages(row.folder or "")
+        except Exception as exc:
+            self._say(row, f"could not measure the page count · {exc}", level="warning")
+            return None
 
     def _say(self, row: JobRun, message: str, level: str = "info") -> None:
         self.log.emit(phase="tailor", message=f"job {row.job_id}: {message}", level=level)
@@ -203,7 +241,9 @@ class ClaudeSteps:
         from jobhunt.db.session import session_scope
 
         with session_scope(self.config.db_path) as session:
-            application = applications.apply(session, job_id, tailor=False)
+            application = applications.apply(
+                self.config, session, job_id, tailor=False, status="tailored"
+            )
             folder = getattr(application, "folder", None)
         if not folder:
             raise TailorError(f"job {job_id} has no complete posting to tailor against")
@@ -222,7 +262,10 @@ class ClaudeSteps:
             f"This is an {UNATTENDED}. Skip the chat approval step.\n"
             f"Return the verifier output verbatim.{notes}"
         )
-        return _claude(prompt, tools="Read Write Edit Bash Glob Grep")
+        return agent.run(
+            self.config, "tailor", prompt,
+            tools="Read Write Edit Bash Glob Grep", timeout=STEP_TIMEOUT,
+        )
 
     def review(self, folder: str, verifier: str) -> dict[str, Any]:
         prompt = (
@@ -230,7 +273,9 @@ class ClaudeSteps:
             "and the master, and return only the JSON verdict object.\n\n"
             f"Folder: {folder}\nMaster: {self.master}\n\nVerifier output:\n{verifier}"
         )
-        raw = _claude(prompt, tools="Read Glob Grep")
+        raw = agent.run(
+            self.config, "review", prompt, tools="Read Glob Grep", timeout=STEP_TIMEOUT
+        )
         return _json_object(raw)
 
     def mark(self, job_id: int, status: str) -> None:
@@ -238,20 +283,14 @@ class ClaudeSteps:
 
         csv_export.set_cv_status(csv_export.csv_path(self.config), job_id, status)
 
+    def pages(self, folder: str) -> int | None:
+        from jobhunt.web import revise as revise_module
 
-def _claude(prompt: str, *, tools: str) -> str:
-    binary = shutil.which("claude") or "claude"
-    done = subprocess.run(
-        [binary, "-p", "--output-format", "json", "--allowedTools", tools],
-        input=prompt, capture_output=True, text=True, timeout=STEP_TIMEOUT, check=False,
-    )
-    if done.returncode != 0:
-        raise TailorError(done.stderr.strip() or f"claude exited {done.returncode}")
-    try:
-        envelope = json.loads(done.stdout)
-        return str(envelope.get("result", done.stdout))
-    except json.JSONDecodeError:
-        return done.stdout
+        tex = pathlib.Path(folder) / revise_module.TEX_NAME
+        if not tex.exists():
+            return None
+        ok, log, pdf = revise_module.PdfLatex().build(tex)
+        return revise_module._page_count(log, pdf) if ok else None
 
 
 def _json_object(raw: str) -> dict[str, Any]:

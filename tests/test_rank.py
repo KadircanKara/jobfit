@@ -10,6 +10,7 @@ import datetime as dt
 import json
 
 import pytest
+from sqlalchemy import select
 
 from jobhunt import store
 from jobhunt.db.models import Job, Score, utcnow
@@ -39,6 +40,11 @@ FILTERS = {
         "exclude_titles_regex": ["(?i)sales|recruiter"],
     },
 }
+
+
+def _counts(emitted: dict) -> tuple[int, int]:
+    """(batches, jobs), so an added report field does not fail these tests."""
+    return emitted["batches"], emitted["jobs"]
 
 
 def make_job(cfg, **kwargs):
@@ -240,7 +246,7 @@ def test_emit_writes_a_self_contained_batch(cfg, tmp_path) -> None:
 
     path = tmp_path / "batch.json"
     written = runner.emit(cfg, path)
-    assert written == {"batches": 1, "jobs": 1}
+    assert _counts(written) == (1, 1)
 
     payload = json.loads(path.read_text(encoding="utf-8"))
     batch = payload["batches"][0]
@@ -256,7 +262,7 @@ def test_emit_writes_a_self_contained_batch(cfg, tmp_path) -> None:
 def test_emit_skips_jobs_that_failed_stage_one(cfg, tmp_path) -> None:
     make_job(cfg, country="US", location_raw="Austin, United States")
     runner.run_deterministic(cfg)
-    assert runner.emit(cfg, tmp_path / "b.json") == {"batches": 0, "jobs": 0}
+    assert _counts(runner.emit(cfg, tmp_path / "b.json")) == (0, 0)
 
 
 def test_emit_skips_jobs_already_gated(cfg, tmp_path) -> None:
@@ -270,7 +276,7 @@ def test_emit_skips_jobs_already_gated(cfg, tmp_path) -> None:
     verdicts.write_text(json.dumps([{"job_id": job_id, "score": 0.8, "reasoning": "fits"}]))
     runner.ingest(cfg, verdicts)
 
-    assert runner.emit(cfg, tmp_path / "b2.json") == {"batches": 0, "jobs": 0}
+    assert _counts(runner.emit(cfg, tmp_path / "b2.json")) == (0, 0)
 
 
 def test_emit_truncates_long_descriptions_and_says_so(cfg, tmp_path) -> None:
@@ -567,8 +573,8 @@ def test_regate_includes_jobs_that_already_have_a_verdict(cfg, tmp_path) -> None
     verdicts.write_text(json.dumps([{"job_id": job_id, "score": 0.5, "reasoning": "old"}]))
     runner.ingest(cfg, verdicts)
 
-    assert runner.emit(cfg, tmp_path / "a.json") == {"batches": 0, "jobs": 0}
-    assert runner.emit(cfg, tmp_path / "b.json", regate=True) == {"batches": 1, "jobs": 1}
+    assert _counts(runner.emit(cfg, tmp_path / "a.json")) == (0, 0)
+    assert _counts(runner.emit(cfg, tmp_path / "b.json", regate=True)) == (1, 1)
 
 
 def test_regate_puts_the_highest_previous_scores_first(cfg, tmp_path) -> None:
@@ -594,3 +600,161 @@ def test_stated_constraints_reach_the_gate_prompt(cfg) -> None:
     cfg.raw.setdefault("ranking", {})["constraints"] = ["Open to relocation."]
     assert "Open to relocation." in profile.load(cfg)
     assert "Stated constraints" in profile.load(cfg)
+
+
+# --- what a run reports about itself ------------------------------------------
+
+
+def test_every_drop_reason_carries_a_code_with_a_label(cfg) -> None:
+    """The sentence names this job's problem; the code names the family. A
+    summary can only count families."""
+    job_id = make_job(cfg, remote_type="onsite", country="DE")
+    verdict = verdict_for(cfg, job_id)
+
+    assert verdict.codes == ["field_mismatch"]
+    assert len(verdict.codes) == len(verdict.reasons)
+    assert all(code in deterministic.REASON_LABELS for code in verdict.codes)
+
+
+def test_codes_are_persisted_with_the_notes(cfg) -> None:
+    make_job(cfg, remote_type="onsite", country="DE")
+    runner.run_deterministic(cfg)
+
+    with session_scope(cfg.db_path) as session:
+        notes = session.scalars(select(Score)).first().deterministic_notes
+    assert notes["codes"] == ["field_mismatch"]
+
+
+def test_a_pass_counts_why_jobs_were_dropped(cfg) -> None:
+    make_job(cfg, external_id="a", remote_type="onsite", country="DE")
+    make_job(cfg, external_id="b", remote_type="onsite", country="DE")
+    make_job(cfg, external_id="c", title="Sales Manager", country="DE")
+
+    result = runner.run_deterministic(cfg)
+
+    assert result.reasons["field_mismatch"] == 2
+    assert result.reasons["title_excluded"] == 1
+    assert result.corpus == 3
+
+
+def test_reasons_can_sum_past_the_drop_count(cfg) -> None:
+    """A job failing three rules is counted under all three. The UI says so
+    rather than hiding it, so the arithmetic has to be the honest one."""
+    make_job(cfg, remote_type="onsite", country="US", title="Junior Backend Engineer")
+
+    result = runner.run_deterministic(cfg)
+
+    assert result.failed == 1
+    assert sum(result.reasons.values()) > result.failed
+
+
+def test_a_long_pass_reports_progress_before_it_finishes(cfg) -> None:
+    for index in range(runner.PROGRESS_EVERY + 5):
+        make_job(cfg, external_id=f"job-{index}", country="DE")
+    seen: list[int] = []
+
+    runner.run_deterministic(cfg, progress=lambda partial: seen.append(partial.scored))
+
+    assert len(seen) >= 2, "a pass this long should report at least once mid-way"
+    assert seen[0] < seen[-1], "the counts have to move, not repeat"
+    assert seen[-1] == runner.PROGRESS_EVERY + 5
+
+
+def test_a_progress_snapshot_does_not_change_underneath_the_caller(cfg) -> None:
+    for index in range(runner.PROGRESS_EVERY + 5):
+        make_job(cfg, external_id=f"job-{index}", remote_type="onsite", country="DE")
+    snapshots: list[runner.DeterministicResult] = []
+
+    runner.run_deterministic(cfg, progress=snapshots.append)
+
+    first = snapshots[0]
+    assert first.scored < snapshots[-1].scored
+    assert first.reasons["field_mismatch"] == first.failed
+
+
+def test_the_company_cap_reports_what_it_held_back(cfg) -> None:
+    for index in range(5):
+        make_job(cfg, external_id=f"acme-{index}", company_name="Acme", country="DE")
+    runner.run_deterministic(cfg)
+
+    emitted = runner.emit(cfg, cfg.home / "batch.json", max_per_company=2)
+
+    assert emitted["jobs"] == 2
+    assert emitted["held_by_company_cap"] == 3
+
+
+# --- where the candidate is ---------------------------------------------------
+
+
+def test_a_stated_location_wins_over_anything_in_the_cv(cfg) -> None:
+    """The seam for a structured profile: set this and nothing is inferred."""
+    cfg.raw["ranking"]["candidate_location"] = "Lisbon, Portugal"
+
+    where = profile.location(cfg)
+
+    assert where.text == "Lisbon, Portugal"
+    assert where.country == "PT"
+
+
+def test_a_location_is_read_off_the_address_line_when_none_is_stated() -> None:
+    where = profile._location_in("Ada Lovelace\nIstanbul, Turkey\nEXPERIENCE\n")
+
+    assert where.text == "Istanbul, Turkey"
+    assert where.country == "TR"
+
+
+def test_a_sentence_that_merely_names_a_country_contributes_only_the_country() -> None:
+    """A whole sentence in the prompt's location slot would drag its own claims
+    in with it, so only the country it named survives."""
+    line = "- Spent four years shipping payment systems for a bank in Germany, remotely."
+
+    where = profile._location_in(line)
+
+    assert where.country == "DE"
+    assert where.text == "Germany"
+
+
+def test_an_unplaceable_profile_reports_no_location() -> None:
+    assert profile._location_in("Ada Lovelace\nEXPERIENCE\nBackend engineer\n") is None
+
+
+def test_the_country_is_named_as_a_country_not_a_city() -> None:
+    """The location rules compare countries. "a country other than Istanbul,
+    Turkey" is not a rule a model can apply."""
+    where = profile.Location(text="Istanbul, Turkey", country="TR")
+
+    assert where.country_name == "Turkey"
+
+
+def test_a_gate_prompt_carries_the_location_and_the_country_separately(cfg) -> None:
+    cfg.raw["ranking"]["candidate_location"] = "Istanbul, Turkey"
+    filters = {"profiles": {"global_remote": {"llm_gate_prompt": "prompts/remote_fit.md"}}}
+
+    text = runner._prompt_text(cfg, filters, "global_remote", "CANDIDATE")
+
+    assert "{location}" not in text and "{country}" not in text
+    assert "based in Istanbul, Turkey" in text
+    assert "a country other than Turkey" in text
+
+
+def test_an_unknown_location_tells_the_gate_not_to_score_on_it(cfg) -> None:
+    """An assumed home country turns every posting elsewhere into a rejection,
+    which is the failure this whole rule exists to stop."""
+    cfg.raw["ranking"]["candidate_location"] = None
+    cfg.raw["ranking"]["profile_summary"] = "Backend engineer. Python, FastAPI."
+    cfg.raw["ranking"]["constraints"] = []
+    filters = {"profiles": {"global_remote": {"llm_gate_prompt": "prompts/remote_fit.md"}}}
+
+    text = runner._prompt_text(cfg, filters, "global_remote", "CANDIDATE")
+
+    assert runner.UNKNOWN_LOCATION in text
+
+
+def test_the_shipped_prompts_only_penalise_a_stated_residency_requirement() -> None:
+    """Pins the rule itself: an office abroad is not a penalty, a stated
+    requirement to already live abroad is."""
+    text = (deterministic.PACKAGED_FILTERS.parent / "prompts/remote_fit.md").read_text()
+
+    assert "must already be" in text
+    assert "no location penalty" in text
+    assert "The candidate will relocate" in text

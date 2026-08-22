@@ -531,6 +531,41 @@ def _apply_job(cfg, job_id: int, tailor: bool, dry_run: bool) -> None:
         console.print(f"  [bold]{result.instruction}[/bold]")
 
 
+@app.command("rename-folders")
+def rename_folders_cmd(
+    apply_changes: bool = typer.Option(
+        False, "--apply", help="Actually move them. Without this, nothing is touched."
+    ),
+) -> None:
+    """Move application folders onto the current naming scheme.
+
+    Dry by default: it prints what it would do and stops. Nothing here talks to
+    an employer; it renames directories and the paths recorded against them.
+    """
+    cfg = _config()
+    with session_scope(cfg.db_path) as session:
+        plans = applications_module.rename_folders(cfg, session, dry_run=not apply_changes)
+
+    movable = [plan for plan in plans if plan.doable]
+    stuck = [plan for plan in plans if not plan.doable]
+
+    for plan in movable:
+        arrow = "moved" if apply_changes else "would move"
+        console.print(f"{arrow}: {pathlib.Path(plan.old).name}")
+        console.print(f"     -> {pathlib.Path(plan.new).name}")
+    for plan in stuck:
+        console.print(f"[yellow]left alone[/yellow]: {pathlib.Path(plan.old).name} — {plan.reason}")
+
+    if not plans:
+        console.print("rename-folders: every folder already matches the scheme.")
+        return
+    console.print("")
+    console.print(
+        f"rename-folders: {len(movable)} to move, {len(stuck)} left alone."
+        + ("" if apply_changes else " Re-run with --apply to do it.")
+    )
+
+
 @app.command()
 def skip(
     job_id: int,

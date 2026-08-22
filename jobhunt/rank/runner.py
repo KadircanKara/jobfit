@@ -19,6 +19,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import pathlib
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy import select
@@ -39,19 +40,34 @@ DEFAULT_BATCH = 20
 MAX_PER_COMPANY = 3
 
 
+# How often a long pass reports in. Small enough that the browser sees the
+# counts climb, large enough that the callback is not the expensive part.
+PROGRESS_EVERY = 50
+
+
 @dataclasses.dataclass
 class DeterministicResult:
     scored: int = 0
     passed: int = 0
     failed: int = 0
     skipped: int = 0
+    corpus: int = 0
     by_market: dict[str, int] = dataclasses.field(default_factory=dict)
+    # Drop reason code -> how many jobs hit it. A job that fails three rules is
+    # counted under all three, so these sum past `failed` on purpose.
+    reasons: dict[str, int] = dataclasses.field(default_factory=dict)
 
     def summary(self) -> str:
         markets = " ".join(f"{k}={v}" for k, v in sorted(self.by_market.items())) or "-"
         return (
             f"rank: scored={self.scored} passed={self.passed} failed={self.failed} "
             f"already_scored={self.skipped} [{markets}]"
+        )
+
+    def snapshot(self) -> DeterministicResult:
+        """A copy safe to hand to another thread while the pass continues."""
+        return dataclasses.replace(
+            self, by_market=dict(self.by_market), reasons=dict(self.reasons)
         )
 
 
@@ -61,12 +77,17 @@ def run_deterministic(
     limit: int | None = None,
     rescore: bool = False,
     rates: dict[str, float] | None = None,
+    progress: Callable[[DeterministicResult], None] | None = None,
 ) -> DeterministicResult:
     """Stage 1 over every unscored active job. Cheap enough to run on everything.
 
     `rates` is one exchange-rate snapshot for this run. It is passed in rather
     than read from disk so every job in a run is compared against the same
     numbers, and so a stale file can never quietly become the rule.
+
+    `progress` is called with a snapshot every `PROGRESS_EVERY` rows and once at
+    the end, so a caller watching a run can show the counts moving rather than
+    a blank panel for the length of the pass.
     """
     filters = deterministic.load_filters(config)
     if rates:
@@ -92,7 +113,13 @@ def run_deterministic(
         if limit:
             stmt = stmt.limit(limit)
 
-        for job, company in session.execute(stmt).all():
+        rows = session.execute(stmt).all()
+        result.corpus = len(rows)
+        seen = 0
+        for job, company in rows:
+            seen += 1
+            if progress and seen % PROGRESS_EVERY == 0:
+                progress(result.snapshot())
             score = _score_row(session, job.id, job.market)
             if score is not None and not rescore and score.deterministic_notes is not None:
                 result.skipped += 1
@@ -114,8 +141,12 @@ def run_deterministic(
                 passed_by_market[job.market] = passed_by_market.get(job.market, 0) + 1
             else:
                 result.failed += 1
+            for code in verdict.codes:
+                result.reasons[code] = result.reasons.get(code, 0) + 1
 
     result.by_market = passed_by_market
+    if progress:
+        progress(result.snapshot())
     return result
 
 
@@ -170,11 +201,13 @@ def emit(
 
         per_company: dict[Any, int] = {}
         taken = 0
+        held = 0
         for job, company, score in session.execute(stmt).all():
             if taken >= limit:
                 break
             key = company.id if company else f"job:{job.id}"
             if max_per_company and per_company.get(key, 0) >= max_per_company:
+                held += 1
                 continue
             per_company[key] = per_company.get(key, 0) + 1
             taken += 1
@@ -206,7 +239,13 @@ def emit(
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"batches": len(payload["batches"]), "jobs": sum(len(b) for b in batches.values())}
+    return {
+        "batches": len(payload["batches"]),
+        "jobs": sum(len(b) for b in batches.values()),
+        # Jobs skipped so one company could not fill the batch. Not a rejection:
+        # they are first in line next run.
+        "held_by_company_cap": held,
+    }
 
 
 def _gate_record(job: Job, company: Company | None, score: Score) -> dict[str, Any]:
@@ -242,10 +281,16 @@ def _salary_text(job: Job) -> str | None:
     return f"{int(job.salary_min):,}-{int(high):,} {currency}/{period}".strip("/")
 
 
+# What `{location}` becomes when the candidate's own location cannot be
+# established. The gate is told plainly rather than left to assume one, because
+# an assumed home country turns every posting elsewhere into a rejection.
+UNKNOWN_LOCATION = "not stated — do not assume one, and do not score on location"
+
+
 def _prompt_text(
     config: Config, filters: dict[str, Any], market: str, candidate: str
 ) -> str:
-    """The market's gate prompt with the candidate profile substituted in."""
+    """The market's gate prompt with the candidate substituted in."""
     relative = deterministic.profile_for(filters, market).get("llm_gate_prompt")
     if not relative:
         return ""
@@ -254,7 +299,16 @@ def _prompt_text(
     source = user_path if user_path.exists() else packaged
     if not source.exists():
         return ""
-    return source.read_text(encoding="utf-8").replace("{profile}", candidate)
+    where = profile.location(config)
+    return (
+        source.read_text(encoding="utf-8")
+        .replace("{profile}", candidate)
+        # `{location}` is where they live, "Istanbul, Turkey"; `{country}` is the
+        # country alone, because every rule that turns on location compares
+        # countries and a city in that slot makes the rule unusable.
+        .replace("{location}", where.text if where else UNKNOWN_LOCATION)
+        .replace("{country}", where.country_name if where else UNKNOWN_LOCATION)
+    )
 
 
 @dataclasses.dataclass

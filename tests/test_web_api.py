@@ -213,3 +213,270 @@ def test_the_tailoring_state_starts_empty(client):
 
     assert body["jobs"] == []
     assert body["running"] is False
+
+
+def test_a_gate_batch_payload_never_reaches_the_browser(cfg):
+    """The payload is the prompt plus every job description in the batch. The
+    page polls this endpoint every two seconds and never reads it."""
+    from jobhunt.web import events as events_module
+    from jobhunt.web import runs as runs_module
+    from jobhunt.web.app import AppState, create_app
+
+    app = create_app(config=cfg)
+    state: AppState = app.state.jh
+    supervisor = runs_module.RunSupervisor(pipeline=None, log=events_module.EventLog())
+    supervisor.state.gate = runs_module.GateReport(
+        plan=runs_module.GatePlan(
+            batches=[
+                runs_module.GateBatch(
+                    label="eu", size=2, payload={"prompt": "x" * 40000, "jobs": [{}, {}]}
+                )
+            ],
+            jobs=2,
+        )
+    )
+    state.supervisor = supervisor
+
+    body = TestClient(app).get("/api/runs/current").json()
+
+    batch = body["gate"]["plan"]["batches"][0]
+    assert batch == {"label": "eu", "size": 2, "status": "queued"}
+
+
+def test_a_run_that_has_not_started_reports_no_rank_or_gate(client):
+    body = client.get("/api/runs/current").json()
+
+    assert body["rank"] is None
+    assert body["gate"] is None
+
+
+# --- the revision studio --------------------------------------------------------
+
+
+@pytest.fixture
+def studio(cfg, tmp_path):
+    """An app whose batch has already shipped one CV, with a fake agent and a
+    fake toolchain so no model and no LaTeX are needed."""
+    from jobhunt.web import revise as revise_module
+    from jobhunt.web import tailor as tailor_module
+    from jobhunt.web.app import create_app
+    from tests.test_web_revise import TEX, FakeAgent, FakeLatex
+
+    folder = tmp_path / "Tailored CVs" / "Arc Bank - Backend Engineer"
+    folder.mkdir(parents=True)
+    (folder / "cv.tex").write_text(TEX, encoding="utf-8")
+
+    app = create_app(config=cfg)
+    state = app.state.jh
+    state.desk = revise_module.ReviseDesk(cfg, agent=FakeAgent(), latex=FakeLatex())
+    batch = tailor_module.TailorBatch(job_ids=[7], steps=None, log=state.log)
+    batch.rows[0].folder = str(folder)
+    batch.rows[0].state = "approved"
+    batch.rows[0].title = "Backend Engineer"
+    batch.rows[0].company = "Arc Bank"
+    state.batch = batch
+    return TestClient(app), state, folder
+
+
+def _settle(client, job_id=7):
+    import time
+
+    for _ in range(200):
+        body = client.get(f"/api/revise/{job_id}").json()
+        if not body.get("thinking"):
+            return body
+        time.sleep(0.01)
+    raise AssertionError("the revision never finished")
+
+
+def test_only_jobs_with_a_folder_can_be_revised(studio):
+    client, state, _ = studio
+    state.batch.rows[0].folder = None
+
+    assert client.get("/api/revise").json()["jobs"] == []
+
+
+def test_opening_a_revision_returns_the_thread_and_the_job_it_belongs_to(studio):
+    client, _, _ = studio
+
+    body = client.post("/api/revise/7").json()
+
+    assert body["company"] == "Arc Bank"
+    assert body["turns"][0]["role"] == "agent"
+    assert body["ahead"] == 0
+
+
+def test_a_job_that_was_never_tailored_is_refused_in_words(studio):
+    client, _, _ = studio
+
+    response = client.post("/api/revise/999")
+
+    assert response.status_code == 422
+    assert "no tailored CV" in response.json()["message"]
+
+
+def test_a_message_comes_back_with_the_change_the_agent_made(studio):
+    client, _, _ = studio
+    client.post("/api/revise/7")
+
+    client.post("/api/revise/7/message", json={"message": "lead with the LLM work"})
+    body = _settle(client)
+
+    assert [turn["role"] for turn in body["turns"]][-2:] == ["you", "agent"]
+    assert body["turns"][-1]["changes"]
+    assert body["ahead"] == 1
+
+
+def test_the_preview_is_a_pdf_the_browser_can_render(studio):
+    client, _, _ = studio
+    client.post("/api/revise/7")
+
+    body = client.get("/api/revise/7/preview").json()
+
+    assert body["ok"] and body["pdf"]
+    assert body["pages"] == 2
+
+
+def test_the_folder_is_only_written_when_sync_is_called(studio):
+    client, _, folder = studio
+    from tests.test_web_revise import TEX
+
+    client.post("/api/revise/7")
+    client.post("/api/revise/7/message", json={"message": "change something"})
+    _settle(client)
+    assert (folder / "cv.tex").read_text() == TEX, "untouched until sync"
+
+    body = client.post("/api/revise/7/sync").json()
+
+    assert body["ahead"] == 0
+    assert (folder / "cv.pdf").exists()
+
+
+def test_syncing_with_nothing_to_write_is_refused_rather_than_silent(studio):
+    client, _, _ = studio
+    client.post("/api/revise/7")
+
+    response = client.post("/api/revise/7/sync")
+
+    assert response.status_code == 422
+    assert "nothing to sync" in response.json()["message"]
+
+
+# --- results that outlive the process --------------------------------------------
+
+
+def test_with_no_run_in_memory_the_shortlist_is_read_back_from_the_corpus(cfg):
+    """Restarting the server must not lose work that is already on disk."""
+    from jobhunt import store
+    from jobhunt.db.models import Score
+    from jobhunt.db.session import session_scope
+    from jobhunt.sources.base import JobPosting
+    from jobhunt.web.app import create_app
+
+    with session_scope(cfg.db_path) as session:
+        job, _ = store.upsert_posting(session, JobPosting(
+            source="ashby", external_id="x1", market="global_remote",
+            title="AI Engineer", company_name="Apify", remote_type="hybrid",
+            description_text="We build things. " * 40,
+            apply_url="https://jobs.ashbyhq.com/apify/1",
+        ))
+        session.flush()
+        session.add(Score(
+            job_id=job.id, profile=job.market, deterministic_pass=True,
+            deterministic_notes={"passed": True, "boost": 1.0},
+            llm_score=0.85, llm_reasoning="close match", llm_model="claude-code-print",
+        ))
+        kept = job.id
+
+    body = TestClient(create_app(config=cfg)).get("/api/runs/current").json()
+
+    assert body["outcome"] == "restored"
+    assert body["running"] is False
+    assert [row["job_id"] for row in body["results"] if not row["below_bar"]] == [kept]
+    assert body["rank"] is None and body["gate"] is None, "nothing was watched happening here"
+
+
+def test_an_empty_corpus_restores_nothing_and_says_nothing(client):
+    body = client.get("/api/runs/current").json()
+
+    assert body["outcome"] is None
+    assert body["results"] == []
+
+
+def test_a_job_still_being_tailored_is_listed_but_not_ready(studio):
+    """The studio has to tell "no CV yet" apart from "CV ready", or it offers a
+    job it cannot open and looks broken."""
+    client, state, folder = studio
+    (folder / "cv.tex").unlink()
+
+    row = client.get("/api/revise").json()["jobs"][0]
+
+    assert row["folder"], "the folder exists from the moment tailoring starts"
+    assert row["ready"] is False
+
+
+def test_a_job_whose_cv_has_landed_is_ready(studio):
+    client, _, _ = studio
+
+    assert client.get("/api/revise").json()["jobs"][0]["ready"] is True
+
+
+def test_a_job_whose_cv_is_still_being_written_is_not_ready(studio):
+    """A folder can hold a cv.tex that the agent has not finished writing."""
+    client, state, folder = studio
+    (folder / "cv.tex").write_text("\\documentclass{article}\n", encoding="utf-8")
+
+    assert client.get("/api/revise").json()["jobs"][0]["ready"] is False
+
+
+def test_a_job_the_batch_is_still_working_on_is_not_ready(studio):
+    """Round two overwrites the CV round one produced, so a complete file is
+    not on its own a safe one to copy."""
+    client, state, _ = studio
+    state.batch.rows[0].state = "running"
+
+    assert client.get("/api/revise").json()["jobs"][0]["ready"] is False
+
+
+# --- run history and the two buttons ---------------------------------------------
+
+
+def test_no_runs_on_file_is_an_empty_list(client):
+    assert client.get("/api/runs").json() == {"runs": []}
+
+
+def test_a_saved_run_is_listed_and_can_be_opened(cfg):
+    from jobhunt.web import history as history_module
+    from jobhunt.web.app import create_app
+
+    history_module.save(cfg, "20260822-100000", {
+        "phase": "done", "outcome": "completed", "started_at": "s", "finished_at": "f",
+        "counters": {"jobs_total": 4213},
+        "results": [{"below_bar": False}, {"below_bar": True}],
+        "rank": {"passed": 412}, "gate": None,
+    })
+    client = TestClient(create_app(config=cfg))
+
+    listed = client.get("/api/runs").json()["runs"]
+    assert [row["run_id"] for row in listed] == ["20260822-100000"]
+    assert listed[0]["shortlisted"] == 1
+
+    body = client.get("/api/runs/20260822-100000").json()
+    assert body["rank"]["passed"] == 412, "the whole state comes back, not a summary"
+
+
+def test_a_run_that_was_pruned_is_a_404_not_a_crash(client):
+    assert client.get("/api/runs/20200101-000000").status_code == 404
+
+
+def test_pausing_nothing_says_so_rather_than_failing(client):
+    body = client.post("/api/runs/current/pause").json()
+
+    assert body == {"paused": False, "reason": "nothing is running"}
+
+
+def test_resuming_with_no_paused_run_is_refused(client):
+    response = client.post("/api/runs/current/resume")
+
+    assert response.status_code == 409
+    assert "no paused run" in response.json()["message"]

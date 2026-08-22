@@ -45,6 +45,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # Overrides the master.tex derived candidate summary when set.
         "profile_summary": None,
     },
+    # Which model runs which phase of the pipeline, and how hard it thinks.
+    # Unset means inherit whatever the `claude` CLI session defaults to, which
+    # is what every phase did before these keys existed. Sync and deterministic
+    # ranking are absent because they never call a model.
+    "models": {
+        # Scores a batch of jobs against the posting. Judgement over long input.
+        "gate": {"model": None, "effort": None},
+        # Rewrites the CV from the master. The fabrication risk lives here.
+        "tailor": {"model": None, "effort": None},
+        # Hunts fabrication in the cut. The last check before a CV ships.
+        "review": {"model": None, "effort": None},
+        # The revision studio: questions about a posting, and edits to cv.tex.
+        "revise": {"model": None, "effort": None},
+    },
     "digest": {
         "limit": 15,
         "allow_non_english": True,

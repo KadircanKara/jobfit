@@ -32,19 +32,53 @@ FILTERS_FILENAME = "filters.yaml"
 PACKAGED_FILTERS = pathlib.Path(__file__).resolve().parent.parent / "assets" / FILTERS_FILENAME
 
 
+# Every drop reason carries a code alongside its sentence. The sentence names
+# the specific job's problem ("salary 62,000 below 90,000"), which is what a
+# person needs; the code is the family it belongs to, which is what a run
+# summary can count. Without the code a histogram would have one bar per
+# distinct salary figure.
+REASON_LABELS: dict[str, str] = {
+    "age": "older than the age limit",
+    "company_blocked": "company blocklisted",
+    "title_excluded": "title matches an excluded pattern",
+    "title_unmatched": "title matches no required pattern",
+    "field_mismatch": "work model, type or country not allowed",
+    "phrase_excluded": "excluded phrase in the posting",
+    "seniority_low": "seniority below the floor",
+    "seniority_high": "seniority above the ceiling",
+    "salary_unstated": "salary not stated",
+    "salary_below": "salary below the floor",
+    "tz_overlap": "timezone overlap below the minimum",
+}
+
+# Reasons the Filters panel can actually move. The rest live in filters.yaml,
+# so telling the user to adjust them from the browser would be a lie.
+TUNABLE_REASONS = frozenset(
+    {"age", "title_unmatched", "field_mismatch", "seniority_low", "seniority_high",
+     "salary_unstated", "salary_below"}
+)
+
+
 @dataclasses.dataclass
 class Verdict:
     """Why a job passed or failed. The reasons are persisted, not just counted."""
 
     passed: bool
     reasons: list[str] = dataclasses.field(default_factory=list)
+    codes: list[str] = dataclasses.field(default_factory=list)
     boost: float = 1.0
     tz_overlap_hours: float | None = None
+
+    def drop(self, code: str, reason: str) -> None:
+        """Record one failing rule, as both a family and a sentence."""
+        self.codes.append(code)
+        self.reasons.append(reason)
 
     def as_notes(self) -> dict[str, Any]:
         return {
             "passed": self.passed,
             "reasons": self.reasons,
+            "codes": self.codes,
             "boost": round(self.boost, 3),
             "tz_overlap_hours": self.tz_overlap_hours,
         }
@@ -108,7 +142,7 @@ def _check_age(job: Job, rules: dict[str, Any], now: dt.datetime, verdict: Verdi
         return
     age = (now - job.posted_at).days
     if age > int(max_age):
-        verdict.reasons.append(f"older than {max_age} days ({age})")
+        verdict.drop("age", f"older than {max_age} days ({age})")
 
 
 def _check_excluded_company(company: Company | None, rules: dict[str, Any], verdict: Verdict) -> None:
@@ -116,7 +150,7 @@ def _check_excluded_company(company: Company | None, rules: dict[str, Any], verd
     if not blocked or company is None:
         return
     if (company.name or "").strip().lower() in blocked or company.normalized_name in blocked:
-        verdict.reasons.append(f"company blocklisted ({company.name})")
+        verdict.drop("company_blocked", f"company blocklisted ({company.name})")
 
 
 def _check_excluded_titles(job: Job, rules: dict[str, Any], verdict: Verdict) -> None:
@@ -127,7 +161,7 @@ def _check_excluded_titles(job: Job, rules: dict[str, Any], verdict: Verdict) ->
             # A broken regex in a user-edited file must not take the run down.
             continue
         if compiled.search(job.title or ""):
-            verdict.reasons.append(f"title matches {pattern}")
+            verdict.drop("title_excluded", f"title matches {pattern}")
 
 
 def _check_required_titles(
@@ -150,7 +184,7 @@ def _check_required_titles(
                 return
         except re.error:
             continue
-    verdict.reasons.append("title matches no required pattern")
+    verdict.drop("title_unmatched", "title matches no required pattern")
 
 
 def _check_hard_requires(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
@@ -168,14 +202,14 @@ def _check_hard_requires(job: Job, profile: dict[str, Any], verdict: Verdict) ->
             continue  # unknown is never a rejection
         allowed_values = allowed if isinstance(allowed, list) else [allowed]
         if str(value) not in {str(item) for item in allowed_values}:
-            verdict.reasons.append(f"{field}={value} not in {allowed_values}")
+            verdict.drop("field_mismatch", f"{field}={value} not in {allowed_values}")
 
 
 def _check_hard_excludes(haystack: str, profile: dict[str, Any], verdict: Verdict) -> None:
     for phrase in profile.get("hard_excludes") or []:
         text = str(phrase).strip().lower()
         if text and _phrase_pattern(text).search(haystack):
-            verdict.reasons.append(f"excluded phrase {text!r}")
+            verdict.drop("phrase_excluded", f"excluded phrase {text!r}")
 
 
 @functools.lru_cache(maxsize=256)
@@ -196,13 +230,13 @@ def _check_seniority(job: Job, profile: dict[str, Any], verdict: Verdict) -> Non
 
     minimum = profile.get("seniority_min")
     if minimum in SENIORITY_ORDER and level < SENIORITY_ORDER.index(str(minimum)):
-        verdict.reasons.append(f"seniority {job.seniority} below {minimum}")
+        verdict.drop("seniority_low", f"seniority {job.seniority} below {minimum}")
 
     # A ceiling is not symmetry for its own sake: a senior engineer applying to a
     # principal or VP-level posting wastes a gate call and an application.
     maximum = profile.get("seniority_max")
     if maximum in SENIORITY_ORDER and level > SENIORITY_ORDER.index(str(maximum)):
-        verdict.reasons.append(f"seniority {job.seniority} above {maximum}")
+        verdict.drop("seniority_high", f"seniority {job.seniority} above {maximum}")
 
 
 # Everything is compared as an annual figure. A job stating a monthly or hourly
@@ -231,7 +265,7 @@ def _check_salary(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
 
     if not job.salary_is_stated or job.salary_min is None:
         if not include_unstated:
-            verdict.reasons.append("salary not stated")
+            verdict.drop("salary_unstated", "salary not stated")
         return
 
     job_currency = (job.salary_currency or "").upper() or None
@@ -248,14 +282,15 @@ def _check_salary(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
         if converted is None:
             return  # no usable rate, so the figure stays unknown
         if converted < float(floor):
-            verdict.reasons.append(
+            verdict.drop(
+                "salary_below",
                 f"salary {top:,.0f} {job_currency} "
-                f"({converted:,.0f} {wanted_currency}) below {float(floor):,.0f} {wanted_currency}"
+                f"({converted:,.0f} {wanted_currency}) below {float(floor):,.0f} {wanted_currency}",
             )
         return
 
     if top < float(floor):
-        verdict.reasons.append(f"salary {top:,.0f} below {float(floor):,.0f}")
+        verdict.drop("salary_below", f"salary {top:,.0f} below {float(floor):,.0f}")
 
 
 def _convert(amount: float, frm: str, to: str, rates: dict[str, Any]) -> float | None:
@@ -284,7 +319,7 @@ def _check_timezone(job: Job, profile: dict[str, Any], verdict: Verdict) -> None
     if overlap is None:
         return  # unknown country is not a rejection
     if overlap < float(minimum):
-        verdict.reasons.append(f"timezone overlap {overlap:g}h below {minimum}h")
+        verdict.drop("tz_overlap", f"timezone overlap {overlap:g}h below {minimum}h")
 
 
 def _apply_boosts(

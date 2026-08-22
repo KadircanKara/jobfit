@@ -100,3 +100,97 @@ def test_a_card_becomes_a_row_carrying_company_and_url(cfg):
     assert row["company"] == "Clera"
     assert row["url"] == "https://jobs.ashbyhq.com/clera/x"
     assert row["fit"] == 0.88
+
+
+# --- what the engine reports about rank and the gate ---------------------------
+
+
+def test_the_rank_report_labels_and_marks_the_tunable_reasons(cfg):
+    from jobhunt.rank import runner as rank_runner
+
+    pipeline = engine_module.EnginePipeline(cfg)
+    result = rank_runner.DeterministicResult(
+        corpus=40, scored=30, passed=12, failed=18, skipped=10,
+        by_market={"eu": 12},
+        reasons={"salary_below": 11, "tz_overlap": 7},
+    )
+
+    report = pipeline._rank_report(result)
+
+    assert report.passed == 12 and report.corpus == 40
+    assert [reason.code for reason in report.reasons] == ["salary_below", "tz_overlap"]
+    assert report.reasons[0].label == "salary below the floor"
+    assert report.reasons[0].tunable, "the Filters panel can move the salary floor"
+    assert not report.reasons[1].tunable, "timezone rules live in filters.yaml"
+
+
+def test_a_rank_pass_reports_itself_through_the_hook(cfg):
+    seen = []
+    pipeline = engine_module.EnginePipeline(cfg)
+    pipeline.on_rank = seen.append
+
+    pipeline.rank()
+
+    assert seen, "an empty corpus still reports once, so the panel is never blank"
+    assert seen[-1].scored == 0
+
+
+def test_an_empty_corpus_produces_a_gate_plan_with_nothing_in_it(cfg):
+    pipeline = engine_module.EnginePipeline(cfg)
+
+    plan = pipeline.gate_batches()
+
+    assert plan.batches == []
+    assert plan.jobs == 0
+
+
+def test_verdicts_are_joined_back_to_the_postings_they_scored():
+    """The gate answers with an id and a score. The batch it was handed is the
+    only place the title still lives."""
+    rows = engine_module._verdict_rows(
+        [{"job_id": 7, "score": 0.81, "reasoning": "fits", "red_flags": ["thin jd"]}],
+        [{"job_id": 7, "title": "AI Engineer", "company": "Clera", "source": "ashby"}],
+        "eu",
+    )
+
+    assert rows[0]["title"] == "AI Engineer"
+    assert rows[0]["company"] == "Clera"
+    assert rows[0]["red_flags"] == ["thin jd"]
+    assert rows[0]["market"] == "eu"
+
+
+def test_a_verdict_for_a_job_missing_from_the_batch_still_renders():
+    rows = engine_module._verdict_rows([{"job_id": 9, "score": 0.4}], [], "eu")
+
+    assert rows[0]["title"] == "job 9"
+    assert rows[0]["company"] == "—"
+
+
+def test_a_corpus_with_survivors_produces_batches_to_gate(cfg):
+    """Regression: `emit` returns a dict, and the guard here once read it with
+    `getattr`, which is always the fallback on a dict. `gate_batches` returned
+    an empty list on every run, so the browser never gated a single job — and
+    said nothing, because an empty plan is also what a fully gated corpus
+    looks like."""
+    from jobhunt import store
+    from jobhunt.db.models import Score
+    from jobhunt.db.session import session_scope
+    from jobhunt.sources.base import JobPosting
+
+    with session_scope(cfg.db_path) as session:
+        job, _ = store.upsert_posting(session, JobPosting(
+            source="ashby", external_id="x1", market="global_remote",
+            title="Senior Backend Engineer", company_name="Acme",
+            remote_type="remote", description_text="We build things. " * 40,
+        ))
+        session.flush()
+        session.add(Score(
+            job_id=job.id, profile=job.market, deterministic_pass=True,
+            deterministic_notes={"passed": True, "reasons": [], "codes": []},
+        ))
+
+    plan = engine_module.EnginePipeline(cfg).gate_batches()
+
+    assert plan.jobs == 1
+    assert [batch.label for batch in plan.batches] == ["global_remote"]
+    assert plan.batches[0].size == 1

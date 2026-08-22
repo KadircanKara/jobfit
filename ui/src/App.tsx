@@ -1,9 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./theme.css";
-import { api, type Filters, type JobRun, type RunEvent, type RunState, type Vocab } from "./api";
+import {
+  api,
+  type Filters,
+  type JobRun,
+  type RevisableJob,
+  type RunEvent,
+  type RunState,
+  type RunSummary,
+  type Vocab,
+} from "./api";
 import { FiltersPanel } from "./Filters";
-import { Log, PhaseStrip, Shortlist, SourceRail } from "./Run";
+import { GatePanel, Log, PhaseStrip, RankPanel, Shortlist, SourceRail } from "./Run";
 import { TailorBatch } from "./Tailor";
+import { ReviseStudio } from "./Revise";
 import { Profile } from "./Profile";
 
 const EMPTY_RUN: RunState = {
@@ -13,7 +23,13 @@ const EMPTY_RUN: RunState = {
   error: null,
   degraded: [],
   counters: {},
+  rank: null,
+  gate: null,
   results: [],
+  resumable: false,
+  run_id: "",
+  started_at: "",
+  finished_at: null,
   last_seq: 0,
 };
 
@@ -27,7 +43,13 @@ export default function App() {
   const [valid, setValid] = useState(true);
   const [screen, setScreen] = useState<"hunt" | "profile">("hunt");
   const [tailor, setTailor] = useState<{ jobs: JobRun[]; running: boolean }>({ jobs: [], running: false });
+  const [revisable, setRevisable] = useState<RevisableJob[]>([]);
+  const [reviewing, setReviewing] = useState<number | null>(null);
+  const studio = useRef<HTMLDivElement>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [past, setPast] = useState<RunSummary[]>([]);
+  // Which saved run is on screen. Empty means the live one.
+  const [viewing, setViewing] = useState("");
   const results = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -54,7 +76,9 @@ export default function App() {
     source.onmessage = (message) => {
       const event: RunEvent = JSON.parse(message.data);
       setEvents((current) => [...current.slice(-400), event]);
-      if (["done", "failed", "shortlist"].includes(event.phase)) {
+      // Rank and the gate report through the polled state, not the feed, so a
+      // phase ending has to pull the state that goes with it.
+      if (["rank", "gate", "shortlist", "done", "failed"].includes(event.phase)) {
         api.run().then(setRun);
       }
     };
@@ -63,12 +87,26 @@ export default function App() {
   }, [run.running]);
 
   useEffect(() => {
-    if (!run.running) return;
+    if (!run.running || viewing) return;
     const timer = window.setInterval(() => api.run().then(setRun), 2500);
     return () => window.clearInterval(timer);
-  }, [run.running]);
+  }, [run.running, viewing]);
 
   const sources = useMemo(() => progressFrom(events), [events]);
+
+  useEffect(() => {
+    api.runs().then((body) => setPast(body.runs));
+  }, [run.phase, run.outcome]);
+
+  const showPast = useCallback(async (runId: string) => {
+    if (!runId) {
+      setViewing("");
+      setRun(await api.run());
+      return;
+    }
+    setViewing(runId);
+    setRun(await api.pastRun(runId));
+  }, []);
 
   useEffect(() => {
     api.tailorState().then(setTailor);
@@ -80,6 +118,27 @@ export default function App() {
     const timer = window.setInterval(() => api.tailorState().then(setTailor), 2000);
     return () => window.clearInterval(timer);
   }, [tailor.running]);
+
+  useEffect(() => {
+    api.revisable().then((body) => setRevisable(body.jobs));
+  }, [tailor.jobs, tailor.running]);
+
+  // A CV appears in its folder partway through tailoring, and nothing announces
+  // it. While any job is still being cut, the list is re-read so the studio can
+  // open it the moment it lands.
+  const readyIds = useMemo(
+    () => new Set(revisable.filter((row) => row.ready).map((row) => row.job_id)),
+    [revisable],
+  );
+  const awaitingCv = revisable.some((row) => !row.ready);
+  useEffect(() => {
+    if (!awaitingCv) return;
+    const timer = window.setInterval(
+      () => api.revisable().then((body) => setRevisable(body.jobs)),
+      5000,
+    );
+    return () => window.clearInterval(timer);
+  }, [awaitingCv]);
 
   const startTailoring = useCallback(async () => {
     const ids = [...picked];
@@ -106,7 +165,27 @@ export default function App() {
     setRun(await api.run());
   }, []);
 
+  const pause = useCallback(async () => {
+    await api.pause();
+    setRun(await api.run());
+  }, []);
+
+  const resume = useCallback(async () => {
+    setNotice(null);
+    setViewing("");
+    const body = await api.resumeRun();
+    if (!body.resumed) {
+      setNotice(body.message ?? "there is no paused run to resume");
+      return;
+    }
+    setRun(await api.run());
+  }, []);
+
+  const restored = run.outcome === "restored";
   const started = run.running || run.outcome !== null;
+  const watched = started && !restored;
+  // Near misses ride along in the same list so the table can draw the cut.
+  const kept = run.results.filter((row) => !row.below_bar).length;
 
   return (
     <>
@@ -157,15 +236,40 @@ export default function App() {
           </div>
           <div className="runctl">
             {run.running ? (
-              <button className="btn stop" onClick={stop} disabled={run.stopping}>
-                {run.stopping ? "Stopping" : "Stop run"}
+              <>
+                <button
+                  className="btn ghost"
+                  onClick={pause}
+                  disabled={run.paused}
+                  title="Stop at the next board and keep what has been fetched"
+                >
+                  {run.paused ? "Pausing" : "Pause"}
+                </button>
+                <button
+                  className="btn stop"
+                  onClick={stop}
+                  disabled={run.stopping}
+                  title="Kill the run. Nothing further is ranked, gated or shortlisted."
+                >
+                  {run.stopping ? "Stopping" : "Stop run"}
+                </button>
+              </>
+            ) : run.resumable ? (
+              <button className="btn" onClick={resume} title="Pick up where it paused">
+                Resume run
               </button>
             ) : (
               <button
                 className="btn"
                 onClick={start}
-                disabled={!valid}
-                title={valid ? "" : "Fix the filters before starting a run"}
+                disabled={!valid || Boolean(viewing)}
+                title={
+                  viewing
+                    ? "Showing a saved run — go back to the live one to start"
+                    : valid
+                      ? ""
+                      : "Fix the filters before starting a run"
+                }
               >
                 Start run
               </button>
@@ -175,24 +279,68 @@ export default function App() {
 
         {notice && <div className="err">{notice}</div>}
 
+        {past.length > 0 && (
+          <div className="runpicker">
+            <span className="lbl">Runs</span>
+            <button
+              className="rchip"
+              type="button"
+              aria-pressed={!viewing}
+              onClick={() => showPast("")}
+            >
+              Live
+            </button>
+            {past.map((row) => (
+              <button
+                className="rchip"
+                type="button"
+                key={row.run_id}
+                aria-pressed={viewing === row.run_id}
+                data-outcome={row.outcome ?? row.phase}
+                onClick={() => showPast(row.run_id)}
+                title={`${row.jobs_total.toLocaleString()} jobs fetched`}
+              >
+                {stamp(row.run_id)}
+                <span className="sub">
+                  {row.resumable ? "paused" : `${row.shortlisted} shortlisted`}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {viewing && (
+          <div className="fx">
+            Showing the run from <b>{stamp(viewing)}</b>, read back from disk. Nothing here is
+            live.
+          </div>
+        )}
+
         {filters && vocab && (
           <FiltersPanel filters={filters} vocab={vocab} onSaved={setFilters} onValidity={setValid} />
         )}
 
         {started && (
           <div ref={results} style={{ marginTop: "var(--gap)" }}>
-            <PhaseStrip state={run} />
+            {restored && (
+              <div className="fx">
+                Showing the shortlist on file from the last run. Nothing is running now —
+                <b> start a run</b> to refresh it.
+              </div>
+            )}
 
+            {watched && <PhaseStrip state={run} />}
+
+            {watched && (
             <div className="panel">
               <div className="panel-head">
-                <h2>Sources</h2>
+                <h2>Sync</h2>
                 <div className="note">
                   {(run.counters.jobs_total ?? 0).toLocaleString()} jobs ·{" "}
                   {(run.counters.boards_done ?? 0).toLocaleString()} boards
                 </div>
               </div>
               <SourceRail sources={sources} />
-              <Log events={events} />
               {run.degraded.length > 0 && (
                 <div className="hint" style={{ marginTop: 12 }}>
                   degraded this run: {run.degraded.join(", ")} — their jobs stay from the last successful
@@ -200,6 +348,21 @@ export default function App() {
                 </div>
               )}
             </div>
+            )}
+
+            {run.rank && <RankPanel report={run.rank} running={run.phase === "rank"} />}
+
+            {run.gate && <GatePanel report={run.gate} />}
+
+            {events.length > 0 && (
+              <div className="panel">
+                <div className="panel-head">
+                  <h2>Run feed</h2>
+                  <div className="note">every phase, in order</div>
+                </div>
+                <Log events={events} />
+              </div>
+            )}
 
             {run.error && (
               <div className="panel">
@@ -215,8 +378,8 @@ export default function App() {
                 <h2>Shortlist</h2>
                 <div className="note">
                   {run.outcome === "stopped_early"
-                    ? `${run.results.length} jobs · stopped early, partial corpus`
-                    : `${run.results.length} jobs above the bar`}
+                    ? `${kept} jobs · stopped early, partial corpus`
+                    : `${kept} jobs above the bar`}
                 </div>
               </div>
 
@@ -245,6 +408,7 @@ export default function App() {
               <Shortlist
                 rows={run.results}
                 picked={picked}
+                bar={run.gate?.plan.bar ?? null}
                 onPick={(id, on) =>
                   setPicked((current) => {
                     const next = new Set(current);
@@ -263,7 +427,19 @@ export default function App() {
                 await api.stopTailoring();
                 setTailor(await api.tailorState());
               }}
+              readyIds={readyIds}
+              onReview={(jobId) => {
+                setReviewing(jobId);
+                window.setTimeout(
+                  () => studio.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+                  60,
+                );
+              }}
             />
+
+            <div ref={studio}>
+              <ReviseStudio jobs={revisable} focus={reviewing} />
+            </div>
           </div>
         )}
         </>
@@ -289,12 +465,17 @@ function progressFrom(events: RunEvent[]) {
 
 function stateOf(run: RunState) {
   if (run.phase === "failed") return "failed";
+  if (run.phase === "paused" || run.outcome === "killed") return "stopped";
   if (run.running) return "running";
+  if (run.outcome === "restored") return "idle";
   if (run.outcome) return "stopped";
   return "idle";
 }
 
 function statusText(run: RunState) {
+  if (run.phase === "paused") return "Paused · resume picks it up here";
+  if (run.outcome === "killed") return "Stopped · nothing further was run";
+  if (run.outcome === "restored") return "Idle · showing the last shortlist";
   if (run.phase === "failed") return "Failed";
   if (run.stopping) return "Stopping after this board";
   if (run.running) return "Running · the tab can be closed";
@@ -304,9 +485,19 @@ function statusText(run: RunState) {
 }
 
 function subtitle(run: RunState) {
+  if (run.phase === "paused") return "paused partway · the boards already fetched are kept";
   if (run.running) return "a run is going · closing this tab will not stop it";
+  if (run.outcome === "restored") return "results read back from the corpus · nothing running";
   if (run.outcome) return "last run finished · start another when you want";
   return "filters ready · nothing running";
+}
+
+/** A run id is its start time: "20260822-100000". */
+function stamp(runId: string) {
+  const match = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/.exec(runId);
+  if (!match) return runId;
+  const [, , month, day, hour, minute] = match;
+  return `${day}/${month} ${hour}:${minute}`;
 }
 
 function preferredMode() {

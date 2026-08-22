@@ -1,15 +1,20 @@
 import type { JobRun } from "./api";
 
-const STAGES = ["Reading the posting", "Cutting the CV", "Reviewer gate"];
+const STAGES = ["Reading the posting", "Cutting the CV", "Reviewer gate", "Fit to two pages"];
 
 export function TailorBatch({
   jobs,
   running,
   onStop,
+  onReview,
+  readyIds,
 }: {
   jobs: JobRun[];
   running: boolean;
   onStop: () => void;
+  onReview: (jobId: number) => void;
+  /** Jobs whose cv.tex is finished. Only these can be opened in the studio. */
+  readyIds: Set<number>;
 }) {
   if (!jobs.length) return null;
   const approved = jobs.filter((job) => job.state === "approved").length;
@@ -58,12 +63,33 @@ export function TailorBatch({
 
           {job.error && <div className="found">{job.error}</div>}
 
-          {job.state === "approved" && job.folder && (
-            <div className="paths">{job.folder}</div>
-          )}
-          {job.state === "failed" && job.folder && (
-            <div className="paths">
-              folder kept at {job.folder} — nothing was shipped as ready
+          {job.folder && (
+            <div className="acts">
+              {job.pages != null && (
+                <span className="pages" data-over={job.pages > 2}>
+                  {job.pages} pp{job.pages > 2 ? " · over" : ""}
+                </span>
+              )}
+              <span className="paths">
+                {job.state === "failed"
+                  ? `folder kept — nothing was shipped as ready`
+                  : job.folder}
+              </span>
+              {readyIds.has(job.job_id) ? (
+                <button
+                  className="btn sm"
+                  style={{ marginLeft: "auto" }}
+                  onClick={() => onReview(job.job_id)}
+                >
+                  Review &amp; revise
+                </button>
+              ) : (
+                // Offering this before cv.tex is finished gives you a studio
+                // that cannot compile, preview or answer anything.
+                <span className="paths" style={{ marginLeft: "auto" }}>
+                  cutting the CV…
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -77,6 +103,7 @@ function statusOf(job: JobRun) {
   if (job.state === "cancelled") return "cancelled";
   if (job.state === "approved")
     return `Approved · ${job.rounds} round${job.rounds > 1 ? "s" : ""}${job.fit ? ` · fit ${job.fit.toFixed(2)}` : ""}`;
+  if (job.pages != null && job.pages > 2) return `Round ${job.rounds} · trimming to 2 pages`;
   if (job.state === "failed") return job.error ? "Skipped" : `Not approved after ${job.rounds} rounds`;
   return `Round ${job.rounds || 1}`;
 }
@@ -85,6 +112,9 @@ function stageState(job: JobRun, index: number) {
   if (job.state === "queued" || job.state === "cancelled") return "todo";
   if (job.state === "approved") return "done";
   if (job.state === "failed") return index === 0 && !job.folder ? "failed" : "done";
-  const at = job.folder ? (job.rounds > 0 ? 2 : 1) : 0;
+  // The length stage is only live once a cut has been measured and ran long;
+  // otherwise the reviewer gate is still where the work is.
+  const trimming = job.pages != null && job.pages > 2;
+  const at = job.folder ? (trimming ? 3 : job.rounds > 0 ? 2 : 1) : 0;
   return index < at ? "done" : index === at ? "now" : "todo";
 }

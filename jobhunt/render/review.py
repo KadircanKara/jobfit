@@ -11,6 +11,7 @@ import datetime as dt
 
 from sqlalchemy import select
 
+from jobhunt import applications
 from jobhunt.config import Config
 from jobhunt.db.models import Application, Company, Job, Score, utcnow
 from jobhunt.db.session import session_scope
@@ -64,8 +65,47 @@ def shortlist(
 ) -> list[Card]:
     """Jobs that passed stage 1, cleared the market's surface threshold, and
     have not been acted on."""
+    cards, _ = _scored_cards(
+        config,
+        market=market,
+        since_days=since_days,
+        min_score=min_score,
+        include_unscored=include_unscored,
+    )
+    return cards[:limit]
+
+
+def near_misses(
+    config: Config,
+    market: str | None = None,
+    limit: int = 6,
+    since_days: int | None = None,
+    min_score: float | None = None,
+) -> list[Card]:
+    """The best jobs that the surface threshold turned away.
+
+    Kept separate from `shortlist` rather than returned alongside it, so a job
+    below the bar can never reach the CSV or a digest by accident. It exists
+    because a run returning three jobs usually means the bar moved, not the
+    market, and that is invisible when the rejected rows are simply gone.
+    """
+    _, below = _scored_cards(
+        config, market=market, since_days=since_days, min_score=min_score
+    )
+    return below[:limit]
+
+
+def _scored_cards(
+    config: Config,
+    market: str | None = None,
+    since_days: int | None = None,
+    min_score: float | None = None,
+    include_unscored: bool = False,
+) -> tuple[list[Card], list[Card]]:
+    """Every eligible card, split into those above the bar and those below."""
     filters = deterministic.load_filters(config)
     cards: list[Card] = []
+    below: list[Card] = []
 
     with session_scope(config.db_path) as session:
         # A job the user already applied to or skipped never surfaces again, and
@@ -92,12 +132,19 @@ def shortlist(
             if cluster in acted_on:
                 continue
             threshold = min_score if min_score is not None else _threshold(filters, job.market)
+            card = _card(session, job, company, score)
             if score.llm_score is not None and threshold is not None and score.llm_score < threshold:
+                below.append(card)
                 continue
-            cards.append(_card(session, job, company, score))
+            cards.append(card)
 
-    cards.sort(key=lambda card: (card.rank_key, card.job_id), reverse=True)
-    return cards[:limit]
+    cards.sort(key=_rank_order, reverse=True)
+    below.sort(key=_rank_order, reverse=True)
+    return cards, below
+
+
+def _rank_order(card: Card) -> tuple[float, int]:
+    return card.rank_key, card.job_id
 
 
 def _threshold(filters: dict, market: str) -> float | None:
@@ -110,7 +157,7 @@ def _acted_on_clusters(session) -> set[int]:
     rows = session.execute(
         select(Job.id, Job.canonical_job_id)
         .join(Application, Application.job_id == Job.id)
-        .where(Application.status != "new")
+        .where(Application.status.in_(applications.SETTLED))
     ).all()
     for job_id, canonical in rows:
         clusters.add(canonical or job_id)

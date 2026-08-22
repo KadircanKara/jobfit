@@ -7,8 +7,10 @@ could reach the tailoring skill.
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
+from sqlalchemy import select
 
 from jobhunt import applications, store
 from jobhunt.db.models import Application, Job, Score
@@ -64,9 +66,42 @@ def apply_root(cfg, tmp_path):
 
 
 def test_folder_name_matches_what_the_skill_already_uses() -> None:
-    """The skill's own scripts cd into "<Company> - <Position>". jobhunt
-    conforms to the tool that already works rather than the other way round."""
-    assert tailoring.folder_name("Acme", "Senior Backend Engineer") == "Acme - Senior Backend Engineer"
+    """The skill's own scripts cd into "<Company> - <Position> @ <Location>".
+    jobhunt conforms to the tool that already works rather than the other way
+    round."""
+    assert (
+        tailoring.folder_name("Acme", "Senior Backend Engineer", "Istanbul, Turkey")
+        == "Acme - Senior Backend Engineer @ Istanbul, Turkey"
+    )
+
+
+def test_a_posting_with_no_location_keeps_the_two_part_name() -> None:
+    """An empty suffix would be worse than no suffix."""
+    assert tailoring.folder_name("Acme", "Engineer") == "Acme - Engineer"
+    assert tailoring.folder_name("Acme", "Engineer", "N/A") == "Acme - Engineer"
+    assert tailoring.folder_name("Acme", "Engineer", "  ") == "Acme - Engineer"
+
+
+def test_a_repeated_location_is_said_once() -> None:
+    """"Singapore, Singapore, Singapore" is a real value from a real board."""
+    name = tailoring.folder_name("Acme", "Engineer", "Singapore, Singapore, Singapore")
+
+    assert name == "Acme - Engineer @ Singapore"
+
+
+def test_a_location_with_slashes_stays_one_folder() -> None:
+    """"São Paulo / SP / Brasil" unstripped would make three nested directories."""
+    name = tailoring.folder_name("Acme", "Engineer", "São Paulo / SP / Brasil")
+
+    assert "/" not in name
+    assert name.startswith("Acme - Engineer @ São Paulo")
+
+
+def test_the_separator_survives_a_hyphenated_company(cfg) -> None:
+    """" - " stays the separator so a hyphen inside a name does not read as one."""
+    name = tailoring.folder_name("Île-de-France GmbH", "Engineer", "Paris, France")
+
+    assert name.split(" - ") == ["Île-de-France GmbH", "Engineer @ Paris, France"]
 
 
 def test_folder_name_strips_only_what_a_filesystem_cannot_take() -> None:
@@ -363,3 +398,227 @@ def test_response_rate_counts_only_progressed_applications(cfg, tmp_path) -> Non
     with session_scope(cfg.db_path) as session:
         rows = {row.status: row for row in session.query(Application).all()}
         assert set(rows) == {"screening", "applied", "skipped"}
+
+
+# --- moving existing folders onto the scheme ------------------------------------
+
+
+def rename_setup(cfg, tmp_path, folder_name, *, location="Istanbul, Turkey", recorded=False):
+    """One posting in the corpus and one folder on disk, named the old way."""
+    root = apply_root(cfg, tmp_path)
+    root.mkdir(parents=True, exist_ok=True)
+    folder = root / folder_name
+    folder.mkdir()
+    (folder / "cv.tex").write_text("x", encoding="utf-8")
+
+    job_id = make_job(cfg, location_raw=location)
+    if recorded:
+        with session_scope(cfg.db_path) as session:
+            session.add(Application(job_id=job_id, status="applied", folder_path=str(folder)))
+    return root, folder, job_id
+
+
+def test_a_folder_is_placed_by_its_recorded_application(cfg, tmp_path) -> None:
+    root, folder, _ = rename_setup(cfg, tmp_path, "Acme - Senior Backend Engineer", recorded=True)
+
+    with session_scope(cfg.db_path) as session:
+        plans = applications.plan_renames(cfg, session)
+
+    assert [p.new for p in plans] == [
+        str(root / "Acme - Senior Backend Engineer @ Istanbul, Turkey")
+    ]
+
+
+def test_a_folder_with_no_application_row_is_placed_by_its_own_name(cfg, tmp_path) -> None:
+    """Most folders here were made by running the skill by hand, so there is no
+    row to look them up by."""
+    root, _, _ = rename_setup(cfg, tmp_path, "Acme - Senior Backend Engineer")
+
+    with session_scope(cfg.db_path) as session:
+        plans = applications.plan_renames(cfg, session)
+
+    assert [p.new for p in plans] == [
+        str(root / "Acme - Senior Backend Engineer @ Istanbul, Turkey")
+    ]
+
+
+def test_a_folder_that_matches_no_posting_is_reported_not_guessed(cfg, tmp_path) -> None:
+    rename_setup(cfg, tmp_path, "Someone Else - A Job Never Scraped")
+
+    with session_scope(cfg.db_path) as session:
+        plans = applications.plan_renames(cfg, session)
+
+    assert len(plans) == 1
+    assert not plans[0].doable
+    assert "no posting" in plans[0].reason
+
+
+def test_a_folder_already_named_correctly_is_left_alone(cfg, tmp_path) -> None:
+    rename_setup(cfg, tmp_path, "Acme - Senior Backend Engineer @ Istanbul, Turkey")
+
+    with session_scope(cfg.db_path) as session:
+        assert applications.plan_renames(cfg, session) == []
+
+
+def test_a_rename_that_would_collide_is_refused(cfg, tmp_path) -> None:
+    root, _, _ = rename_setup(cfg, tmp_path, "Acme - Senior Backend Engineer")
+    (root / "Acme - Senior Backend Engineer @ Istanbul, Turkey").mkdir()
+
+    with session_scope(cfg.db_path) as session:
+        plans = applications.plan_renames(cfg, session)
+
+    assert not plans[0].doable
+    assert "already exists" in plans[0].reason
+
+
+def test_a_dry_run_moves_nothing(cfg, tmp_path) -> None:
+    _, folder, _ = rename_setup(cfg, tmp_path, "Acme - Senior Backend Engineer", recorded=True)
+
+    with session_scope(cfg.db_path) as session:
+        applications.rename_folders(cfg, session, dry_run=True)
+
+    assert folder.exists(), "a dry run that renamed anything would be a trap"
+
+
+def test_the_folder_and_the_recorded_path_move_together(cfg, tmp_path) -> None:
+    """A folder renamed without its folder_path is a CV the studio cannot find."""
+    root, folder, job_id = rename_setup(
+        cfg, tmp_path, "Acme - Senior Backend Engineer", recorded=True
+    )
+
+    with session_scope(cfg.db_path) as session:
+        applications.rename_folders(cfg, session, dry_run=False)
+
+    moved = root / "Acme - Senior Backend Engineer @ Istanbul, Turkey"
+    assert moved.is_dir() and not folder.exists()
+    assert (moved / "cv.tex").read_text() == "x", "contents come with it"
+    with session_scope(cfg.db_path) as session:
+        row = session.scalars(select(Application).where(Application.job_id == job_id)).one()
+        assert row.folder_path == str(moved)
+
+
+def test_a_second_run_has_nothing_left_to_do(cfg, tmp_path) -> None:
+    rename_setup(cfg, tmp_path, "Acme - Senior Backend Engineer", recorded=True)
+
+    with session_scope(cfg.db_path) as session:
+        applications.rename_folders(cfg, session, dry_run=False)
+    with session_scope(cfg.db_path) as session:
+        assert applications.plan_renames(cfg, session) == []
+
+
+def test_a_rename_never_downgrades_the_name_already_on_disk(cfg, tmp_path) -> None:
+    """Boards spell themselves in lower case. A folder correctly named "Apify"
+    must not become "apify" just because the corpus says so."""
+    root = apply_root(cfg, tmp_path)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "Apify - AI Engineer").mkdir()
+    make_job(cfg, company_name="apify", title="AI Engineer", location_raw="Prague")
+
+    with session_scope(cfg.db_path) as session:
+        plans = applications.plan_renames(cfg, session)
+
+    assert [pathlib.Path(p.new).name for p in plans] == ["Apify - AI Engineer @ Prague"]
+
+
+def test_one_title_in_several_cities_is_left_alone(cfg, tmp_path) -> None:
+    """Guessing would put the wrong city on a real application folder."""
+    root = apply_root(cfg, tmp_path)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "openai - Applied AI Engineer").mkdir()
+    make_job(cfg, external_id="a", company_name="openai",
+             title="Applied AI Engineer", location_raw="Delhi, India")
+    make_job(cfg, external_id="b", company_name="openai",
+             title="Applied AI Engineer", location_raw="London, United Kingdom")
+
+    with session_scope(cfg.db_path) as session:
+        plans = applications.plan_renames(cfg, session)
+
+    assert not plans[0].doable
+    assert "locations differ" in plans[0].reason
+
+
+def test_a_folder_that_already_has_a_location_is_not_double_suffixed(cfg, tmp_path) -> None:
+    root = apply_root(cfg, tmp_path)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "Acme - Engineer @ Berlin").mkdir()
+    make_job(cfg, company_name="Acme", title="Engineer", location_raw="Istanbul, Turkey")
+
+    with session_scope(cfg.db_path) as session:
+        plans = applications.plan_renames(cfg, session)
+
+    assert [pathlib.Path(p.new).name for p in plans] == ["Acme - Engineer @ Istanbul, Turkey"]
+
+
+# --- tailored is not applied ----------------------------------------------------
+
+
+def test_cutting_a_cv_records_tailored_not_applied(cfg, tmp_path) -> None:
+    apply_root(cfg, tmp_path)
+    job_id = make_job(cfg)
+
+    with session_scope(cfg.db_path) as session:
+        applications.apply(cfg, session, job_id, tailor=False, status="tailored")
+    with session_scope(cfg.db_path) as session:
+        row = session.scalars(select(Application).where(Application.job_id == job_id)).one()
+        assert row.status == "tailored"
+        assert row.applied_at is None, "nothing was sent, so there is no applied date"
+
+
+def test_a_tailored_job_stays_on_the_shortlist(cfg, tmp_path) -> None:
+    """The job you have a CV for but have not sent is exactly the one you still
+    need to see."""
+    from jobhunt.render import review
+
+    apply_root(cfg, tmp_path)
+    job_id = make_scored_for_shortlist(cfg)
+    with session_scope(cfg.db_path) as session:
+        applications.apply(cfg, session, job_id, tailor=False, status="tailored")
+
+    assert [card.job_id for card in review.shortlist(cfg, min_score=0.5)] == [job_id]
+
+
+def test_an_applied_job_leaves_the_shortlist(cfg, tmp_path) -> None:
+    from jobhunt.render import review
+
+    apply_root(cfg, tmp_path)
+    job_id = make_scored_for_shortlist(cfg)
+    with session_scope(cfg.db_path) as session:
+        applications.apply(cfg, session, job_id, tailor=False, status="applied")
+
+    assert review.shortlist(cfg, min_score=0.5) == []
+
+
+def test_a_tailored_folder_is_still_not_prepared_twice(cfg, tmp_path) -> None:
+    """Two different questions: the shortlist wants the job back, the folder
+    guard still has to refuse overwriting the CV already cut."""
+    apply_root(cfg, tmp_path)
+    job_id = make_job(cfg)
+    with session_scope(cfg.db_path) as session:
+        applications.apply(cfg, session, job_id, tailor=False, status="tailored")
+
+    with session_scope(cfg.db_path) as session:
+        with pytest.raises(applications.ApplyBlocked, match="already recorded as tailored"):
+            applications.apply(cfg, session, job_id, tailor=False, status="tailored")
+
+
+def test_tailored_moves_on_to_applied(cfg, tmp_path) -> None:
+    apply_root(cfg, tmp_path)
+    job_id = make_job(cfg)
+    with session_scope(cfg.db_path) as session:
+        applications.apply(cfg, session, job_id, tailor=False, status="tailored")
+
+    with session_scope(cfg.db_path) as session:
+        row = applications.advance(session, job_id, "applied")
+        assert row.status == "applied"
+
+
+def make_scored_for_shortlist(cfg) -> int:
+    """A job that would reach the shortlist if nothing excluded it."""
+    job_id = make_job(cfg)
+    with session_scope(cfg.db_path) as session:
+        session.add(Score(
+            job_id=job_id, profile="global_remote", deterministic_pass=True,
+            deterministic_notes={"passed": True, "boost": 1.0},
+            llm_score=0.9, llm_reasoning="strong",
+        ))
+    return job_id

@@ -114,3 +114,19 @@ def test_an_empty_answer_is_treated_as_a_failure(missing):
     gate = gate_module.Gate(runner=runner_returning(missing, missing))
 
     assert gate.score(prompt="score these", batch_size=1) == []
+
+
+def test_the_gate_runs_on_the_model_its_phase_names(cfg):
+    cfg.raw["models"] = {"gate": {"model": "claude-sonnet-5", "effort": "medium"}}
+
+    argv = gate_module.Gate(config=cfg).argv()
+
+    assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
+    assert argv[argv.index("--effort") + 1] == "medium"
+    assert argv[argv.index("--allowedTools") + 1] == "", "still no tools"
+
+
+def test_a_gate_with_no_config_named_still_inherits(cfg):
+    argv = gate_module.Gate(config=cfg).argv()
+
+    assert "--model" not in argv and "--effort" not in argv

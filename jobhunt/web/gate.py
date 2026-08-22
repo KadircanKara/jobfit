@@ -18,14 +18,13 @@ import subprocess
 from collections.abc import Callable
 from typing import Any
 
+from jobhunt.config import Config
+from jobhunt.web import agent
+
 DEFAULT_TIMEOUT = 300.0
 ARRAY = re.compile(r"\[.*\]", re.S)
 
 Runner = Callable[[list[str], str, float], str]
-
-
-def _claude_binary() -> str:
-    return shutil.which("claude") or "claude"
 
 
 def _subprocess_runner(argv: list[str], prompt: str, timeout: float) -> str:
@@ -38,14 +37,24 @@ def _subprocess_runner(argv: list[str], prompt: str, timeout: float) -> str:
 
 
 class Gate:
-    def __init__(self, *, runner: Runner | None = None, timeout: float = DEFAULT_TIMEOUT) -> None:
+    def __init__(
+        self,
+        *,
+        config: Config | None = None,
+        runner: Runner | None = None,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> None:
+        self.config = config
         self.runner = runner or _subprocess_runner
         self.timeout = timeout
 
     def argv(self) -> list[str]:
         # --allowedTools "" is the safety property, not a nicety: the gate is
         # only ever asked for a judgement, so it gets no way to act on one.
-        return [_claude_binary(), "-p", "--output-format", "json", "--allowedTools", ""]
+        if self.config is not None:
+            return agent.argv_for(self.config, "gate", tools="")
+        return [shutil.which("claude") or "claude", "-p", "--output-format", "json",
+                "--allowedTools", ""]
 
     def score(self, *, prompt: str, batch_size: int) -> list[dict[str, Any]]:
         """Return validated verdicts, or an empty list if the batch is unusable."""
