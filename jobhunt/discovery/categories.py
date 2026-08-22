@@ -67,19 +67,28 @@ def _wwr_postings(payload: str) -> Iterator[Posting]:
         yield Posting(link, (category,) if category else (), (title.strip() or raw_title))
 
 
-# Connectives are dropped only as a fallback: "Management and Finance" really is
-# remote-management-and-finance-jobs, so the literal form has to be tried first.
-_WWR_STOPWORDS = frozenset({"and", "or", "the"})
-
-# Verified against the live feeds: derives 8 of 10 observed names directly, and
-# "DevOps and Sysadmin" with connectives dropped. "All Other Remote" resolves to
-# nothing under any variant, which is a normal outcome, not an error.
-_WWR_UNRESOLVABLE = frozenset({"all other remote"})
+# The literal kebab form is the default and is correct for most names:
+# "Management and Finance" -> remote-management-and-finance-jobs and
+# "Sales and Marketing" -> remote-sales-and-marketing-jobs both verified 200
+# live with the connective kept, so connectives are never stripped generally.
+#
+# These are measured exceptions, not derived ones: each value below was
+# checked against the live feed by hand, not guessed from a stripping rule.
+# Do not "simplify" this back into connective-stripping - that breaks the
+# names above, which need the connective kept.
+#   - "DevOps and Sysadmin": the literal kebab is a dead 301; the real slug
+#     drops "and" instead.
+#   - "All Other Remote": no variant resolves; there is no feed for it.
+_WWR_MEASURED_TOKENS: dict[str, str | None] = {
+    "devops and sysadmin": "remote-devops-sysadmin-jobs",
+    "all other remote": None,
+}
 
 
 def _wwr_token(name: str) -> str | None:
-    if name.strip().lower() in _WWR_UNRESOLVABLE:
-        return None
+    key = name.strip().lower()
+    if key in _WWR_MEASURED_TOKENS:
+        return _WWR_MEASURED_TOKENS[key]
     words = re.sub(r"[^a-z0-9]+", " ", name.lower().replace("&", " and ")).split()
     if not words:
         return None
