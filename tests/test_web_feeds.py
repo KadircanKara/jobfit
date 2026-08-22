@@ -119,3 +119,22 @@ def test_an_unknown_provider_blocks_the_whole_batch(cfg, client):
     assert response.status_code == 422
     approved = client.get("/api/feeds").json()["approved"]
     assert approved == []
+
+
+def test_a_non_list_approve_value_is_refused_not_crashed(client):
+    response = client.post("/api/feeds", json={"approve": "wwr"})
+
+    assert response.status_code == 422
+
+
+def test_a_non_object_row_is_refused_not_crashed(client):
+    response = client.post("/api/feeds", json={"approve": ["nope"]})
+
+    assert response.status_code == 422
+
+
+def test_a_missing_provider_gets_a_sensible_message(client):
+    response = client.post("/api/feeds", json={"approve": [{"token": "x"}]})
+
+    assert response.status_code == 422
+    assert "None" not in response.json()["message"]

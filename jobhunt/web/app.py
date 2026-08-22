@@ -35,12 +35,18 @@ from jobhunt.web.runs import RunSupervisor
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
 
 
-class _UnknownProvider(Exception):
-    """A provider the vocabulary does not know cannot be narrowed by category."""
+class _BadFeedRequest(Exception):
+    """The `approve`/`retire` payload could not be turned into board selections.
 
-    def __init__(self, provider: str) -> None:
-        super().__init__(provider)
-        self.provider = provider
+    Covers both a provider the vocabulary does not know and a shape FastAPI's
+    own `dict[str, Any]` validation does not check (a non-list value, a row
+    that is not an object) — all three are the caller's fault, not the
+    server's, so all three become one clean 422 rather than an unhandled 500.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
 
 
 class AppState:
@@ -288,22 +294,26 @@ def create_app(*, config: Config | None = None) -> FastAPI:
     @app.post("/api/feeds")
     def write_feeds(payload: dict[str, Any]) -> Any:
         def pairs(key: str) -> list[tuple[str, str]]:
+            rows = payload.get(key) or []
+            if not isinstance(rows, list):
+                raise _BadFeedRequest(f"{key!r} must be a list")
             out = []
-            for row in payload.get(key) or []:
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise _BadFeedRequest(f"each entry in {key!r} must be an object")
                 provider, token = row.get("provider"), row.get("token")
+                if not provider:
+                    raise _BadFeedRequest(f"each entry in {key!r} needs a provider")
                 if provider not in categories_module.VOCABULARY:
-                    raise _UnknownProvider(str(provider))
+                    raise _BadFeedRequest(f"{provider} is not a source that can be narrowed")
                 if token:
                     out.append((provider, token))
             return out
 
         try:
             to_approve, to_retire = pairs("approve"), pairs("retire")
-        except _UnknownProvider as exc:
-            return JSONResponse(
-                status_code=422,
-                content={"message": f"{exc.provider} is not a source that can be narrowed"},
-            )
+        except _BadFeedRequest as exc:
+            return JSONResponse(status_code=422, content={"message": exc.message})
         categories_module.approve(cfg, to_approve)
         categories_module.retire(cfg, to_retire)
         return _feeds_payload()
