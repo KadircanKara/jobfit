@@ -27,7 +27,13 @@ function statusLabel(status: string): string {
 export function FeedsPanel({ reloadToken }: Props) {
   const [data, setData] = useState<FeedsBody | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [picked, setPicked] = useState<Set<string>>(new Set());
+  // Keyed by key(provider, token) for React-key/lookup convenience, but the
+  // value carries provider and token as their own fields — never decoded back
+  // out of the composite string, so there is no split step that could ever
+  // truncate a token containing a space (most category names do).
+  const [picked, setPicked] = useState<Map<string, { provider: string; token: string }>>(
+    new Map(),
+  );
   const [saving, setSaving] = useState(false);
   // Tracks the one row a retire is in flight for, so only that row's control
   // disables — approving other proposals stays available meanwhile.
@@ -41,6 +47,13 @@ export function FeedsPanel({ reloadToken }: Props) {
         if (!alive) return;
         setData(body);
         setError(null);
+        // The refetch is scored against whatever titles are now current, so a
+        // tick made before this reload may point at a category that no longer
+        // appears (or appears with different numbers). Either way, holding
+        // onto it would let "Fetch selected" approve something the user never
+        // saw on screen.
+        setPicked(new Map());
+        setRetiring(null);
       })
       .catch((err) => {
         if (alive) setError(String(err));
@@ -53,9 +66,9 @@ export function FeedsPanel({ reloadToken }: Props) {
   function toggle(provider: string, token: string) {
     const id = key(provider, token);
     setPicked((current) => {
-      const next = new Set(current);
+      const next = new Map(current);
       if (next.has(id)) next.delete(id);
-      else next.add(id);
+      else next.set(id, { provider, token });
       return next;
     });
   }
@@ -64,13 +77,10 @@ export function FeedsPanel({ reloadToken }: Props) {
     if (!picked.size) return;
     setSaving(true);
     try {
-      const approveList = [...picked].map((id) => {
-        const [provider, token] = id.split(" ");
-        return { provider, token };
-      });
+      const approveList = [...picked.values()];
       const body = await api.saveFeeds({ approve: approveList });
       setData(body);
-      setPicked(new Set());
+      setPicked(new Map());
       setError(null);
     } catch (err) {
       setError(String(err));
