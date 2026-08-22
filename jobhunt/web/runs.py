@@ -29,6 +29,11 @@ from typing import Any, Protocol
 
 from jobhunt.web.events import EventLog
 
+# Slices per run. At the default batch of 20 that is 200 jobs, enough to work
+# a backlog down over a couple of runs without one run turning into an
+# open-ended spend.
+DEFAULT_GATE_ROUNDS = 10
+
 PHASES = ("idle", "sync", "rank", "gate", "shortlist", "done", "failed", "paused")
 
 
@@ -100,6 +105,9 @@ class GatePlan:
 @dataclasses.dataclass
 class GateReport:
     plan: GatePlan = dataclasses.field(default_factory=GatePlan)
+    # How many slices the run pulled. One means the old behaviour; more means
+    # the backlog was being worked through rather than left for the next run.
+    rounds: int = 0
     scored: int = 0
     ungated: int = 0
     verdicts: list[dict[str, Any]] = dataclasses.field(default_factory=list)
@@ -157,9 +165,14 @@ class RunSupervisor:
         log: EventLog,
         store: Callable[[RunState], None] | None = None,
         clock: Callable[[], str] | None = None,
+        max_gate_rounds: int = DEFAULT_GATE_ROUNDS,
     ) -> None:
         self.pipeline = pipeline
         self.log = log
+        # The gate keeps pulling slices until the backlog is dry, so a run has
+        # to be bounded by something: each round is a model call, and a big
+        # sync can leave hundreds of jobs waiting.
+        self.max_gate_rounds = max(1, int(max_gate_rounds))
         # Called whenever the run reaches a new resting point. Keeps file IO out
         # of here so the sequencing stays testable without a disk.
         self.store = store
@@ -362,26 +375,56 @@ class RunSupervisor:
         self._save()
 
     def _gate(self) -> None:
+        """Work the ungated backlog down, a slice at a time.
+
+        `emit` hands back the jobs that passed the filter and have no verdict
+        yet, so asking again after a slice is scored returns the next one. One
+        slice per run left everything else waiting for the next press of Start.
+
+        Four things end the loop, and the third is the one that is easy to
+        miss: a slice the gate cannot read keeps its jobs unscored, so the next
+        `emit` returns those same jobs. Stopping when a round scores nothing
+        keeps that from burning every remaining round on one unreadable slice.
+        """
         self.state.phase = "gate"
-        plan = self.pipeline.gate_batches()
-        report = GateReport(plan=plan)
+        report = GateReport()
         self.state.gate = report
-        if not plan.batches:
-            self.log.emit(phase="gate", message="nothing new to gate")
-            return
 
-        self.log.emit(
-            phase="gate",
-            message=(
-                f"{plan.jobs} jobs in {len(plan.batches)} batches"
-                + (
-                    f" · {plan.held_by_company_cap} held so no company fills a batch"
-                    if plan.held_by_company_cap
-                    else ""
+        while report.rounds < self.max_gate_rounds:
+            plan = self.pipeline.gate_batches()
+            if not plan.batches:
+                if not report.rounds:
+                    self.log.emit(phase="gate", message="nothing new to gate")
+                break
+
+            report.rounds += 1
+            # The plan on screen is the slice being worked; the job total is
+            # what the run has taken on, so a long gate phase reads as progress.
+            report.plan = dataclasses.replace(plan, jobs=report.plan.jobs + plan.jobs)
+            self.log.emit(
+                phase="gate",
+                message=(
+                    f"round {report.rounds}/{self.max_gate_rounds} · "
+                    f"{plan.jobs} jobs in {len(plan.batches)} batches"
+                    + (
+                        f" · {plan.held_by_company_cap} held so no company fills a batch"
+                        if plan.held_by_company_cap
+                        else ""
+                    )
+                ),
+            )
+
+            if not self._gate_round(plan, report):
+                self.log.emit(
+                    phase="gate",
+                    message="nothing scored this round · leaving the rest for next run",
+                    level="warning",
                 )
-            ),
-        )
+                break
 
+    def _gate_round(self, plan: GatePlan, report: GateReport) -> bool:
+        """Score one slice. False when nothing came back, which ends the loop."""
+        scored_any = False
         for batch in plan.batches:
             # Whatever is already gated stays: a verdict is written per batch,
             # and ungated jobs keep their place in the corpus.
@@ -390,6 +433,7 @@ class RunSupervisor:
             verdicts = self.pipeline.gate(batch) or []
             if verdicts:
                 batch.status = "done"
+                scored_any = True
                 report.scored += len(verdicts)
                 report.verdicts = (report.verdicts + list(verdicts))[-VERDICT_CAP:]
                 self.log.emit(
@@ -406,6 +450,7 @@ class RunSupervisor:
                     message=f"{batch.label} · unreadable, left ungated for next run",
                     level="warning",
                 )
+        return scored_any
 
     def _shortlist(self) -> None:
         self.state.phase = "shortlist"

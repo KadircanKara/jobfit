@@ -30,7 +30,7 @@ from jobhunt.web import revise as revise_module
 from jobhunt.web import tailor as tailor_module
 from jobhunt.web import vocab as vocab_module
 from jobhunt.web.events import EventLog, to_sse
-from jobhunt.web.runs import RunSupervisor
+from jobhunt.web.runs import DEFAULT_GATE_ROUNDS, RunSupervisor
 
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
 
@@ -360,6 +360,9 @@ def create_app(*, config: Config | None = None) -> FastAPI:
             log=jh.log,
             store=lambda state: history_module.save(cfg, state.run_id, _run_payload(state, jh)),
             clock=lambda: utcnow().isoformat(),
+            max_gate_rounds=int(
+                cfg.get("ranking", "max_gate_rounds", default=DEFAULT_GATE_ROUNDS)
+            ),
         )
         jh.supervisor.start(run_id=run_id)
         return {"started": True}

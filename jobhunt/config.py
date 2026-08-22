@@ -41,6 +41,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # is a file protocol: rank --emit writes a batch, rank --ingest reads
         # the verdicts back. See jobhunt/rank/runner.py.
         "batch_size": 20,
+        # How many batches one run works through. The gate keeps pulling the
+        # next unscored slice until the backlog is dry, so without a ceiling a
+        # run after a large sync would be an open-ended number of model calls.
+        # 10 rounds at the default batch is 200 jobs. Set 1 to gate one slice
+        # per run, which is how this behaved before.
+        "max_gate_rounds": 10,
         "batch_path": str(HOME_DIR / "data/rank/batch.json"),
         # Overrides the master.tex derived candidate summary when set.
         "profile_summary": None,
