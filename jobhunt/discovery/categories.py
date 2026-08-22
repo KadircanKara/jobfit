@@ -103,13 +103,27 @@ def _wwr_token(name: str) -> str | None:
 
 
 def _json_postings(
-    payload: str, *, rows: str | None, id_key: str, title_key: str, label_keys: tuple[str, ...]
+    payload: str | dict | list,
+    *,
+    rows: str | None,
+    id_key: str,
+    title_key: str,
+    label_keys: tuple[str, ...],
 ) -> Iterator[Posting]:
-    """Shared shape for the three JSON aggregators."""
-    try:
-        document = json.loads(payload)
-    except json.JSONDecodeError:
-        return
+    """Shared shape for the three JSON aggregators.
+
+    `payload` arrives pre-decoded from `sync.py` for these three providers
+    (their `fetch()` returns parsed JSON, unlike wwr's XML text), but a JSON
+    string is still accepted so a caller that has its own raw text does not
+    need to decode it first.
+    """
+    if isinstance(payload, str):
+        try:
+            document = json.loads(payload)
+        except json.JSONDecodeError:
+            return
+    else:
+        document = payload
     items = document.get(rows, []) if rows and isinstance(document, dict) else document
     if not isinstance(items, list):
         return
@@ -183,7 +197,12 @@ def observe(config: Config, provider: str, runs: int = DEFAULT_RUNS) -> list[Pos
             if not isinstance(envelope, dict):
                 continue
             payload = envelope.get("payload")
-            if not isinstance(payload, str):
+            # Adapters disagree on what `fetch()` hands back: wwr returns raw
+            # XML text (a str), while the three JSON aggregators return
+            # already-parsed objects (dict or list). sync.py stores whatever
+            # `fetch()` gave it, unmodified, so both shapes show up for real
+            # on disk and both must be accepted here.
+            if not isinstance(payload, (str, dict, list)):
                 continue
             for posting in extractor.read(payload):
                 seen.setdefault(posting.posting_id, posting)

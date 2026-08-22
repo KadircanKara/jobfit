@@ -19,8 +19,16 @@ from jobhunt.db.session import session_scope
 from jobhunt.discovery import categories
 
 
-def write_run(config, provider: str, run_key: str, token: str, payload: str) -> None:
-    """Reproduce one raw payload envelope exactly as sync.py:218 writes it."""
+def write_run(
+    config, provider: str, run_key: str, token: str, payload: str | dict | list
+) -> None:
+    """Reproduce one raw payload envelope exactly as sync.py:218 writes it.
+
+    `payload` is whatever the adapter's `fetch()` returned: a str of XML text
+    for wwr, or an already-decoded dict/list for the JSON providers. Either
+    shape round-trips through `json.dumps`/`json.loads` unchanged, which is
+    exactly what `sync.py` and `categories.observe` do with it for real.
+    """
     folder = pathlib.Path(config.raw_dir) / provider / run_key
     folder.mkdir(parents=True, exist_ok=True)
     envelope = {
@@ -55,6 +63,33 @@ def test_observe_reads_the_categories_the_provider_states(wwr_corpus):
 
 def test_observe_returns_nothing_for_a_provider_with_no_stored_runs(cfg):
     assert categories.observe(cfg, "wwr") == []
+
+
+@pytest.mark.parametrize(
+    ("provider", "fixture_name"),
+    [
+        ("remotive", "remotive_all.json"),
+        ("jobicy", "jobicy_all.json"),
+        ("remoteok", "remoteok_all.json"),
+    ],
+)
+def test_observe_reads_a_json_providers_real_decoded_payload_shape(
+    cfg, provider, fixture_name
+):
+    """sync.py stores these providers' payload as a parsed dict/list, never a
+    JSON string - their adapters' `fetch()` returns already-decoded data. A
+    test that writes a string here would pass while missing the exact bug
+    this fixed: `observe` must accept the real on-disk shape, not a
+    convenient stand-in for it.
+    """
+    payload = json.loads((FIXTURES / fixture_name).read_text(encoding="utf-8"))
+    write_run(cfg, provider, "20260820T120000", "all", payload)
+
+    postings = categories.observe(cfg, provider)
+
+    assert postings, f"the {fixture_name} fixture should yield postings"
+    labels = {label for posting in postings for label in posting.labels}
+    assert labels, f"the {fixture_name} fixture should yield labels"
 
 
 def test_arbeitnow_is_not_in_the_vocabulary(cfg):
