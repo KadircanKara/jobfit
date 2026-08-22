@@ -57,3 +57,22 @@ def test_arbeitnow_is_not_in_the_vocabulary(cfg):
     assert "arbeitnow" not in categories.VOCABULARY, (
         "arbeitnow has no narrowing parameter, so it cannot be proposed"
     )
+
+
+def test_observe_skips_a_non_dict_envelope_but_keeps_the_good_sibling(wwr_corpus):
+    """A bare JSON list is valid JSON but not the dict envelope sync.py writes.
+
+    One stray or corrupted file in a run directory must not take out the
+    whole provider: `observe` should skip it silently and still return the
+    postings read from the well-formed sibling file in the same directory.
+    """
+    folder = pathlib.Path(wwr_corpus.raw_dir) / "wwr" / "20260820T120000"
+    (folder / "wwr__broken.json").write_text(
+        json.dumps(["not", "a", "dict"]), encoding="utf-8"
+    )
+
+    postings = categories.observe(wwr_corpus, "wwr")
+
+    labels = {label for posting in postings for label in posting.labels}
+    assert labels, "the good sibling file's postings must still come back"
+

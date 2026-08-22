@@ -164,6 +164,8 @@ def observe(config: Config, provider: str, runs: int = DEFAULT_RUNS) -> list[Pos
                 envelope = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
+            if not isinstance(envelope, dict):
+                continue
             payload = envelope.get("payload")
             if not isinstance(payload, str):
                 continue
