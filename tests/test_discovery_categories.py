@@ -76,7 +76,6 @@ def test_observe_returns_nothing_for_a_provider_with_no_stored_runs(cfg):
         # The fixture stores this as "Web, UI &amp; UX Design"; what the
         # estimator must see is the decoded text.
         ("jobicy", "jobicy_all.json", "Web, UI & UX Design"),
-        ("remoteok", "remoteok_all.json", "customer support"),
     ],
 )
 def test_observe_reads_a_json_providers_real_decoded_payload_shape(
@@ -104,6 +103,21 @@ def test_observe_reads_a_json_providers_real_decoded_payload_shape(
 def test_arbeitnow_is_not_in_the_vocabulary(cfg):
     assert "arbeitnow" not in categories.VOCABULARY, (
         "arbeitnow has no narrowing parameter, so it cannot be proposed"
+    )
+
+
+def test_remoteok_is_not_in_the_vocabulary(cfg):
+    """Measured exclusion, not an oversight.
+
+    remoteok tags are not a taxonomy: 92 tags over 135 stored postings, a mean
+    of 11 per posting against exactly 1 for every other provider, and no
+    relation to the job - the `dev` tag holds bakers and couriers. Counting
+    matches under such a label predicts nothing about what fetching that slice
+    would return, which is the assumption the estimator is built on.
+    """
+    assert "remoteok" not in categories.VOCABULARY, (
+        "remoteok tags do not partition postings, so a tag-narrowed board "
+        "cannot be predicted from them - see the comment in VOCABULARY"
     )
 
 
@@ -205,7 +219,7 @@ def test_a_category_with_no_feed_derives_no_token():
     assert categories.VOCABULARY["wwr"].token_for("All Other Remote") is None
 
 
-@pytest.mark.parametrize("provider", ["remotive", "jobicy", "remoteok"])
+@pytest.mark.parametrize("provider", ["remotive", "jobicy"])
 def test_a_json_providers_token_is_the_label_itself(provider):
     """These three send the observed display name as the query value.
 

@@ -176,14 +176,27 @@ VOCABULARY: dict[str, Extractor] = {
         ),
         lambda name: name.strip() or None,
     ),
-    "remoteok": Extractor(
-        lambda p: _json_postings(
-            p, rows=None, id_key="id", title_key="position", label_keys=("tags",)
-        ),
-        lambda name: name.strip() or None,
-    ),
-    # arbeitnow is absent on purpose: its fetch ignores `token` entirely
-    # (arbeitnow.py:29), so there is no slice of it that could be proposed.
+    # remoteok is absent on purpose, and the reason is not "low yield" - it is
+    # that its tags are not a taxonomy at all. Measured on 135 stored postings:
+    # 92 distinct tags, a mean of 11 tags per posting and a maximum of 49, where
+    # wwr, jobicy and remotive all carry exactly one label per posting. The tags
+    # do not describe the job either - "Removalist Offsider" is tagged `golang`,
+    # and the `dev` tag holds "Baker Day", "Trimmer" and "CI001 Courier".
+    #
+    # That breaks the assumption this whole module rests on: that a label picks
+    # out a meaningful slice, so counting matches under it predicts what a fetch
+    # of that slice would return. For remoteok it predicts nothing, and the
+    # sample counts are inflated elevenfold because one posting is counted under
+    # every tag it carries. Narrowing remoteok by tag cannot work, whatever its
+    # yield. Re-add it only if the tagging changes shape, not if the counts
+    # merely look better.
+    #
+    # Dropping it here does NOT stop remoteok being ingested: its `all` board
+    # (discovery/feeds.py:24) is untouched and still fetched daily.
+    #
+    # arbeitnow is absent for a different reason: its fetch ignores `token`
+    # entirely (arbeitnow.py:29), so there is no slice of it that could be
+    # proposed.
 }
 
 
