@@ -923,9 +923,18 @@ td.posting .go {
 }
 .approvedrow {
   display: grid;
-  grid-template-columns: 1fr 140px 220px;
+  grid-template-columns: 1fr 140px 220px auto;
   align-items: center;
   gap: 12px;
+}
+/* Quiet by default so a stray click doesn't cost a day's fetch; it reads on
+   hover/focus like the rest of the panel's secondary controls. */
+.approvedrow .btn.sm {
+  color: var(--ink-faint);
+}
+.approvedrow .btn.sm:hover {
+  color: var(--warn);
+  border-color: var(--warn);
 }
 .approvedrow .status {
   font-family: var(--data);
@@ -954,6 +963,9 @@ td.posting .go {
   }
   .approvedrow .meta {
     text-align: left;
+  }
+  .approvedrow .btn.sm {
+    justify-self: start;
   }
 }
 
