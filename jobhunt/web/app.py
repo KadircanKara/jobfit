@@ -14,11 +14,14 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
 
 from jobhunt import preferences as prefs_module
 from jobhunt.config import Config
 from jobhunt.config import load as load_config
-from jobhunt.db.models import utcnow
+from jobhunt.db.models import Board, utcnow
+from jobhunt.db.session import session_scope
+from jobhunt.discovery import categories as categories_module
 from jobhunt.web import agent as agent_module
 from jobhunt.web import filters as webfilters
 from jobhunt.web import history as history_module
@@ -30,6 +33,14 @@ from jobhunt.web.events import EventLog, to_sse
 from jobhunt.web.runs import RunSupervisor
 
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
+
+
+class _UnknownProvider(Exception):
+    """A provider the vocabulary does not know cannot be narrowed by category."""
+
+    def __init__(self, provider: str) -> None:
+        super().__init__(provider)
+        self.provider = provider
 
 
 class AppState:
@@ -120,10 +131,7 @@ def _row_for(state: AppState, job_id: int) -> dict[str, Any] | None:
 def _name_the_rows(config: Config, batch: Any) -> None:
     """Give each row a title and a company, so the studio has something to call
     it. One query for the whole batch, before any work starts."""
-    from sqlalchemy import select
-
     from jobhunt.db.models import Company, Job
-    from jobhunt.db.session import session_scope
 
     ids = [row.job_id for row in batch.rows]
     with session_scope(config.db_path) as session:
@@ -244,6 +252,61 @@ def create_app(*, config: Config | None = None) -> FastAPI:
             "filters": _filters_payload(cfg),
             "title_impact": {"matched": matched, "total": total},
         }
+
+    # --- feeds --------------------------------------------------------
+
+    def _feeds_payload() -> dict[str, Any]:
+        prefs, _ = prefs_module.load(cfg)
+        proposals = categories_module.propose(cfg, prefs)
+        with session_scope(cfg.db_path) as session:
+            approved = session.execute(
+                select(
+                    Board.provider, Board.token, Board.status,
+                    Board.last_job_count, Board.last_fetched_at,
+                ).where(
+                    Board.discovered_via == categories_module.DISCOVERED_VIA,
+                    Board.status != "dead",
+                    Board.notes == "approved category feed",
+                )
+            ).all()
+        return {
+            "proposals": [dataclasses.asdict(p) for p in proposals if not p.registered],
+            "approved": [
+                {
+                    "provider": provider, "token": token, "status": status,
+                    "last_job_count": last_job_count,
+                    "last_fetched_at": last_fetched_at.isoformat() if last_fetched_at else None,
+                }
+                for provider, token, status, last_job_count, last_fetched_at in approved
+            ],
+        }
+
+    @app.get("/api/feeds")
+    def read_feeds() -> dict[str, Any]:
+        return _feeds_payload()
+
+    @app.post("/api/feeds")
+    def write_feeds(payload: dict[str, Any]) -> Any:
+        def pairs(key: str) -> list[tuple[str, str]]:
+            out = []
+            for row in payload.get(key) or []:
+                provider, token = row.get("provider"), row.get("token")
+                if provider not in categories_module.VOCABULARY:
+                    raise _UnknownProvider(str(provider))
+                if token:
+                    out.append((provider, token))
+            return out
+
+        try:
+            to_approve, to_retire = pairs("approve"), pairs("retire")
+        except _UnknownProvider as exc:
+            return JSONResponse(
+                status_code=422,
+                content={"message": f"{exc.provider} is not a source that can be narrowed"},
+            )
+        categories_module.approve(cfg, to_approve)
+        categories_module.retire(cfg, to_retire)
+        return _feeds_payload()
 
     # --- runs ---------------------------------------------------------
 
