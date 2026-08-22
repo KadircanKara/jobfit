@@ -1,0 +1,172 @@
+"""Which slices of each aggregator are worth fetching, decided by evidence.
+
+A provider's categories are not equally worth a request. The question "is
+Full-Stack Programming worth a daily fetch" has a factual answer, and it is
+already on disk: the raw payloads name their own category on every posting, so
+the number of postings with that label whose title matched can simply be
+counted. No similarity function, because the information that separates
+"Back-End Programming" (where the AI roles are) from "Front-End Programming"
+(where they are not) is nowhere in either string.
+
+Nothing here writes a proposal down. `due_boards` fetches every board that is
+not dead, so a stored proposal would be fetched before anyone approved it.
+Proposals are recomputed from the payloads each time they are asked for.
+"""
+from __future__ import annotations
+
+import dataclasses
+import json
+import pathlib
+import re
+import xml.etree.ElementTree as ET
+from collections.abc import Callable, Iterator
+
+from jobhunt.config import Config
+
+# A fortnight of runs. Long enough that a category is judged on more than one
+# day's postings, short enough that one which stopped producing drifts off the
+# list on its own instead of being retired by hand.
+DEFAULT_RUNS = 14
+
+
+@dataclasses.dataclass(frozen=True)
+class Posting:
+    """One posting as the estimator needs it: identity, labels, title."""
+
+    posting_id: str
+    labels: tuple[str, ...]
+    title: str
+
+
+@dataclasses.dataclass(frozen=True)
+class Extractor:
+    """The two provider-specific pieces: reading labels, and naming a token."""
+
+    read: Callable[[str], Iterator[Posting]]
+    token_for: Callable[[str], str | None]
+
+
+def _wwr_postings(payload: str) -> Iterator[Posting]:
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError:
+        return
+    for item in root.findall("./channel/item"):
+        def text(tag: str, item: ET.Element = item) -> str:
+            node = item.find(tag)
+            return (node.text or "").strip() if node is not None and node.text else ""
+
+        link, raw_title = text("link"), text("title")
+        if not link or not raw_title:
+            continue
+        # "Company: Position", the same split wwr.py:_split_title makes. Only
+        # the position half is a job title, and matching the company half would
+        # count "Stripe" as a title match.
+        _, _, title = raw_title.partition(":")
+        category = text("category")
+        yield Posting(link, (category,) if category else (), (title.strip() or raw_title))
+
+
+# Connectives are dropped only as a fallback: "Management and Finance" really is
+# remote-management-and-finance-jobs, so the literal form has to be tried first.
+_WWR_STOPWORDS = frozenset({"and", "or", "the"})
+
+# Verified against the live feeds: derives 8 of 10 observed names directly, and
+# "DevOps and Sysadmin" with connectives dropped. "All Other Remote" resolves to
+# nothing under any variant, which is a normal outcome, not an error.
+_WWR_UNRESOLVABLE = frozenset({"all other remote"})
+
+
+def _wwr_token(name: str) -> str | None:
+    if name.strip().lower() in _WWR_UNRESOLVABLE:
+        return None
+    words = re.sub(r"[^a-z0-9]+", " ", name.lower().replace("&", " and ")).split()
+    if not words:
+        return None
+    return "remote-" + "-".join(words) + "-jobs"
+
+
+def _json_postings(
+    payload: str, *, rows: str | None, id_key: str, title_key: str, label_keys: tuple[str, ...]
+) -> Iterator[Posting]:
+    """Shared shape for the three JSON aggregators."""
+    try:
+        document = json.loads(payload)
+    except json.JSONDecodeError:
+        return
+    items = document.get(rows, []) if rows and isinstance(document, dict) else document
+    if not isinstance(items, list):
+        return
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        identity, title = row.get(id_key), row.get(title_key)
+        if identity is None or not title:
+            continue
+        labels: list[str] = []
+        for key in label_keys:
+            value = row.get(key)
+            if isinstance(value, str) and value.strip():
+                labels.append(value.strip())
+            elif isinstance(value, list):
+                labels.extend(str(v).strip() for v in value if str(v).strip())
+        yield Posting(str(identity), tuple(labels), str(title))
+
+
+VOCABULARY: dict[str, Extractor] = {
+    "wwr": Extractor(_wwr_postings, _wwr_token),
+    "remotive": Extractor(
+        lambda p: _json_postings(
+            p, rows="jobs", id_key="id", title_key="title", label_keys=("category",)
+        ),
+        # The observed values are display names. Whether ?category= wants the
+        # display name or a slug is untested, so the display name is sent and a
+        # wrong guess dies on its first fetch like any other candidate.
+        lambda name: name.strip() or None,
+    ),
+    "jobicy": Extractor(
+        lambda p: _json_postings(
+            p, rows="jobs", id_key="id", title_key="jobTitle", label_keys=("jobIndustry",)
+        ),
+        lambda name: name.strip() or None,
+    ),
+    "remoteok": Extractor(
+        lambda p: _json_postings(
+            p, rows=None, id_key="id", title_key="position", label_keys=("tags",)
+        ),
+        lambda name: name.strip() or None,
+    ),
+    # arbeitnow is absent on purpose: its fetch ignores `token` entirely
+    # (arbeitnow.py:29), so there is no slice of it that could be proposed.
+}
+
+
+def _run_directories(config: Config, provider: str, runs: int) -> list[pathlib.Path]:
+    folder = pathlib.Path(str(config.raw_dir)) / provider
+    if not folder.is_dir():
+        return []
+    return sorted((d for d in folder.iterdir() if d.is_dir()), reverse=True)[:runs]
+
+
+def observe(config: Config, provider: str, runs: int = DEFAULT_RUNS) -> list[Posting]:
+    """Distinct postings for one provider, newest `runs` stored runs.
+
+    Deduplicated by the provider's own id, so a posting seen on three days is
+    one posting and a long-lived listing does not outvote a busy category.
+    """
+    extractor = VOCABULARY.get(provider)
+    if extractor is None:
+        return []
+    seen: dict[str, Posting] = {}
+    for directory in _run_directories(config, provider, runs):
+        for path in sorted(directory.glob("*.json")):
+            try:
+                envelope = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            payload = envelope.get("payload")
+            if not isinstance(payload, str):
+                continue
+            for posting in extractor.read(payload):
+                seen.setdefault(posting.posting_id, posting)
+    return list(seen.values())
