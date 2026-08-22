@@ -11,7 +11,11 @@ import pathlib
 
 import pytest
 from conftest import FIXTURES
+from sqlalchemy import func, select
 
+from jobhunt import preferences as prefs_module
+from jobhunt.db import models
+from jobhunt.db.session import session_scope
 from jobhunt.discovery import categories
 
 
@@ -167,4 +171,77 @@ def test_a_posting_title_drops_the_company_prefix(cfg):
     )
 
     assert categories.observe(cfg, "wwr")[0].title == "Software engineer"
+
+
+def make_feed(rows: list[tuple[str, str, str]]) -> str:
+    """(link, title, category) -> a minimal wwr feed."""
+    items = "".join(
+        f"<item><title>Co: {title}</title><link>{link}</link>"
+        f"<category>{category}</category></item>"
+        for link, title, category in rows
+    )
+    return f'<?xml version="1.0"?><rss><channel>{items}</channel></rss>'
+
+
+@pytest.fixture
+def two_categories(cfg):
+    # Deliberately built so rate and absolute count DISAGREE: Narrow wins on
+    # rate (2 of 2), Broad wins on absolute matches (3 of 30). This is the
+    # Full-Stack versus Back-End finding, kept as a regression.
+    rows = [(f"https://x.test/n{i}", "Python Developer", "Narrow") for i in range(2)]
+    rows += [(f"https://x.test/b{i}", "Python Developer", "Broad") for i in range(3)]
+    rows += [(f"https://x.test/o{i}", "Massage Therapist", "Broad") for i in range(27)]
+    write_run(cfg, "wwr", "20260820T120000", "all", make_feed(rows))
+    return cfg
+
+
+@pytest.fixture
+def python_prefs():
+    return prefs_module.Preferences(titles=["Python Developer"])
+
+
+def test_proposals_are_ordered_by_absolute_matches_not_rate(two_categories, python_prefs):
+    proposals = categories.propose(two_categories, python_prefs)
+
+    assert [p.category for p in proposals][:2] == ["Broad", "Narrow"], (
+        "Broad has the lower rate (3/30 vs 2/2) and the higher absolute count"
+    )
+
+
+def test_a_proposal_reports_its_sample_size(two_categories, python_prefs):
+    broad = next(p for p in categories.propose(two_categories, python_prefs) if p.category == "Broad")
+
+    assert (broad.matched, broad.sample) == (3, 30)
+
+
+def test_a_category_nothing_matched_is_not_proposed(two_categories, python_prefs):
+    write_run(
+        two_categories, "wwr", "20260821T120000", "all",
+        make_feed([("https://x.test/z", "Dental Hygienist", "Dentistry")]),
+    )
+
+    assert "Dentistry" not in [p.category for p in categories.propose(two_categories, python_prefs)]
+
+
+def test_a_category_with_no_token_is_still_proposed_but_unresolvable(cfg, python_prefs):
+    write_run(
+        cfg, "wwr", "20260820T120000", "all",
+        make_feed([("https://x.test/a", "Python Developer", "All Other Remote")]),
+    )
+
+    proposal = categories.propose(cfg, python_prefs)[0]
+
+    assert proposal.category == "All Other Remote"
+    assert proposal.token is None, "shown so the user knows why it is not offered"
+
+
+def test_no_titles_means_no_proposals(two_categories):
+    assert categories.propose(two_categories, prefs_module.Preferences(titles=[])) == []
+
+
+def test_proposing_writes_no_boards(two_categories, python_prefs):
+    categories.propose(two_categories, python_prefs)
+
+    with session_scope(two_categories.db_path) as session:
+        assert session.execute(select(func.count(models.Board.id))).scalar_one() == 0
 

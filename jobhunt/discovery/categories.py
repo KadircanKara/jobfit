@@ -14,6 +14,7 @@ Proposals are recomputed from the payloads each time they are asked for.
 """
 from __future__ import annotations
 
+import collections
 import dataclasses
 import json
 import pathlib
@@ -21,7 +22,12 @@ import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator
 
+from sqlalchemy import select
+
 from jobhunt.config import Config
+from jobhunt.db.models import Board
+from jobhunt.db.session import session_scope
+from jobhunt.preferences import Preferences, title_patterns
 
 # A fortnight of runs. Long enough that a category is judged on more than one
 # day's postings, short enough that one which stopped producing drifts off the
@@ -181,3 +187,70 @@ def observe(config: Config, provider: str, runs: int = DEFAULT_RUNS) -> list[Pos
             for posting in extractor.read(payload):
                 seen.setdefault(posting.posting_id, posting)
     return list(seen.values())
+
+
+@dataclasses.dataclass(frozen=True)
+class Proposal:
+    """One category, with the evidence for fetching it.
+
+    `matched` is the number the ordering uses and the number the panel leads
+    with. `sample` is shown beside it because a 100% rate over four postings
+    should not read like a 40% rate over four hundred.
+    """
+
+    provider: str
+    category: str
+    token: str | None
+    matched: int
+    sample: int
+    registered: bool
+
+
+def _registered_tokens(config: Config) -> set[tuple[str, str]]:
+    with session_scope(config.db_path) as session:
+        rows = session.execute(
+            select(Board.provider, Board.token).where(Board.status != "dead")
+        ).all()
+    return {(provider, token) for provider, token in rows}
+
+
+def propose(
+    config: Config, prefs: Preferences, runs: int = DEFAULT_RUNS
+) -> list[Proposal]:
+    """Every category with evidence behind it, best first. Writes nothing.
+
+    Ordered by absolute matched postings, never by rate. Rate is misleading
+    here: a small category can match everything in it and still be worth less
+    than a large one that matches a tenth of itself.
+    """
+    patterns = [re.compile(p) for p in title_patterns(prefs.titles)]
+    if not patterns:
+        return []
+
+    registered = _registered_tokens(config)
+    proposals: list[Proposal] = []
+    for provider, extractor in VOCABULARY.items():
+        matched: collections.Counter[str] = collections.Counter()
+        sample: collections.Counter[str] = collections.Counter()
+        for posting in observe(config, provider, runs):
+            hit = any(p.search(posting.title) for p in patterns)
+            for label in posting.labels:
+                sample[label] += 1
+                if hit:
+                    matched[label] += 1
+        for label, count in matched.items():
+            if not count:
+                continue
+            token = extractor.token_for(label)
+            proposals.append(
+                Proposal(
+                    provider=provider,
+                    category=label,
+                    token=token,
+                    matched=count,
+                    sample=sample[label],
+                    registered=bool(token) and (provider, token) in registered,
+                )
+            )
+    proposals.sort(key=lambda p: (-p.matched, -p.sample, p.provider, p.category))
+    return proposals
