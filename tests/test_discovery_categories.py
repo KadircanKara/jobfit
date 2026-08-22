@@ -186,11 +186,15 @@ def make_feed(rows: list[tuple[str, str, str]]) -> str:
 @pytest.fixture
 def two_categories(cfg):
     # Deliberately built so rate and absolute count DISAGREE: Narrow wins on
-    # rate (2 of 2), Broad wins on absolute matches (3 of 30). This is the
-    # Full-Stack versus Back-End finding, kept as a regression.
+    # rate (2 of 2), Broad wins on absolute matches (3 of 61, just under 5%).
+    # This is the Full-Stack versus Back-End finding, kept as a regression.
+    # Broad is held just under 5% (not ~10%) so the regression also catches a
+    # minimum-rate filter in the 5-13% band, which is exactly the band that
+    # would silently drop the real "Full-Stack Programming" category
+    # (measured at 13% live) - the one category this feature exists to catch.
     rows = [(f"https://x.test/n{i}", "Python Developer", "Narrow") for i in range(2)]
     rows += [(f"https://x.test/b{i}", "Python Developer", "Broad") for i in range(3)]
-    rows += [(f"https://x.test/o{i}", "Massage Therapist", "Broad") for i in range(27)]
+    rows += [(f"https://x.test/o{i}", "Massage Therapist", "Broad") for i in range(58)]
     write_run(cfg, "wwr", "20260820T120000", "all", make_feed(rows))
     return cfg
 
@@ -211,7 +215,7 @@ def test_proposals_are_ordered_by_absolute_matches_not_rate(two_categories, pyth
 def test_a_proposal_reports_its_sample_size(two_categories, python_prefs):
     broad = next(p for p in categories.propose(two_categories, python_prefs) if p.category == "Broad")
 
-    assert (broad.matched, broad.sample) == (3, 30)
+    assert (broad.matched, broad.sample) == (3, 61)
 
 
 def test_a_category_nothing_matched_is_not_proposed(two_categories, python_prefs):
@@ -245,3 +249,102 @@ def test_proposing_writes_no_boards(two_categories, python_prefs):
     with session_scope(two_categories.db_path) as session:
         assert session.execute(select(func.count(models.Board.id))).scalar_one() == 0
 
+
+
+def test_approving_creates_a_board_the_sync_loop_will_pick_up(cfg):
+    from sqlalchemy import select
+
+    from jobhunt.db import models
+    from jobhunt.db.session import session_scope
+
+    assert categories.approve(cfg, [("wwr", "remote-full-stack-programming-jobs")]) == 1
+
+    with session_scope(cfg.db_path) as session:
+        board = session.scalars(
+            select(models.Board).where(models.Board.token == "remote-full-stack-programming-jobs")
+        ).one()
+        assert board.provider == "wwr"
+        assert board.discovered_via == "feed"
+        assert board.status == "candidate", "a guess, so one failed fetch kills it"
+
+
+def test_approving_the_same_category_twice_is_idempotent(cfg):
+    categories.approve(cfg, [("wwr", "remote-design-jobs")])
+    categories.approve(cfg, [("wwr", "remote-design-jobs")])
+
+    from sqlalchemy import func, select
+
+    from jobhunt.db import models
+    from jobhunt.db.session import session_scope
+
+    with session_scope(cfg.db_path) as session:
+        assert session.execute(select(func.count(models.Board.id))).scalar_one() == 1
+
+
+def test_approving_a_category_the_seed_already_registered_is_a_no_op(cfg):
+    from jobhunt.discovery import feeds
+
+    feeds.seed(cfg)
+    before = categories.approve(cfg, [("wwr", "remote-programming-jobs")])
+
+    from sqlalchemy import func, select
+
+    from jobhunt.db import models
+    from jobhunt.db.session import session_scope
+
+    with session_scope(cfg.db_path) as session:
+        rows = session.execute(
+            select(func.count(models.Board.id)).where(
+                models.Board.token == "remote-programming-jobs"
+            )
+        ).scalar_one()
+    assert (before, rows) == (1, 1)
+
+
+def test_retiring_marks_the_board_dead_rather_than_deleting_it(cfg):
+    from sqlalchemy import select
+
+    from jobhunt.db import models
+    from jobhunt.db.session import session_scope
+
+    categories.approve(cfg, [("wwr", "remote-design-jobs")])
+
+    assert categories.retire(cfg, [("wwr", "remote-design-jobs")]) == 1
+
+    with session_scope(cfg.db_path) as session:
+        board = session.scalars(
+            select(models.Board).where(models.Board.token == "remote-design-jobs")
+        ).one()
+        assert board.status == "dead", "PLAN.md section 6: rows are never deleted"
+
+
+def test_retiring_something_that_was_never_approved_changes_nothing(cfg):
+    assert categories.retire(cfg, [("wwr", "remote-design-jobs")]) == 0
+
+
+def test_approving_revives_a_previously_retired_board(cfg):
+    """A one-way door would be a real bug: retire something by mistake and it
+    could never come back through approve, only by hand in the database."""
+    from sqlalchemy import select
+
+    from jobhunt.db import models
+    from jobhunt.db.session import session_scope
+
+    categories.approve(cfg, [("wwr", "remote-design-jobs")])
+    categories.retire(cfg, [("wwr", "remote-design-jobs")])
+
+    with session_scope(cfg.db_path) as session:
+        board = session.scalars(
+            select(models.Board).where(models.Board.token == "remote-design-jobs")
+        ).one()
+        board.consecutive_errors = 3
+        session.flush()
+
+    assert categories.approve(cfg, [("wwr", "remote-design-jobs")]) == 1
+
+    with session_scope(cfg.db_path) as session:
+        board = session.scalars(
+            select(models.Board).where(models.Board.token == "remote-design-jobs")
+        ).one()
+        assert board.status == "candidate"
+        assert board.consecutive_errors == 0

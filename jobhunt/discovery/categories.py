@@ -24,6 +24,7 @@ from collections.abc import Callable, Iterator
 
 from sqlalchemy import select
 
+from jobhunt import store
 from jobhunt.config import Config
 from jobhunt.db.models import Board
 from jobhunt.db.session import session_scope
@@ -254,3 +255,52 @@ def propose(
             )
     proposals.sort(key=lambda p: (-p.matched, -p.sample, p.provider, p.category))
     return proposals
+
+
+# The same marker `feeds.seed` uses (discovery/feeds.py:35). An approved
+# category is a tier 2 aggregator feed that happened to be chosen in the
+# browser rather than shipped in the seed list, and nothing downstream should
+# have to care which.
+DISCOVERED_VIA = "feed"
+MARKET = "global_remote"
+
+
+def approve(config: Config, selections: list[tuple[str, str]]) -> int:
+    """Register `(provider, token)` pairs as boards. Idempotent.
+
+    The board is created as a candidate, which is the honest description: the
+    token is derived from a category name and may be wrong. `record_fetch_failures`
+    (sync.py:274) kills a candidate on its first failed fetch, so a bad guess
+    costs exactly one request and then reports itself in the panel.
+    """
+    changed = 0
+    with session_scope(config.db_path) as session:
+        for provider, token in selections:
+            if provider not in VOCABULARY or not token:
+                continue
+            board = store.get_or_create_board(
+                session, provider, token, DISCOVERED_VIA, MARKET
+            )
+            board.notes = "approved category feed"
+            if board.status == "dead":
+                # Re-approving something previously retired puts it back in the
+                # running rather than leaving a dead row that can never revive.
+                board.status = "candidate"
+                board.consecutive_errors = 0
+            changed += 1
+    return changed
+
+
+def retire(config: Config, selections: list[tuple[str, str]]) -> int:
+    """Stop fetching these, without deleting the history of having had them."""
+    changed = 0
+    with session_scope(config.db_path) as session:
+        for provider, token in selections:
+            board = session.scalars(
+                select(Board).where(Board.provider == provider, Board.token == token)
+            ).first()
+            if board is None or board.status == "dead":
+                continue
+            board.status = "dead"
+            changed += 1
+    return changed
