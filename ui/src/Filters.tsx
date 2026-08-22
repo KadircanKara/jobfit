@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { api, FieldError, type Filters, type Vocab } from "./api";
 import { TagField } from "./TagField";
+import { FeedsPanel } from "./Feeds";
 
 const LEVELS = ["junior", "mid", "senior", "staff", "lead", "principal"];
 const UNITS = ["hours", "days", "weeks", "months"] as const;
@@ -49,6 +50,9 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saved, setSaved] = useState(false);
   const [impact, setImpact] = useState<{ matched: number; total: number } | null>(null);
+  // Bumped after a save so the feeds section refetches: its proposals are
+  // scored against the titles that were just written, not the old ones.
+  const [feedsReload, setFeedsReload] = useState(0);
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
@@ -77,6 +81,7 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
       onSaved(body.filters);
       setImpact(body.title_impact);
       setSaved(true);
+      setFeedsReload((n) => n + 1);
       window.setTimeout(() => setSaved(false), 1400);
     } catch (error) {
       if (error instanceof FieldError) setErrors({ [error.field]: error.message });
@@ -92,194 +97,197 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
       );
 
   return (
-    <div className="panel">
-      <div className="panel-head">
-        <h2>Search filters</h2>
-        <div className="note">{vocab.active_jobs.toLocaleString()} active jobs in the corpus</div>
-      </div>
-
-      <div className="fields">
-        <TagField
-          label="Titles"
-          wide
-          tags={draft.titles}
-          vocab={vocab.titles}
-          placeholder="Add a title, press Enter"
-          freeNote="not in the corpus"
-          emptyNote="Every matching title is already on the list."
-          onChange={(tags) => set("titles", tags)}
-          hint={
-            <>
-              matches <b>{titleCount.toLocaleString()}</b> of {vocab.active_jobs.toLocaleString()} active
-              jobs
-            </>
-          }
-        />
-
-        <TagField
-          label="Locations"
-          tags={draft.locations}
-          vocab={vocab.locations}
-          placeholder="Country or region"
-          freeNote="could not be placed"
-          emptyNote="No other place matches that."
-          onChange={(tags) => set("locations", tags)}
-          hint={
-            draft.locations.length ? (
-              <>{draft.locations.length} place{draft.locations.length > 1 ? "s" : ""} in scope</>
-            ) : (
-              <>no location rule · every market</>
-            )
-          }
-        />
-
-        <div className="field">
-          <label>
-            <span>Work model</span>
-          </label>
-          <div className="toggles">
-            {["remote", "hybrid", "onsite"].map((model) => (
-              <button
-                key={model}
-                className="chip"
-                aria-pressed={draft.work_model.includes(model)}
-                onClick={() =>
-                  set(
-                    "work_model",
-                    draft.work_model.includes(model)
-                      ? draft.work_model.filter((m) => m !== model)
-                      : [...draft.work_model, model],
-                  )
-                }
-              >
-                {model}
-              </button>
-            ))}
-          </div>
-          <div className="hint">any combination</div>
+    <>
+      <div className="panel">
+        <div className="panel-head">
+          <h2>Search filters</h2>
+          <div className="note">{vocab.active_jobs.toLocaleString()} active jobs in the corpus</div>
         </div>
 
-        <div className={messages.experience_max ? "field bad" : "field"}>
-          <label>
-            <span>Experience floor</span>
-          </label>
-          <select value={draft.experience_min} onChange={(e) => set("experience_min", e.target.value)}>
-            {LEVELS.map((level) => (
-              <option key={level}>{level}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className={messages.experience_max ? "field bad" : "field"}>
-          <label>
-            <span>Ceiling</span>
-          </label>
-          <select value={draft.experience_max} onChange={(e) => set("experience_max", e.target.value)}>
-            {LEVELS.map((level) => (
-              <option
-                key={level}
-                value={level}
-                disabled={LEVELS.indexOf(level) < LEVELS.indexOf(draft.experience_min)}
-              >
-                {level}
-              </option>
-            ))}
-            <option value="none">no ceiling</option>
-          </select>
-        </div>
-
-        <div className={messages.min_salary ? "field bad" : "field"}>
-          <label>
-            <span>Min salary</span>
-          </label>
-          <input
-            inputMode="numeric"
-            placeholder="any"
-            value={draft.min_salary}
-            onChange={(e) => set("min_salary", e.target.value)}
+        <div className="fields">
+          <TagField
+            label="Titles"
+            wide
+            tags={draft.titles}
+            vocab={vocab.titles}
+            placeholder="Add a title, press Enter"
+            freeNote="not in the corpus"
+            emptyNote="Every matching title is already on the list."
+            onChange={(tags) => set("titles", tags)}
+            hint={
+              <>
+                matches <b>{titleCount.toLocaleString()}</b> of {vocab.active_jobs.toLocaleString()} active
+                jobs
+              </>
+            }
           />
-        </div>
 
-        <div className="field">
-          <label>
-            <span>Currency</span>
-          </label>
-          <select value={draft.currency} onChange={(e) => set("currency", e.target.value)}>
-            {Object.keys(RATES).map((code) => (
-              <option key={code}>{code}</option>
-            ))}
-          </select>
-        </div>
+          <TagField
+            label="Locations"
+            tags={draft.locations}
+            vocab={vocab.locations}
+            placeholder="Country or region"
+            freeNote="could not be placed"
+            emptyNote="No other place matches that."
+            onChange={(tags) => set("locations", tags)}
+            hint={
+              draft.locations.length ? (
+                <>{draft.locations.length} place{draft.locations.length > 1 ? "s" : ""} in scope</>
+              ) : (
+                <>no location rule · every market</>
+              )
+            }
+          />
 
-        <div className="notes">
-          {messages.experience_max && <div className="err">{messages.experience_max}</div>}
-          {messages.min_salary && <div className="err">{messages.min_salary}</div>}
-          {messages.locations && <div className="err">{messages.locations}</div>}
-          {messages.filters && <div className="err">{messages.filters}</div>}
-          {salary !== null && !messages.min_salary && (
-            <div className="fx">
-              At or above <b>{salary.toLocaleString("en-US")}</b> {draft.currency} — matched as{" "}
-              {Object.keys(RATES)
-                .filter((code) => code !== draft.currency)
-                .map((code) => `${Math.round((salary / RATES[draft.currency]) * RATES[code]).toLocaleString("en-US")} ${code}`)
-                .join(" · ")}
-              <br />
-              <span className="stale">
-                the run fetches its own rates before it filters, and compares every job against that one
-                snapshot
-              </span>
+          <div className="field">
+            <label>
+              <span>Work model</span>
+            </label>
+            <div className="toggles">
+              {["remote", "hybrid", "onsite"].map((model) => (
+                <button
+                  key={model}
+                  className="chip"
+                  aria-pressed={draft.work_model.includes(model)}
+                  onClick={() =>
+                    set(
+                      "work_model",
+                      draft.work_model.includes(model)
+                        ? draft.work_model.filter((m) => m !== model)
+                        : [...draft.work_model, model],
+                    )
+                  }
+                >
+                  {model}
+                </button>
+              ))}
             </div>
-          )}
-        </div>
+            <div className="hint">any combination</div>
+          </div>
 
-        <div className={messages.max_age ? "field bad" : "field"}>
-          <label>
-            <span>Max age</span>
-          </label>
-          <div className="suffixed">
-            <input
-              inputMode="numeric"
-              value={draft.age_value}
-              onChange={(e) => set("age_value", e.target.value)}
-              aria-label="Maximum age, amount"
-            />
-            <select
-              value={draft.age_unit}
-              onChange={(e) => set("age_unit", e.target.value)}
-              aria-label="Maximum age, unit"
-            >
-              {UNITS.map((unit) => (
-                <option key={unit} value={unit}>
-                  {unit}
-                </option>
+          <div className={messages.experience_max ? "field bad" : "field"}>
+            <label>
+              <span>Experience floor</span>
+            </label>
+            <select value={draft.experience_min} onChange={(e) => set("experience_min", e.target.value)}>
+              {LEVELS.map((level) => (
+                <option key={level}>{level}</option>
               ))}
             </select>
           </div>
+
+          <div className={messages.experience_max ? "field bad" : "field"}>
+            <label>
+              <span>Ceiling</span>
+            </label>
+            <select value={draft.experience_max} onChange={(e) => set("experience_max", e.target.value)}>
+              {LEVELS.map((level) => (
+                <option
+                  key={level}
+                  value={level}
+                  disabled={LEVELS.indexOf(level) < LEVELS.indexOf(draft.experience_min)}
+                >
+                  {level}
+                </option>
+              ))}
+              <option value="none">no ceiling</option>
+            </select>
+          </div>
+
+          <div className={messages.min_salary ? "field bad" : "field"}>
+            <label>
+              <span>Min salary</span>
+            </label>
+            <input
+              inputMode="numeric"
+              placeholder="any"
+              value={draft.min_salary}
+              onChange={(e) => set("min_salary", e.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <label>
+              <span>Currency</span>
+            </label>
+            <select value={draft.currency} onChange={(e) => set("currency", e.target.value)}>
+              {Object.keys(RATES).map((code) => (
+                <option key={code}>{code}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="notes">
+            {messages.experience_max && <div className="err">{messages.experience_max}</div>}
+            {messages.min_salary && <div className="err">{messages.min_salary}</div>}
+            {messages.locations && <div className="err">{messages.locations}</div>}
+            {messages.filters && <div className="err">{messages.filters}</div>}
+            {salary !== null && !messages.min_salary && (
+              <div className="fx">
+                At or above <b>{salary.toLocaleString("en-US")}</b> {draft.currency} — matched as{" "}
+                {Object.keys(RATES)
+                  .filter((code) => code !== draft.currency)
+                  .map((code) => `${Math.round((salary / RATES[draft.currency]) * RATES[code]).toLocaleString("en-US")} ${code}`)
+                  .join(" · ")}
+                <br />
+                <span className="stale">
+                  the run fetches its own rates before it filters, and compares every job against that one
+                  snapshot
+                </span>
+              </div>
+            )}
+          </div>
+
+          <div className={messages.max_age ? "field bad" : "field"}>
+            <label>
+              <span>Max age</span>
+            </label>
+            <div className="suffixed">
+              <input
+                inputMode="numeric"
+                value={draft.age_value}
+                onChange={(e) => set("age_value", e.target.value)}
+                aria-label="Maximum age, amount"
+              />
+              <select
+                value={draft.age_unit}
+                onChange={(e) => set("age_unit", e.target.value)}
+                aria-label="Maximum age, unit"
+              >
+                {UNITS.map((unit) => (
+                  <option key={unit} value={unit}>
+                    {unit}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className={messages.top_n ? "field bad" : "field"}>
+            <label>
+              <span>Show me</span>
+            </label>
+            <input
+              inputMode="numeric"
+              value={draft.top_n}
+              onChange={(e) => set("top_n", e.target.value)}
+              aria-label="Jobs per run"
+            />
+            <div className="hint">jobs per run</div>
+          </div>
+
+          <div className="notes">
+            {messages.max_age && <div className="err">{messages.max_age}</div>}
+            {messages.top_n && <div className="err">{messages.top_n}</div>}
+          </div>
         </div>
 
-        <div className={messages.top_n ? "field bad" : "field"}>
-          <label>
-            <span>Show me</span>
-          </label>
-          <input
-            inputMode="numeric"
-            value={draft.top_n}
-            onChange={(e) => set("top_n", e.target.value)}
-            aria-label="Jobs per run"
-          />
-          <div className="hint">jobs per run</div>
-        </div>
-
-        <div className="notes">
-          {messages.max_age && <div className="err">{messages.max_age}</div>}
-          {messages.top_n && <div className="err">{messages.top_n}</div>}
-        </div>
+        <button className="btn ghost" onClick={save} disabled={!valid}>
+          {saved ? "Saved" : "Save filters"}
+        </button>
       </div>
-
-      <button className="btn ghost" onClick={save} disabled={!valid}>
-        {saved ? "Saved" : "Save filters"}
-      </button>
-    </div>
+      <FeedsPanel reloadToken={feedsReload} />
+    </>
   );
 }
 

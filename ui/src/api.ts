@@ -168,6 +168,25 @@ export type RevisePreview = { ok: boolean; log: string; pdf: string | null; page
 
 export type BackupRow = { name: string; taken_at: string; size: number };
 
+export type FeedProposal = {
+  provider: string;
+  category: string;
+  token: string | null;
+  matched: number;
+  sample: number;
+  registered: boolean;
+};
+
+export type ApprovedFeed = {
+  provider: string;
+  token: string;
+  status: string;
+  last_job_count: number | null;
+  last_fetched_at: string | null;
+};
+
+export type FeedsBody = { proposals: FeedProposal[]; approved: ApprovedFeed[] };
+
 export class FieldError extends Error {
   field: string;
   constructor(field: string, message: string) {
@@ -195,6 +214,21 @@ export const api = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
+      }),
+    );
+  },
+  async readFeeds(): Promise<FeedsBody> {
+    return json(await fetch("/api/feeds"));
+  },
+  async saveFeeds(body: {
+    approve?: { provider: string; token: string }[];
+    retire?: { provider: string; token: string }[];
+  }): Promise<FeedsBody> {
+    return json(
+      await fetch("/api/feeds", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
       }),
     );
   },

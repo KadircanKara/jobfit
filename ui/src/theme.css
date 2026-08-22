@@ -860,6 +860,103 @@ td.posting .go {
   }
 }
 
+/* ---------------- feeds ---------------- */
+
+.feedgroup {
+  margin-bottom: 18px;
+}
+.feedgroup:last-child {
+  margin-bottom: 0;
+}
+.feedgroup-title {
+  font-size: 11px;
+  letter-spacing: var(--label-sp);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 8px;
+}
+.feedlist {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 12px;
+}
+.feedrow {
+  display: grid;
+  grid-template-columns: 20px 1fr 110px 190px;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+.feedrow.disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.feedcheck-empty {
+  display: inline-block;
+  width: 19px;
+  height: 19px;
+}
+.feedrow .nm,
+.approvedrow .nm {
+  font-family: var(--data);
+  font-size: var(--small);
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.feedrow .matched {
+  font-family: var(--data);
+  font-size: var(--small);
+  font-weight: 500;
+  color: var(--accent);
+  text-align: right;
+  white-space: nowrap;
+}
+.feedrow .rate {
+  font-family: var(--data);
+  font-size: var(--small);
+  color: var(--ink-faint);
+  text-align: right;
+  white-space: nowrap;
+}
+.approvedrow {
+  display: grid;
+  grid-template-columns: 1fr 140px 220px;
+  align-items: center;
+  gap: 12px;
+}
+.approvedrow .status {
+  font-family: var(--data);
+  font-size: var(--small);
+  color: var(--ink-dim);
+}
+.approvedrow .meta {
+  font-family: var(--data);
+  font-size: var(--small);
+  color: var(--ink-faint);
+  text-align: right;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .feedrow {
+    grid-template-columns: 20px 1fr;
+  }
+  .feedrow .matched,
+  .feedrow .rate {
+    grid-column: 2;
+    text-align: left;
+  }
+  .approvedrow {
+    grid-template-columns: 1fr;
+  }
+  .approvedrow .meta {
+    text-align: left;
+  }
+}
+
 /* ---------------- profile editor ---------------- */
 
 .editor {
