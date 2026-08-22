@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import collections
 import dataclasses
+import html
 import json
 import pathlib
 import re
@@ -102,6 +103,21 @@ def _wwr_token(name: str) -> str | None:
     return "remote-" + "-".join(words) + "-jobs"
 
 
+def _clean_label(value: str) -> str:
+    """One provider-stated label, as text rather than as markup.
+
+    Jobicy serves HTML entities inside `jobIndustry` - 13 of its 19 real
+    values contain `&amp;`, e.g. "Customer Support &amp; Success". The label
+    becomes both the display string and the fetch token, and jobicy.py builds
+    `&industry={token}` by concatenation, so an un-decoded `&amp;` would end
+    the query parameter early: the fetch would silently return the whole
+    un-narrowed feed, look healthy to `_record_board_outcome`, and duplicate
+    the `all` feed every day. Decoding at extraction keeps the entity out of
+    the token, the URL and the screen at once.
+    """
+    return html.unescape(value).strip()
+
+
 def _json_postings(
     payload: str | dict | list,
     *,
@@ -137,9 +153,9 @@ def _json_postings(
         for key in label_keys:
             value = row.get(key)
             if isinstance(value, str) and value.strip():
-                labels.append(value.strip())
+                labels.append(_clean_label(value))
             elif isinstance(value, list):
-                labels.extend(str(v).strip() for v in value if str(v).strip())
+                labels.extend(_clean_label(str(v)) for v in value if str(v).strip())
         yield Posting(str(identity), tuple(labels), str(title))
 
 
@@ -226,10 +242,31 @@ class Proposal:
     registered: bool
 
 
+# Approving and retiring both end in a row the sync loop may find dead, so the
+# note is what tells the two apart afterwards. An approved feed stays on the
+# panel whatever its status - a dead one is exactly the outcome the user is
+# owed, since this feature ships no prober and the panel is the only place a
+# failed guess is ever reported. A retired feed is a decision already made, so
+# it leaves the panel and returns to the proposals it came from.
+APPROVED_NOTE = "approved category feed"
+RETIRED_NOTE = "retired category feed"
+
+
 def _registered_tokens(config: Config) -> set[tuple[str, str]]:
+    """Pairs that must not be offered as proposals again.
+
+    A live board is obviously one. So is an approved category feed that has
+    since died: it has been tried, and the approved list reports its outcome,
+    so re-offering it would invite the user to spend the same request again
+    and again with nothing new to learn. A retired feed is deliberately not
+    one - the user turned it off, and it belongs back among the proposals so
+    it can be turned on again.
+    """
     with session_scope(config.db_path) as session:
         rows = session.execute(
-            select(Board.provider, Board.token).where(Board.status != "dead")
+            select(Board.provider, Board.token).where(
+                (Board.status != "dead") | (Board.notes == APPROVED_NOTE)
+            )
         ).all()
     return {(provider, token) for provider, token in rows}
 
@@ -284,6 +321,7 @@ DISCOVERED_VIA = "feed"
 MARKET = "global_remote"
 
 
+
 def approve(config: Config, selections: list[tuple[str, str]]) -> int:
     """Register `(provider, token)` pairs as boards. Idempotent.
 
@@ -300,7 +338,7 @@ def approve(config: Config, selections: list[tuple[str, str]]) -> int:
             board = store.get_or_create_board(
                 session, provider, token, DISCOVERED_VIA, MARKET
             )
-            board.notes = "approved category feed"
+            board.notes = APPROVED_NOTE
             if board.status == "dead":
                 # Re-approving something previously retired puts it back in the
                 # running rather than leaving a dead row that can never revive.
@@ -318,8 +356,12 @@ def retire(config: Config, selections: list[tuple[str, str]]) -> int:
             board = session.scalars(
                 select(Board).where(Board.provider == provider, Board.token == token)
             ).first()
-            if board is None or board.status == "dead":
+            if board is None or board.notes == RETIRED_NOTE:
                 continue
+            # Dead stops the sync loop fetching it; the note records that the
+            # user stopped it rather than the feed failing, so the panel does
+            # not report a deliberate choice as "did not resolve".
             board.status = "dead"
+            board.notes = RETIRED_NOTE
             changed += 1
     return changed

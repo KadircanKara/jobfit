@@ -38,10 +38,12 @@ STATIC_DIR = pathlib.Path(__file__).parent / "static"
 class _BadFeedRequest(Exception):
     """The `approve`/`retire` payload could not be turned into board selections.
 
-    Covers both a provider the vocabulary does not know and a shape FastAPI's
-    own `dict[str, Any]` validation does not check (a non-list value, a row
-    that is not an object) — all three are the caller's fault, not the
-    server's, so all three become one clean 422 rather than an unhandled 500.
+    Covers both a provider the vocabulary does not know and every shape
+    FastAPI's own `dict[str, Any]` validation does not check: a non-list
+    value, a row that is not an object, a provider or token that is not a
+    string. All of them are the caller's fault, not the server's, so all of
+    them become one clean 422 rather than an unhandled 500 — a non-string
+    token in particular would otherwise reach SQLite and raise there.
     """
 
     def __init__(self, message: str) -> None:
@@ -271,11 +273,21 @@ def create_app(*, config: Config | None = None) -> FastAPI:
                     Board.last_job_count, Board.last_fetched_at,
                 ).where(
                     Board.discovered_via == categories_module.DISCOVERED_VIA,
-                    Board.status != "dead",
-                    Board.notes == "approved category feed",
+                    # Deliberately not filtered on status: this feature ships
+                    # no prober, and the promise that replaces one is that the
+                    # panel reports what happened to every approved feed. A
+                    # guess that died has to stay visible reading "did not
+                    # resolve", or the user re-approves it forever. Retired
+                    # feeds drop out by note instead, since retiring is a
+                    # decision rather than a failure.
+                    Board.notes == categories_module.APPROVED_NOTE,
                 )
             ).all()
         return {
+            # `propose` returns nothing for an empty title list whatever is on
+            # disk, so the panel needs to know which of the two empty states it
+            # is looking at before it can tell the user what to do about it.
+            "has_titles": bool(prefs.titles),
             "proposals": [dataclasses.asdict(p) for p in proposals if not p.registered],
             "approved": [
                 {
@@ -304,8 +316,15 @@ def create_app(*, config: Config | None = None) -> FastAPI:
                 provider, token = row.get("provider"), row.get("token")
                 if not provider:
                     raise _BadFeedRequest(f"each entry in {key!r} needs a provider")
+                if not isinstance(provider, str):
+                    raise _BadFeedRequest(f"each provider in {key!r} must be a string")
                 if provider not in categories_module.VOCABULARY:
                     raise _BadFeedRequest(f"{provider} is not a source that can be narrowed")
+                # A dict or list token binds straight into a SQL parameter
+                # and raises deep in the driver, so the shape is refused here
+                # where it can still become the 422 this class promises.
+                if token is not None and not isinstance(token, str):
+                    raise _BadFeedRequest(f"each token in {key!r} must be a string")
                 if token:
                     out.append((provider, token))
             return out

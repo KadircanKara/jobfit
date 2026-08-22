@@ -57,7 +57,11 @@ def test_observe_reads_the_categories_the_provider_states(wwr_corpus):
     postings = categories.observe(wwr_corpus, "wwr")
 
     labels = {label for posting in postings for label in posting.labels}
-    assert labels, "the wwr fixture carries <category> on every item"
+    # Pinned to a value the fixture really carries in <category>. A bare
+    # `assert labels` would pass just as happily if the reader had picked up
+    # <title> or <guid> instead, which is precisely the kind of miss that let
+    # jobicy's un-decoded entities through.
+    assert "Full-Stack Programming" in labels
     assert all(isinstance(p.title, str) and p.title for p in postings)
 
 
@@ -66,15 +70,17 @@ def test_observe_returns_nothing_for_a_provider_with_no_stored_runs(cfg):
 
 
 @pytest.mark.parametrize(
-    ("provider", "fixture_name"),
+    ("provider", "fixture_name", "expected_label"),
     [
-        ("remotive", "remotive_all.json"),
-        ("jobicy", "jobicy_all.json"),
-        ("remoteok", "remoteok_all.json"),
+        ("remotive", "remotive_all.json", "Software Development"),
+        # The fixture stores this as "Web, UI &amp; UX Design"; what the
+        # estimator must see is the decoded text.
+        ("jobicy", "jobicy_all.json", "Web, UI & UX Design"),
+        ("remoteok", "remoteok_all.json", "customer support"),
     ],
 )
 def test_observe_reads_a_json_providers_real_decoded_payload_shape(
-    cfg, provider, fixture_name
+    cfg, provider, fixture_name, expected_label
 ):
     """sync.py stores these providers' payload as a parsed dict/list, never a
     JSON string - their adapters' `fetch()` returns already-decoded data. A
@@ -89,7 +95,10 @@ def test_observe_reads_a_json_providers_real_decoded_payload_shape(
 
     assert postings, f"the {fixture_name} fixture should yield postings"
     labels = {label for posting in postings for label in posting.labels}
-    assert labels, f"the {fixture_name} fixture should yield labels"
+    # A pinned value, not just a non-empty set: jobicy's `jobLevel` is also
+    # populated on every row, so `assert labels` would still pass if the
+    # extractor read the wrong key entirely.
+    assert expected_label in labels
 
 
 def test_arbeitnow_is_not_in_the_vocabulary(cfg):
@@ -196,6 +205,42 @@ def test_a_category_with_no_feed_derives_no_token():
     assert categories.VOCABULARY["wwr"].token_for("All Other Remote") is None
 
 
+@pytest.mark.parametrize("provider", ["remotive", "jobicy", "remoteok"])
+def test_a_json_providers_token_is_the_label_itself(provider):
+    """These three send the observed display name as the query value.
+
+    Whether the live parameter wants a slug is untested, so a wrong guess is
+    left to die on its first fetch - but the token must at least be the label
+    verbatim, with surrounding whitespace off and nothing else changed.
+    """
+    token_for = categories.VOCABULARY[provider].token_for
+
+    assert token_for("  Software Development  ") == "Software Development"
+    assert token_for("   ") is None
+
+
+def test_a_jobicy_label_reaches_the_token_decoded_not_as_an_entity(cfg):
+    """13 of jobicy's 19 real industries contain `&amp;`.
+
+    jobicy.py:33 builds `&industry={token}` by concatenation, so an entity
+    surviving into the token would end the parameter early at its own `&`,
+    and the un-narrowed feed would come back looking like a healthy fetch.
+    """
+    write_run(
+        cfg, "jobicy", "20260820T120000", "all",
+        {"jobs": [{
+            "id": 1, "jobTitle": "Python Developer",
+            "jobIndustry": ["Customer Support &amp; Success"],
+        }]},
+    )
+
+    posting = categories.observe(cfg, "jobicy")[0]
+
+    assert posting.labels == ("Customer Support & Success",)
+    token = categories.VOCABULARY["jobicy"].token_for(posting.labels[0])
+    assert "&amp;" not in (token or "")
+
+
 def test_a_posting_title_drops_the_company_prefix(cfg):
     write_run(
         cfg, "wwr", "20260820T120000", "all",
@@ -243,7 +288,7 @@ def test_proposals_are_ordered_by_absolute_matches_not_rate(two_categories, pyth
     proposals = categories.propose(two_categories, python_prefs)
 
     assert [p.category for p in proposals][:2] == ["Broad", "Narrow"], (
-        "Broad has the lower rate (3/30 vs 2/2) and the higher absolute count"
+        "Broad has the lower rate (3/61 vs 2/2) and the higher absolute count"
     )
 
 
@@ -383,3 +428,92 @@ def test_approving_revives_a_previously_retired_board(cfg):
         ).one()
         assert board.status == "candidate"
         assert board.consecutive_errors == 0
+
+
+def _kill(config, token: str) -> None:
+    """Do to a board exactly what `record_fetch_failures` does to a bad guess."""
+    with session_scope(config.db_path) as session:
+        board = session.scalars(
+            select(models.Board).where(models.Board.token == token)
+        ).one()
+        board.status = "dead"
+        board.consecutive_errors = 1
+
+
+@pytest.fixture
+def full_stack(cfg, python_prefs):
+    write_run(
+        cfg, "wwr", "20260820T120000", "all",
+        make_feed([
+            ("https://x.test/a", "Python Developer", "Full-Stack Programming"),
+        ]),
+    )
+    return cfg
+
+
+def test_an_approved_feed_that_died_is_not_proposed_again(full_stack, python_prefs):
+    """It has been tried and the approved list reports the outcome.
+
+    Re-offering it would have the user spend the same request over and over
+    with nothing new to learn - the bug the panel's status column exists to
+    prevent.
+    """
+    categories.approve(full_stack, [("wwr", "remote-full-stack-programming-jobs")])
+    _kill(full_stack, "remote-full-stack-programming-jobs")
+
+    proposals = categories.propose(full_stack, python_prefs)
+
+    assert [p.category for p in proposals if not p.registered] == []
+
+
+def test_a_retired_feed_comes_back_as_a_proposal(full_stack, python_prefs):
+    """Retiring is a choice, not a failure, so it must be reversible from the
+    same panel it was made in."""
+    categories.approve(full_stack, [("wwr", "remote-full-stack-programming-jobs")])
+    categories.retire(full_stack, [("wwr", "remote-full-stack-programming-jobs")])
+
+    offered = [p for p in categories.propose(full_stack, python_prefs) if not p.registered]
+
+    assert [p.category for p in offered] == ["Full-Stack Programming"]
+
+
+def test_retiring_records_that_the_user_stopped_it_not_that_it_failed(cfg):
+    categories.approve(cfg, [("wwr", "remote-design-jobs")])
+    categories.retire(cfg, [("wwr", "remote-design-jobs")])
+
+    with session_scope(cfg.db_path) as session:
+        board = session.scalars(
+            select(models.Board).where(models.Board.token == "remote-design-jobs")
+        ).one()
+        assert board.status == "dead", "sync must stop fetching it"
+        assert board.notes == categories.RETIRED_NOTE, "but not as a failure"
+
+
+def test_retiring_a_feed_that_already_died_still_takes_it_off_the_panel(cfg):
+    """A dead approved feed is still on the panel by design, so the user must
+    be able to dismiss it - otherwise "did not resolve" is permanent."""
+    categories.approve(cfg, [("wwr", "remote-design-jobs")])
+    _kill(cfg, "remote-design-jobs")
+
+    assert categories.retire(cfg, [("wwr", "remote-design-jobs")]) == 1
+
+    with session_scope(cfg.db_path) as session:
+        board = session.scalars(
+            select(models.Board).where(models.Board.token == "remote-design-jobs")
+        ).one()
+        assert board.notes == categories.RETIRED_NOTE
+
+
+def test_re_approving_a_retired_feed_makes_it_approved_again(full_stack, python_prefs):
+    token = "remote-full-stack-programming-jobs"
+    categories.approve(full_stack, [("wwr", token)])
+    categories.retire(full_stack, [("wwr", token)])
+
+    categories.approve(full_stack, [("wwr", token)])
+
+    with session_scope(full_stack.db_path) as session:
+        board = session.scalars(
+            select(models.Board).where(models.Board.token == token)
+        ).one()
+        assert (board.status, board.notes) == ("candidate", categories.APPROVED_NOTE)
+    assert [p for p in categories.propose(full_stack, python_prefs) if not p.registered] == []

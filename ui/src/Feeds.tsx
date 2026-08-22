@@ -11,6 +11,19 @@ function key(provider: string, token: string) {
   return `${provider} ${token}`;
 }
 
+// The API's timestamps are naive UTC (models.utcnow() strips tzinfo), so
+// `new Date(...)` would read them as local time and render hours off. Every
+// other timestamp in the app formats the string itself; this matches.
+function formatWhen(iso: string): string {
+  return iso.replace("T", " ").slice(0, 19);
+}
+
+// Below this many postings a rate says more about the sample than about the
+// category: 2 matches out of 2 reads as a sure thing next to 40 out of 400.
+// The absolute matched count is shown regardless, and is what the ordering
+// uses, so nothing is hidden by suppressing the percentage here.
+const MIN_SAMPLE_FOR_RATE = 10;
+
 function statusLabel(status: string): string {
   if (status === "dead") return "did not resolve";
   if (status === "empty") return "no jobs in 30 days";
@@ -105,7 +118,7 @@ export function FeedsPanel({ reloadToken }: Props) {
     }
   }
 
-  const empty = data && !data.proposals.length && !data.approved.length;
+  const empty = !data?.proposals.length && !data?.approved.length;
 
   return (
     <div className="panel">
@@ -118,9 +131,11 @@ export function FeedsPanel({ reloadToken }: Props) {
 
       {!data && !error && <div className="empty">Loading…</div>}
 
-      {empty && (
+      {data && empty && (
         <div className="empty">
-          Run a sync first — these are counted from jobs already fetched.
+          {data.has_titles
+            ? "Run a sync first — these are counted from jobs already fetched."
+            : "Add a job title in Filters first — categories are scored by how many stored postings match your titles."}
         </div>
       )}
 
@@ -141,7 +156,7 @@ export function FeedsPanel({ reloadToken }: Props) {
                       ? `${row.last_job_count.toLocaleString()} jobs`
                       : "not fetched yet"}
                     {row.last_fetched_at
-                      ? ` · ${new Date(row.last_fetched_at).toLocaleString()}`
+                      ? ` · ${formatWhen(row.last_fetched_at)}`
                       : ""}
                   </span>
                   <button
@@ -186,7 +201,7 @@ export function FeedsPanel({ reloadToken }: Props) {
                   <span className="rate">
                     {disabled
                       ? "no feed for this category"
-                      : row.sample < 10
+                      : row.sample < MIN_SAMPLE_FOR_RATE
                         ? "not enough data yet"
                         : `${Math.round((row.matched / row.sample) * 100)}% of ${row.sample.toLocaleString()}`}
                   </span>

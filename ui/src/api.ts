@@ -185,7 +185,13 @@ export type ApprovedFeed = {
   last_fetched_at: string | null;
 };
 
-export type FeedsBody = { proposals: FeedProposal[]; approved: ApprovedFeed[] };
+export type FeedsBody = {
+  // False when no job titles are configured: proposals are scored against the
+  // titles, so an empty list then means "nothing to score by", not "no data".
+  has_titles: boolean;
+  proposals: FeedProposal[];
+  approved: ApprovedFeed[];
+};
 
 export class FieldError extends Error {
   field: string;
