@@ -1,0 +1,339 @@
+import { useEffect, useState } from "react";
+import { api } from "./api";
+import type { OutreachBudget, OutreachContact, OutreachRoute } from "./api";
+
+/**
+ * Outreach for one job, opened from its shortlist row.
+ *
+ * The route is decided, not offered: where LinkedIn leaves a free path that is
+ * the path, and the three fallbacks appear only when it does not. Every send is
+ * one press for one person - there is deliberately no way to approve in bulk.
+ *
+ * A draft survives a route change. Someone who has written three careful
+ * sentences must not lose them for clicking a radio button, so only Redraft
+ * replaces the text.
+ */
+const ROUTE_LABEL: Record<OutreachRoute, string> = {
+  dm: "Regular DM",
+  free_inmail: "Free InMail",
+  invite_note: "Invite with the message in the note",
+  invite_then_dm: "Invite bare, DM after they accept",
+  paid_inmail: "Paid InMail",
+};
+
+const ROUTE_WHY: Record<string, string> = {
+  dm: "You are connected, so the message goes straight to their inbox.",
+  free_inmail: "Not connected, but their profile takes a free InMail - no credit is spent.",
+};
+
+export function OutreachDrawer({
+  jobId,
+  onBudget,
+}: {
+  jobId: number;
+  onBudget?: (budget: OutreachBudget) => void;
+}) {
+  const [contacts, setContacts] = useState<OutreachContact[]>([]);
+  const [budget, setBudget] = useState<OutreachBudget | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+
+  async function load() {
+    try {
+      const body = await api.outreach(jobId);
+      setContacts(body.contacts);
+      setBudget(body.budget);
+      onBudget?.(body.budget);
+      setError(null);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId]);
+
+  async function act(work: () => Promise<unknown>) {
+    setBusy(true);
+    try {
+      await work();
+      await load();
+      setError(null);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="drawerbox">
+      <div className="drawerhead">
+        <span>
+          {contacts.length} contact{contacts.length === 1 ? "" : "s"}
+        </span>
+        {budget && (
+          <span className="drawerbudget">
+            {budget.invites_used}/{budget.invites_max} invites · {budget.dms_used}/{budget.dms_max}{" "}
+            messages · {budget.credits} credits
+          </span>
+        )}
+      </div>
+
+      {error && <div className="err">{error}</div>}
+
+      <div className="contacts">
+        {contacts.map((contact) => (
+          <ContactCard
+            key={contact.contact_id}
+            jobId={jobId}
+            contact={contact}
+            budget={budget}
+            busy={busy}
+            act={act}
+          />
+        ))}
+      </div>
+
+      <div className="addrow">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Name"
+          aria-label="Contact name"
+        />
+        <input
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="linkedin.com/in/…"
+          aria-label="LinkedIn profile URL"
+        />
+        <button
+          type="button"
+          className="btn ghost sm"
+          disabled={busy || !name.trim()}
+          onClick={() =>
+            act(async () => {
+              await api.addContact(jobId, { full_name: name.trim(), profile_url: url.trim() || null });
+              setName("");
+              setUrl("");
+            })
+          }
+        >
+          Add contact
+        </button>
+      </div>
+      <div className="hint">
+        Contacts named by the posting arrive on their own once LinkedIn ingestion lands. Until then
+        this is how someone gets in.
+      </div>
+    </div>
+  );
+}
+
+function ContactCard({
+  jobId,
+  contact,
+  budget,
+  busy,
+  act,
+}: {
+  jobId: number;
+  contact: OutreachContact;
+  budget: OutreachBudget | null;
+  busy: boolean;
+  act: (work: () => Promise<unknown>) => Promise<void>;
+}) {
+  const [body, setBody] = useState(contact.body ?? "");
+  useEffect(() => setBody(contact.body ?? ""), [contact.body]);
+
+  const chosen = contact.route;
+  const over = body.length > contact.limit;
+
+  if (contact.state === "queued") {
+    return (
+      <div className="contact" data-active="true">
+        <Who contact={contact} />
+        <div className="rail">
+          <div className="statusline">
+            <span className="pulse" />
+            <span>
+              <b>Invite sent, DM waiting.</b> The queue releases it once they accept.
+            </span>
+          </div>
+          <div className="acts">
+            <button
+              type="button"
+              className="btn ghost sm"
+              disabled={busy}
+              onClick={() => act(() => api.cancelOutreach(jobId, contact.contact_id))}
+            >
+              Cancel the queued DM
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (contact.state === "sent") {
+    return (
+      <div className="contact" data-active="true">
+        <Who contact={contact} />
+        <div className="rail">
+          <div className="statusline">
+            <span className="dot" data-state="sent" />
+            <span>
+              <b>{chosen ? ROUTE_LABEL[chosen] : "Message"} recorded.</b> Stub provider - nothing
+              left this machine.
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="contact" data-active={contact.state !== "none"}>
+      <Who contact={contact} />
+      <div className="stubs">
+        <button
+          type="button"
+          className="stub"
+          aria-pressed={contact.is_connection === true}
+          disabled={busy}
+          onClick={() =>
+            act(() =>
+              api.setContactStatus(contact.contact_id, { is_connection: !contact.is_connection }),
+            )
+          }
+        >
+          <span className="mk" />
+          Connection
+        </button>
+        <button
+          type="button"
+          className="stub"
+          aria-pressed={contact.can_send_inmail === true}
+          disabled={busy}
+          onClick={() =>
+            act(() =>
+              api.setContactStatus(contact.contact_id, {
+                can_send_inmail: !contact.can_send_inmail,
+              }),
+            )
+          }
+        >
+          <span className="mk" />
+          Premium
+        </button>
+      </div>
+
+      <div className="rail">
+        <div className={contact.needs_choice ? "route fallback" : "route"}>
+          <span className="lbl">Route</span>
+          <span className="pick">
+            {contact.needs_choice ? "No free route" : chosen ? ROUTE_LABEL[chosen] : "—"}
+          </span>
+          <span className="why">
+            {contact.needs_choice
+              ? "Not connected, and their profile does not take a free InMail. Pick how to reach them."
+              : (chosen && ROUTE_WHY[chosen]) || ""}
+          </span>
+        </div>
+
+        {contact.needs_choice && (
+          <div className="options">
+            {contact.allowed_routes.map((route) => (
+              <button
+                key={route}
+                type="button"
+                className="opt"
+                aria-pressed={chosen === route}
+                disabled={busy}
+                onClick={() => act(() => api.draftOutreach(jobId, contact.contact_id, route))}
+              >
+                <span className="mk" />
+                <span className="ttl">{ROUTE_LABEL[route]}</span>
+                <span className={route === "paid_inmail" ? "cost spend" : "cost"}>
+                  {route === "paid_inmail" ? `1 credit · ${budget?.credits ?? 0} left` : "1 invite"}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {contact.body != null && (
+          <div className="draft">
+            <textarea
+              className="draftbox"
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              onBlur={() => act(() => api.saveOutreachBody(jobId, contact.contact_id, body))}
+              aria-label={`Message to ${contact.full_name}`}
+            />
+            <div className="draftmeta">
+              <span className={over ? "over" : undefined}>
+                {body.length} / {contact.limit} characters
+              </span>
+              <span>mock draft · not generated</span>
+            </div>
+          </div>
+        )}
+
+        <div className="acts">
+          <button
+            type="button"
+            className="btn ghost sm"
+            disabled={busy || (!chosen && contact.needs_choice)}
+            onClick={() => act(() => api.draftOutreach(jobId, contact.contact_id, chosen))}
+          >
+            {contact.body ? "Redraft" : "Draft"}
+          </button>
+          {contact.body != null && (
+            <button
+              type="button"
+              className="btn sm"
+              disabled={busy || over || !chosen}
+              onClick={() =>
+                act(async () => {
+                  await api.saveOutreachBody(jobId, contact.contact_id, body);
+                  await api.approveOutreach(jobId, contact.contact_id, chosen);
+                })
+              }
+            >
+              {chosen === "invite_then_dm" ? "Send invite, queue the DM" : "Approve and send"}
+            </button>
+          )}
+          <span className="spacer" />
+          <span className="hint">
+            {over
+              ? "Too long for this route. Trim it, or redraft."
+              : "Approve-first. Changing route keeps what you wrote."}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Who({ contact }: { contact: OutreachContact }) {
+  return (
+    <div>
+      <div className="name">{contact.full_name}</div>
+      {contact.headline && <div className="headline">{contact.headline}</div>}
+      <div className="src">
+        <span className="srctag">{contact.origin === "job_poster" ? "job poster" : "added by hand"}</span>
+        {contact.profile_url && (
+          <a href={`https://${contact.profile_url.replace(/^https?:\/\//, "")}`} target="_blank" rel="noreferrer">
+            {contact.profile_url} ↗
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
