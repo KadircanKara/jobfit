@@ -84,6 +84,22 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # rather than starving the boards that actually produce jobs.
         "max_candidates_per_run": 50,
     },
+    # Outreach caps, deliberately below the user's own manual peak. An aged
+    # account doing 50 invites a day by hand is one thing; a program doing it is
+    # the pattern that gets noticed. Credits are what the account holds, not a
+    # daily allowance, and are spent only by paid InMail.
+    "outreach": {
+        "max_daily_invites": 20,
+        "max_daily_dms": 25,
+        "invite_delay_min_seconds": 15.0,
+        "invite_delay_max_seconds": 60.0,
+        "inmail_credits": 12,
+        # How often the queue asks whether an invite was accepted.
+        "poll_interval_seconds": 3600.0,
+        # An invite ignored this long is not going to be accepted, and a queue
+        # that never drains is a queue nobody trusts.
+        "poll_window_days": 21,
+    },
 }
 
 
