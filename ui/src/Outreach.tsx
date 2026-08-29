@@ -21,6 +21,31 @@ const ROUTE_LABEL: Record<OutreachRoute, string> = {
   paid_inmail: "Paid InMail",
 };
 
+/**
+ * Why this route cannot go out right now, or null.
+ *
+ * Caps are a refusal, not a warning: at cap the button is disabled and says so,
+ * rather than sending a press to the server to be turned down. The order matches
+ * `caps.check` - a paid InMail is a message like any other, so the daily cap is
+ * read before the credit stock.
+ */
+function capReason(route: OutreachRoute | null, budget: OutreachBudget | null): string | null {
+  if (!route || !budget) return null;
+  const isInvite = route === "invite_note" || route === "invite_then_dm";
+  if (isInvite) {
+    return budget.invites_used >= budget.invites_max
+      ? `Daily invite cap reached (${budget.invites_max}). It resets at midnight UTC.`
+      : null;
+  }
+  if (budget.dms_used >= budget.dms_max) {
+    return `Daily message cap reached (${budget.dms_max}). It resets at midnight UTC.`;
+  }
+  if (route === "paid_inmail" && budget.credits <= 0) {
+    return "No InMail credits left. Use an invite instead.";
+  }
+  return null;
+}
+
 const ROUTE_WHY: Record<string, string> = {
   dm: "You are connected, so the message goes straight to their inbox.",
   free_inmail: "Not connected, but their profile takes a free InMail - no credit is spent.",
@@ -153,6 +178,7 @@ function ContactCard({
 
   const chosen = contact.route;
   const over = body.length > contact.limit;
+  const capped = capReason(chosen, budget);
 
   if (contact.state === "queued") {
     return (
@@ -304,7 +330,7 @@ function ContactCard({
             <button
               type="button"
               className="btn sm"
-              disabled={busy || over || !chosen}
+              disabled={busy || over || !chosen || capped !== null}
               onClick={() =>
                 act(async () => {
                   await api.saveOutreachBody(jobId, contact.contact_id, body);
@@ -315,11 +341,21 @@ function ContactCard({
               {chosen === "invite_then_dm" ? "Send invite, queue the DM" : "Approve and send"}
             </button>
           )}
+          {contact.state === "drafted" && (
+            <button
+              type="button"
+              className="btn ghost sm"
+              disabled={busy}
+              onClick={() => act(() => api.cancelOutreach(jobId, contact.contact_id))}
+            >
+              Cancel
+            </button>
+          )}
           <span className="spacer" />
           <span className="hint">
             {over
               ? "Too long for this route. Trim it, or redraft."
-              : "Approve-first. Changing route keeps what you wrote."}
+              : capped || "Approve-first. Changing route keeps what you wrote."}
           </span>
         </div>
       </div>

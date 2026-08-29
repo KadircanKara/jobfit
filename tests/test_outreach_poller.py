@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from jobhunt.db.models import Contact, Job, Outreach, utcnow
 from jobhunt.db.session import session_scope
-from jobhunt.outreach import poller, provider, service, stub
+from jobhunt.outreach import caps, poller, provider, service, stub
 
 # Derived from the real clock, not a literal: `queued_row` stamps `invited_at`
 # through `service.approve`, which uses `utcnow()`. A literal date would only
@@ -111,3 +111,28 @@ def test_a_row_resolved_between_listing_and_release_is_not_counted(cfg):
     counts = poller.tick(cfg, RaceProvider(cfg), now=NOW)
     assert counts["released"] == 0
     assert state_of(cfg) == "cancelled"
+
+
+def test_a_release_that_loses_the_claim_sends_nothing(cfg, monkeypatch):
+    """The row was read as queued, then taken before this release could claim it.
+
+    Two ticks, or a tick racing an HTTP approve, both reach `_release` believing
+    the row is theirs. The conditional UPDATE is what stops the second one, and
+    it has to stop it *before* the provider is told to send.
+    """
+    job_id, contact_id, sender = queued_row(cfg)
+    sender.accept(contact_id)
+    sends: list[str] = []
+    monkeypatch.setattr(sender, "send_dm", lambda contact, body: sends.append(body))
+
+    real_check = caps.check
+
+    def steal(config, session, route, **kwargs):
+        # The last hook before the claim: stands in for whoever got there first.
+        with session_scope(cfg.db_path) as other:
+            other.query(Outreach).one().state = "sent"
+        return real_check(config, session, route, **kwargs)
+
+    monkeypatch.setattr(caps, "check", steal)
+    assert poller.tick(cfg, sender, now=NOW)["released"] == 0
+    assert sends == []

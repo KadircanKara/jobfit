@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import pathlib
+import threading
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -318,7 +319,13 @@ def create_app(*, config: Config | None = None) -> FastAPI:
     outreach_sender = outreach_stub.StubProvider(cfg)
     app.state.outreach_sender = outreach_sender
     outreach_routes.register(app, cfg, outreach_sender)
-    outreach_poller.watch(cfg, outreach_sender)
+    # The event is kept so the thread can be stopped: a `create_app` per test, or
+    # per reload, would otherwise leave a daemon thread polling behind it.
+    app.state.outreach_stop = threading.Event()
+    app.state.outreach_thread = outreach_poller.watch(
+        cfg, outreach_sender, stop=app.state.outreach_stop
+    )
+    app.router.on_shutdown.append(app.state.outreach_stop.set)
 
     # --- feeds --------------------------------------------------------
 

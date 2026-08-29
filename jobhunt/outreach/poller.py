@@ -97,11 +97,16 @@ def _release(
             return False
         contact = session.get(Contact, contact_id)
         caps.check(config, session, provider.DM, now=now)
+        try:
+            # Claimed before the send: another tick, or an HTTP approve on the same
+            # queued row, may have taken it between the read above and this line.
+            service._claim(session, row, "sent")
+        except service.IllegalTransition:
+            return False
         result = sender.send_dm(contact, row.body or "")
         row.accepted_at = row.accepted_at or utcnow()
         row.provider_ref = result.ref
         row.sent_at = utcnow()
-        service._move(row, "sent")
         return True
 
 

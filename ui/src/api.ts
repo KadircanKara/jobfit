@@ -248,6 +248,27 @@ export class FieldError extends Error {
   }
 }
 
+/**
+ * The outreach reader. `json` turns every 422 into a FieldError attributed to
+ * `filters`, which is right for filter validation and wrong here: a refusal from
+ * outreach - over the route's limit, at a cap, an illegal transition - arrives as
+ * FastAPI's `detail`, and that sentence is what the drawer has to show.
+ */
+async function detailJson<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    const text = await response.text();
+    let detail = text;
+    try {
+      const parsed = JSON.parse(text) as { detail?: unknown };
+      if (typeof parsed.detail === "string") detail = parsed.detail;
+    } catch {
+      // A non-JSON body (a proxy's own error page) is more use raw than swallowed.
+    }
+    throw new Error(detail);
+  }
+  return (await response.json()) as T;
+}
+
 async function json<T>(response: Response): Promise<T> {
   if (response.status === 422) {
     const body = await response.json();
@@ -358,16 +379,16 @@ export const api = {
     );
   },
   async outreach(jobId: number): Promise<OutreachBody> {
-    return json(await fetch(`/api/outreach/${jobId}`));
+    return detailJson(await fetch(`/api/outreach/${jobId}`));
   },
   async outreachBudget(): Promise<OutreachBudget> {
-    return json(await fetch("/api/outreach/budget"));
+    return detailJson(await fetch("/api/outreach/budget"));
   },
   async addContact(
     jobId: number,
     body: { full_name: string; profile_url?: string | null },
   ): Promise<OutreachContact> {
-    return json(
+    return detailJson(
       await fetch(`/api/outreach/${jobId}/contacts`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -376,13 +397,13 @@ export const api = {
     );
   },
   async removeContact(contactId: number): Promise<{ removed: boolean }> {
-    return json(await fetch(`/api/outreach/contacts/${contactId}`, { method: "DELETE" }));
+    return detailJson(await fetch(`/api/outreach/contacts/${contactId}`, { method: "DELETE" }));
   },
   async setContactStatus(
     contactId: number,
     body: { is_connection?: boolean; can_send_inmail?: boolean },
   ): Promise<{ contact_id: number; is_connection: boolean | null; can_send_inmail: boolean | null }> {
-    return json(
+    return detailJson(
       await fetch(`/api/outreach/contacts/${contactId}/status`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
@@ -395,7 +416,7 @@ export const api = {
     contactId: number,
     route?: OutreachRoute | null,
   ): Promise<OutreachContact> {
-    return json(
+    return detailJson(
       await fetch(`/api/outreach/${jobId}/${contactId}/draft`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -409,7 +430,7 @@ export const api = {
     body: string,
     route?: OutreachRoute | null,
   ): Promise<OutreachContact> {
-    return json(
+    return detailJson(
       await fetch(`/api/outreach/${jobId}/${contactId}/body`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
@@ -422,7 +443,7 @@ export const api = {
     contactId: number,
     route?: OutreachRoute | null,
   ): Promise<OutreachContact> {
-    return json(
+    return detailJson(
       await fetch(`/api/outreach/${jobId}/${contactId}/approve`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -431,10 +452,10 @@ export const api = {
     );
   },
   async cancelOutreach(jobId: number, contactId: number): Promise<OutreachContact> {
-    return json(await fetch(`/api/outreach/${jobId}/${contactId}/cancel`, { method: "POST" }));
+    return detailJson(await fetch(`/api/outreach/${jobId}/${contactId}/cancel`, { method: "POST" }));
   },
   async outreachStates(): Promise<{ states: OutreachStates }> {
-    return json(await fetch("/api/outreach/states"));
+    return detailJson(await fetch("/api/outreach/states"));
   },
   async revisionPreview(jobId: number): Promise<RevisePreview> {
     return json(await fetch(`/api/revise/${jobId}/preview`));

@@ -158,3 +158,20 @@ def test_states_reports_the_most_advanced_state_per_job(client, cfg):
     assert states[str(sent_job_id)] == "sent"
     assert states[str(drafted_job_id)] == "drafted"
     assert str(untouched_job_id) not in states
+
+
+def test_editing_the_body_of_a_sent_row_is_a_409(client, job_id):
+    contact_id = add(client, job_id).json()["contact_id"]
+    client.patch(f"/api/outreach/contacts/{contact_id}/status", json={"is_connection": True})
+    client.post(f"/api/outreach/{job_id}/{contact_id}/draft")
+    client.post(f"/api/outreach/{job_id}/{contact_id}/approve", json={})
+    refused = client.put(f"/api/outreach/{job_id}/{contact_id}/body", json={"body": "rewritten"})
+    assert refused.status_code == 409
+    assert "sent" in refused.json()["detail"]
+
+
+def test_the_poller_thread_stops_when_the_app_shuts_down(cfg):
+    app = create_app(config=cfg)
+    with TestClient(app):
+        assert not app.state.outreach_stop.is_set()
+    assert app.state.outreach_stop.is_set()

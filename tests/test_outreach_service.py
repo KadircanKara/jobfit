@@ -215,6 +215,102 @@ def test_cancelling_a_queued_row_stops_the_deferred_send(cfg):
     assert body["state"] == "cancelled"
 
 
+def test_a_queued_row_cannot_have_its_body_rewritten(cfg):
+    """The queued body is the exact message the user approved for a deferred send."""
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=False, can_send_inmail=False)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_THEN_DM)
+    service.approve(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_THEN_DM)
+    with pytest.raises(service.IllegalTransition):
+        service.save_body(cfg, job_id, contact_id, "something else entirely")
+
+
+def test_a_sent_row_cannot_have_its_body_or_route_rewritten(cfg):
+    """`sent` is the record a message reached a person, route included: rewriting
+    the route would move the row between budgets and hand a spent credit back."""
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+    service.approve(cfg, job_id, contact_id, sender(cfg))
+    with pytest.raises(service.IllegalTransition):
+        service.save_body(cfg, job_id, contact_id, "rewritten after the fact")
+    with session_scope(cfg.db_path) as session:
+        assert session.query(Outreach).one().route == provider.DM
+
+
+def test_a_cancelled_row_cannot_be_edited_without_being_redrafted(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+    service.cancel(cfg, job_id, contact_id)
+    with pytest.raises(service.IllegalTransition):
+        service.save_body(cfg, job_id, contact_id, "back from the dead")
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+    assert service.save_body(cfg, job_id, contact_id, "written again")["body"] == "written again"
+
+
+def test_a_second_claim_on_a_claimed_row_never_reaches_the_provider(cfg):
+    """Two transactions can both read `drafted` and both decide to send.
+
+    The provider here is the assertion: the loser of the conditional UPDATE must
+    refuse before a message goes out, not after.
+    """
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+
+    class RacingSender(stub.StubProvider):
+        sends: list[str] = []
+
+        def status(self, contact):
+            # Stands in for the other request: it claims the row after this one
+            # has read it as drafted, and before this one reaches the claim.
+            with session_scope(cfg.db_path) as session:
+                session.query(Outreach).one().state = "sent"
+            return super().status(contact)
+
+        def send_dm(self, contact, body):
+            RacingSender.sends.append(body)
+            return super().send_dm(contact, body)
+
+    with pytest.raises(service.IllegalTransition):
+        service.approve(cfg, job_id, contact_id, RacingSender(cfg))
+    assert RacingSender.sends == []
+
+
+def test_two_spellings_of_one_profile_url_are_one_contact(cfg):
+    first = make_job(cfg, "ext-1")
+    second = make_job(cfg, "ext-2")
+    a = service.add_contact(
+        cfg, first, full_name="Marit", profile_url="https://www.linkedin.com/in/Marit/?utm=x"
+    )
+    b = service.add_contact(cfg, second, full_name="Marit", profile_url="linkedin.com/in/marit")
+    assert a["profile_url"] == "linkedin.com/in/marit"
+    assert a["contact_id"] == b["contact_id"]
+    with session_scope(cfg.db_path) as session:
+        assert session.query(Contact).count() == 1
+
+
+def test_removing_a_contact_reports_the_state_that_blocks_it(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=False, can_send_inmail=False)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_THEN_DM)
+    service.approve(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_THEN_DM)
+    with pytest.raises(service.IllegalTransition) as excinfo:
+        service.remove_contact(cfg, contact_id)
+    assert excinfo.value.current == "queued"
+
+
 def test_an_unknown_job_is_refused(cfg):
     with pytest.raises(service.UnknownJob):
         service.add_contact(cfg, 9999, full_name="Nobody")

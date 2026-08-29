@@ -18,6 +18,11 @@ from jobhunt.outreach import caps, provider
 NOW = dt.datetime(2026, 8, 29, 14, 0, 0)
 
 
+def zero(low: float, high: float) -> float:
+    """No spacing, for the tests that are about a cap rather than the clock."""
+    return 0.0
+
+
 def seed(cfg, rows: list[tuple[str, str, dt.datetime]]) -> None:
     """Each row is (route, timestamp_column, when)."""
     with session_scope(cfg.db_path) as session:
@@ -67,7 +72,7 @@ def test_check_refuses_at_the_invite_cap(cfg):
     seed(cfg, [(provider.INVITE_NOTE, "invited_at", NOW)])
     with session_scope(cfg.db_path) as session:
         with pytest.raises(caps.CapReached) as excinfo:
-            caps.check(cfg, session, provider.INVITE_THEN_DM, now=NOW)
+            caps.check(cfg, session, provider.INVITE_THEN_DM, now=NOW, rand=zero)
     assert excinfo.value.kind == "invites"
 
 
@@ -75,9 +80,9 @@ def test_the_dm_cap_does_not_block_an_invite(cfg):
     cfg.raw["outreach"]["max_daily_dms"] = 1
     seed(cfg, [(provider.DM, "sent_at", NOW)])
     with session_scope(cfg.db_path) as session:
-        caps.check(cfg, session, provider.INVITE_NOTE, now=NOW)  # does not raise
+        caps.check(cfg, session, provider.INVITE_NOTE, now=NOW, rand=zero)  # does not raise
         with pytest.raises(caps.CapReached):
-            caps.check(cfg, session, provider.FREE_INMAIL, now=NOW)
+            caps.check(cfg, session, provider.FREE_INMAIL, now=NOW, rand=zero)
 
 
 def test_paid_inmail_is_refused_with_no_credits_left(cfg):
@@ -95,7 +100,73 @@ def test_credits_fall_as_paid_inmails_go_out(cfg):
         assert caps.budget(cfg, session, now=NOW).credits == 2
 
 
-def test_spacing_stays_inside_the_configured_window(cfg):
+def test_a_released_dm_counts_against_the_daily_message_cap(cfg):
+    """The deferred path spends two budgets on two days, and neither escapes.
+
+    A poller release leaves `route` as invite_then_dm, so counting only dm and
+    free_inmail let N accepted invites release N DMs with the counter still at 0.
+    """
+    seed(cfg, [(provider.INVITE_THEN_DM, "sent_at", NOW)])
+    with session_scope(cfg.db_path) as session:
+        assert caps.budget(cfg, session, now=NOW).dms_used == 1
+
+
+def test_a_queued_invite_counts_as_an_invite_on_the_day_it_went_out(cfg):
+    seed(cfg, [(provider.INVITE_THEN_DM, "invited_at", NOW)])
+    with session_scope(cfg.db_path) as session:
+        budget = caps.budget(cfg, session, now=NOW)
+    assert budget.invites_used == 1
+    assert budget.dms_used == 0
+
+
+def test_paid_inmail_is_refused_at_the_daily_message_cap(cfg):
+    """Credits are checked in addition to the cap, not instead of it."""
+    cfg.raw["outreach"]["max_daily_dms"] = 1
+    cfg.raw["outreach"]["inmail_credits"] = 12
+    seed(cfg, [(provider.DM, "sent_at", NOW)])
+    with session_scope(cfg.db_path) as session:
+        with pytest.raises(caps.CapReached) as excinfo:
+            caps.check(cfg, session, provider.PAID_INMAIL, now=NOW, rand=zero)
+    assert excinfo.value.kind == "dms"
+
+
+def test_a_paid_inmail_counts_against_the_daily_message_cap(cfg):
+    seed(cfg, [(provider.PAID_INMAIL, "sent_at", NOW)])
+    with session_scope(cfg.db_path) as session:
+        assert caps.budget(cfg, session, now=NOW).dms_used == 1
+
+
+def test_a_send_inside_the_spacing_window_is_refused(cfg):
+    cfg.raw["outreach"]["invite_delay_min_seconds"] = 30.0
+    cfg.raw["outreach"]["invite_delay_max_seconds"] = 30.0
+    seed(cfg, [(provider.DM, "sent_at", NOW - dt.timedelta(seconds=10))])
+    with session_scope(cfg.db_path) as session:
+        with pytest.raises(caps.CapReached) as excinfo:
+            caps.check(cfg, session, provider.DM, now=NOW)
+    assert excinfo.value.kind == "spacing"
+    assert "20s" in excinfo.value.message
+
+
+def test_a_send_past_the_spacing_window_is_allowed(cfg):
+    cfg.raw["outreach"]["invite_delay_min_seconds"] = 30.0
+    cfg.raw["outreach"]["invite_delay_max_seconds"] = 30.0
+    seed(cfg, [(provider.DM, "sent_at", NOW - dt.timedelta(seconds=31))])
+    with session_scope(cfg.db_path) as session:
+        caps.check(cfg, session, provider.DM, now=NOW)  # does not raise
+
+
+def test_spacing_only_binds_within_one_kind(cfg):
+    """An invite and a DM are different queues; one must not delay the other."""
+    cfg.raw["outreach"]["invite_delay_min_seconds"] = 3600.0
+    cfg.raw["outreach"]["invite_delay_max_seconds"] = 3600.0
+    seed(cfg, [(provider.INVITE_NOTE, "invited_at", NOW - dt.timedelta(seconds=1))])
+    with session_scope(cfg.db_path) as session:
+        caps.check(cfg, session, provider.DM, now=NOW)  # does not raise
+        with pytest.raises(caps.CapReached):
+            caps.check(cfg, session, provider.INVITE_NOTE, now=NOW)
+
+
+def test_spacing_draws_from_the_configured_window(cfg):
     low = caps.spacing_seconds(cfg, rand=lambda a, b: a)
     high = caps.spacing_seconds(cfg, rand=lambda a, b: b)
     assert low == cfg.get("outreach", "invite_delay_min_seconds")

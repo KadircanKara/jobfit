@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from jobhunt.config import Config
@@ -52,6 +52,61 @@ class TooLong(Exception):
         super().__init__(f"{length} characters, limit {limit}")
         self.length = length
         self.limit = limit
+
+
+# States whose body is still the user's to change. `queued` holds the exact
+# message that was approved for a deferred send, `sent` is the record that a
+# message reached a person, and `cancelled` is a decision already taken - an edit
+# to any of them would rewrite history, and a route edit would move the row
+# between budgets on top of that.
+EDITABLE = ("none", "drafted", "failed")
+
+
+def normalize_profile_url(url: str | None) -> str | None:
+    """Reduce a LinkedIn profile to `linkedin.com/in/<slug>`.
+
+    The unique constraint only dedupes people whose URLs are spelled the same
+    way, and a URL pasted from the address bar never is: scheme, `www.`, a
+    tracking query, a trailing slash. Normalizing is what makes the constraint
+    mean "the same person" rather than "the same string".
+    """
+    if url is None:
+        return None
+    trimmed = url.strip()
+    if not trimmed:
+        return None
+    trimmed = trimmed.split("#", 1)[0].split("?", 1)[0]
+    for prefix in ("https://", "http://"):
+        if trimmed.lower().startswith(prefix):
+            trimmed = trimmed[len(prefix):]
+    if trimmed.lower().startswith("www."):
+        trimmed = trimmed[4:]
+    return trimmed.rstrip("/").lower() or None
+
+
+def _claim(session: Session, row: Outreach, target: str) -> None:
+    """Take the row to `target`, or lose the race and refuse.
+
+    `_move` validates against the state this transaction happened to read, which
+    two transactions can read at the same time - a double-clicked Approve, or an
+    HTTP approve racing the poller on a queued row. The conditional UPDATE is what
+    decides which of them reaches the provider: the loser changes no row, sees
+    rowcount 0, and raises before anything is sent.
+    """
+    if target not in TRANSITIONS[row.state]:
+        raise IllegalTransition(row.state, target)
+    expected = row.state
+    stamp = utcnow()
+    claimed = session.execute(
+        update(Outreach)
+        .where(Outreach.id == row.id, Outreach.state == expected)
+        .values(state=target, last_state_change=stamp)
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if claimed != 1:
+        raise IllegalTransition(expected, target)
+    row.state = target
+    row.last_state_change = stamp
 
 
 def _move(row: Outreach, target: str) -> None:
@@ -141,14 +196,13 @@ def add_contact(
     """Attach a person to a job. An existing profile URL reuses that person."""
     with session_scope(config.db_path) as session:
         _job(session, job_id)
+        url = normalize_profile_url(profile_url)
         contact = None
-        if profile_url:
-            contact = session.scalars(
-                select(Contact).where(Contact.profile_url == profile_url)
-            ).first()
+        if url:
+            contact = session.scalars(select(Contact).where(Contact.profile_url == url)).first()
         if contact is None:
             contact = Contact(
-                full_name=full_name, profile_url=profile_url, headline=headline, origin=origin
+                full_name=full_name, profile_url=url, headline=headline, origin=origin
             )
             session.add(contact)
             session.flush()
@@ -169,8 +223,9 @@ def remove_contact(config: Config, contact_id: int) -> None:
         rows = session.scalars(select(Outreach).where(Outreach.contact_id == contact_id)).all()
         if not rows:
             raise UnknownContact(contact_id)
-        if any(row.state in ("sent", "queued") for row in rows):
-            raise IllegalTransition("sent", "deleted")
+        blocking = next((row.state for row in rows if row.state in ("sent", "queued")), None)
+        if blocking is not None:
+            raise IllegalTransition(blocking, "deleted")
         for row in rows:
             session.delete(row)
         contact = session.get(Contact, contact_id)
@@ -248,7 +303,8 @@ def save_body(
     """Store an edited message, optionally recording a route pick alongside it.
 
     Never refuses on length: length is judged at approval, not while typing, so a
-    body caught mid-edit is not a message anyone tried to send.
+    body caught mid-edit is not a message anyone tried to send. It does refuse on
+    state: only a row nobody has committed to yet is still the user's to edit.
 
     When `route` is given it must be one of the routes currently allowed for this
     contact's status - the same check `_resolve_route` runs before a send - and it
@@ -257,6 +313,8 @@ def save_body(
     """
     with session_scope(config.db_path) as session:
         row = _row(session, job_id, contact_id)
+        if row.state not in EDITABLE:
+            raise IllegalTransition(row.state, "edited")
         contact = session.get(Contact, contact_id)
         status = provider.ContactStatus(contact.is_connection, contact.can_send_inmail, 0)
         if route is not None:
@@ -301,18 +359,19 @@ def approve(
         # be discarded by a rollback the way an unvalidated `_move` would.
         row.route = chosen
         row.approved_at = utcnow()
+        # Claimed before the provider is told anything: whoever wins this UPDATE
+        # is the only one who sends.
+        _claim(session, row, target)
         if chosen == provider.INVITE_THEN_DM:
             result = sender.send_invite(contact, None)
             row.invited_at = utcnow()
             row.provider_ref = result.ref
-            _move(row, "queued")
         else:
             result = _send(sender, contact, chosen, body)
             row.provider_ref = result.ref
             if chosen in (provider.INVITE_NOTE,):
                 row.invited_at = utcnow()
             row.sent_at = utcnow()
-            _move(row, "sent")
         return _payload(row, contact, status)
 
 
