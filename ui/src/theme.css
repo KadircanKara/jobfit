@@ -1924,3 +1924,39 @@ td.sent {
   white-space: nowrap;
   text-align: right;
 }
+
+.filterrow th {
+  padding: 8px 12px 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.colfilter {
+  width: 100%;
+  min-width: 90px;
+  background: var(--surface2);
+  border: 1px solid var(--line);
+  border-radius: var(--rad);
+  color: var(--ink);
+  padding: 5px 8px;
+  font: inherit;
+  font-size: var(--small);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.colfilter::placeholder {
+  color: var(--ink-faint);
+}
+.colfilter:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.job .posting-link {
+  font-family: var(--data);
+  font-size: var(--small);
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.job .posting-link:hover {
+  text-decoration: underline;
+}

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { GateReport, RankReport, RunEvent, RunState, ShortlistRow } from "./api";
 import { MarkApplied } from "./MarkApplied";
 
@@ -354,11 +354,34 @@ export function Shortlist({
   applied: Set<number>;
   onApplied: (id: number, on: boolean) => void;
 }) {
+  const [query, setQuery] = useState({ role: "", company: "", where: "" });
+  // Filtering happens here rather than upstream: the run owns the rows, and a
+  // typed narrowing is a way of reading this table, not a change to the run.
+  const shown = useMemo(
+    () =>
+      rows.filter(
+        (row) =>
+          matches(row.title, query.role) &&
+          matches(row.company, query.company) &&
+          matches(`${row.remote_type} ${row.location}`, query.where),
+      ),
+    [rows, query],
+  );
   if (!rows.length) {
     return <div className="empty">No jobs above the bar yet. Start a run to fill this.</div>;
   }
-  const kept = rows.filter((row) => !row.below_bar).length;
-  const missed = rows.length - kept;
+  const kept = shown.filter((row) => !row.below_bar).length;
+  const missed = shown.length - kept;
+  const field = (key: "role" | "company" | "where", label: string) => (
+    <input
+      className="colfilter"
+      type="search"
+      value={query[key]}
+      placeholder="Filter"
+      aria-label={`Filter by ${label}`}
+      onChange={(e) => setQuery((q) => ({ ...q, [key]: e.target.value }))}
+    />
+  );
   return (
     <div className="tablewrap">
       <table>
@@ -380,14 +403,31 @@ export function Shortlist({
             <th>Posting</th>
             <th>Sent</th>
           </tr>
+          <tr className="filterrow">
+            <th className="pick" />
+            <th />
+            <th>{field("role", "role")}</th>
+            <th>{field("company", "company")}</th>
+            <th>{field("where", "where")}</th>
+            <th />
+            <th />
+            <th />
+          </tr>
         </thead>
         <tbody>
-          {rows.map((row, index) => (
+          {!shown.length && (
+            <tr>
+              <td colSpan={8} className="co">
+                No job matches that filter.
+              </td>
+            </tr>
+          )}
+          {shown.map((row, index) => (
             <Fragment key={row.job_id}>
               {/* Drawn once, where the threshold actually fell. A run that
                   returns three jobs is usually a bar that moved, not a thin
                   market, and that is invisible if the rejected rows are gone. */}
-              {row.below_bar && index > 0 && !rows[index - 1].below_bar && (
+              {row.below_bar && index > 0 && !shown[index - 1].below_bar && (
                 <tr className="cutrow">
                   <td colSpan={8}>
                     <div className="cut">
@@ -453,7 +493,12 @@ export function Shortlist({
   );
 }
 
-function hostOf(url: string) {
+function matches(value: string, needle: string) {
+  const q = needle.trim().toLowerCase();
+  return !q || (value ?? "").toLowerCase().includes(q);
+}
+
+export function hostOf(url: string) {
   try {
     return new URL(url).host;
   } catch {

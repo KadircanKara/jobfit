@@ -32,3 +32,6 @@ ui/node_modules/
 # built bundle, produced by `npm --prefix ui run build`
 jobhunt/web/static/
 ui/tsconfig.tsbuildinfo
+
+# Claude Code session pointer, local only
+session_id.txt

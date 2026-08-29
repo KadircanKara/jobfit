@@ -128,6 +128,7 @@ export type JobRun = {
   error: string | null;
   title: string;
   company: string;
+  url: string | null;
 };
 
 /** A job the studio can open, plus how far its draft has drifted.

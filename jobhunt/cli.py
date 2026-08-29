@@ -29,6 +29,7 @@ from jobhunt.rank import deterministic as rank_filters
 from jobhunt.rank import runner as rank_runner
 from jobhunt.render import csv_export
 from jobhunt.render import review as review_render
+from jobhunt.web import idle as idle_module
 
 app = typer.Typer(add_completion=False, help="Local job sourcing and application tracking.")
 console = Console()
@@ -931,11 +932,17 @@ def serve_cmd(
     port: int = typer.Option(8765, "--port", help="Port to listen on."),
     host: str = typer.Option("127.0.0.1", "--host", help="Interface to bind. Loopback by default."),
     open_browser: bool = typer.Option(True, "--open/--no-open", help="Open the page on start."),
+    idle_timeout: float = typer.Option(
+        idle_module.DEFAULT_IDLE_SECONDS,
+        "--idle-timeout",
+        help="Stop after this many seconds with no requests and no work running. 0 never stops.",
+    ),
 ) -> None:
     """Run the local web interface.
 
     Binds to loopback, so nothing outside this machine can reach it. A run
-    started here keeps going with the browser closed.
+    started here keeps going with the browser closed, and the process only
+    retires itself once nothing has called it for --idle-timeout seconds.
     """
     try:
         import uvicorn
@@ -964,7 +971,22 @@ def serve_cmd(
 
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
 
-    uvicorn.run(create_app(config=cfg), host=host, port=port, log_level="warning")
+    application = create_app(config=cfg)
+    server = uvicorn.Server(
+        uvicorn.Config(application, host=host, port=port, log_level="warning")
+    )
+
+    def retire() -> None:
+        console.print(f"serve: idle for {idle_timeout:.0f}s, stopping.")
+        server.should_exit = True
+
+    idle_module.watch(
+        application.state.jh.idle,
+        idle_timeout,
+        application.state.jh.busy,
+        retire,
+    )
+    server.run()
 
 
 if __name__ == "__main__":

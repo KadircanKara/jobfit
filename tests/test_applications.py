@@ -588,17 +588,45 @@ def test_an_applied_job_leaves_the_shortlist(cfg, tmp_path) -> None:
     assert review.shortlist(cfg, min_score=0.5) == []
 
 
-def test_a_tailored_folder_is_still_not_prepared_twice(cfg, tmp_path) -> None:
+def test_a_tailored_folder_with_a_cv_is_not_prepared_twice(cfg, tmp_path) -> None:
     """Two different questions: the shortlist wants the job back, the folder
     guard still has to refuse overwriting the CV already cut."""
-    apply_root(cfg, tmp_path)
+    root = apply_root(cfg, tmp_path)
     job_id = make_job(cfg)
     with session_scope(cfg.db_path) as session:
-        applications.apply(cfg, session, job_id, tailor=False, status="tailored")
+        result = applications.apply(cfg, session, job_id, tailor=False, status="tailored")
+    (pathlib.Path(result.folder) / "Kadircan_Kara-CV.pdf").write_bytes(b"%PDF-1.4 cut")
+    assert root.is_dir()
 
     with session_scope(cfg.db_path) as session:
         with pytest.raises(applications.ApplyBlocked, match="already recorded as tailored"):
             applications.apply(cfg, session, job_id, tailor=False, status="tailored")
+
+
+def test_a_tailored_folder_without_a_cv_is_prepared_again(cfg, tmp_path) -> None:
+    """Found live: a run that died after prepare() left a folder with no CV in
+    it, and the folder alone was enough to skip the job forever."""
+    apply_root(cfg, tmp_path)
+    job_id = make_job(cfg)
+    with session_scope(cfg.db_path) as session:
+        first = applications.apply(cfg, session, job_id, tailor=False, status="tailored")
+    assert applications.tailored_cv(first.folder) is None
+
+    with session_scope(cfg.db_path) as session:
+        again = applications.apply(cfg, session, job_id, tailor=False, status="tailored")
+    assert again.folder == first.folder
+
+
+def test_an_empty_cv_pdf_does_not_count_as_compiled(cfg, tmp_path) -> None:
+    apply_root(cfg, tmp_path)
+    job_id = make_job(cfg)
+    with session_scope(cfg.db_path) as session:
+        result = applications.apply(cfg, session, job_id, tailor=False, status="tailored")
+    (pathlib.Path(result.folder) / "Kadircan_Kara_CV.pdf").write_bytes(b"")
+
+    assert applications.tailored_cv(result.folder) is None
+    with session_scope(cfg.db_path) as session:
+        applications.apply(cfg, session, job_id, tailor=False, status="tailored")
 
 
 def test_tailored_moves_on_to_applied(cfg, tmp_path) -> None:

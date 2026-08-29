@@ -480,3 +480,23 @@ def test_resuming_with_no_paused_run_is_refused(client):
 
     assert response.status_code == 409
     assert "no paused run" in response.json()["message"]
+
+
+def test_a_request_touches_the_idle_clock(client) -> None:
+    """The watchdog measures requests, so every route has to count as one."""
+    state = client.app.state.jh
+    state.idle._last -= 500.0
+    before = state.idle.idle_for()
+    client.get("/api/applied")
+    assert state.idle.idle_for() < before
+
+
+def test_a_running_batch_counts_as_busy(client) -> None:
+    state = client.app.state.jh
+    assert not state.busy()
+
+    class Batch:
+        running = True
+
+    state.batch = Batch()
+    assert state.busy()

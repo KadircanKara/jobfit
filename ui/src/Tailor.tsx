@@ -1,5 +1,6 @@
 import type { JobRun } from "./api";
 import { MarkApplied } from "./MarkApplied";
+import { hostOf } from "./Run";
 
 const STAGES = ["Reading the posting", "Cutting the CV", "Reviewer gate", "Fit to two pages"];
 
@@ -47,6 +48,13 @@ export function TailorBatch({
           <div className="top">
             <span className="who">{job.title ?? `job ${job.job_id}`}</span>
             {job.company && <span className="at">{job.company}</span>}
+            {/* The posting, not the folder: checking what the CV is aimed at is
+                the one thing you cannot do from the files on disk. */}
+            {job.url && (
+              <a className="posting-link" href={job.url} target="_blank" rel="noreferrer" title={job.url}>
+                {hostOf(job.url)} ↗
+              </a>
+            )}
             <span className="status">{statusOf(job)}</span>
             <MarkApplied
               jobId={job.job_id}

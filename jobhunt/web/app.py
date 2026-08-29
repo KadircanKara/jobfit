@@ -26,6 +26,7 @@ from jobhunt.web import agent as agent_module
 from jobhunt.web import applied as applied_module
 from jobhunt.web import filters as webfilters
 from jobhunt.web import history as history_module
+from jobhunt.web import idle as idle_module
 from jobhunt.web import profile as profile_module
 from jobhunt.web import revise as revise_module
 from jobhunt.web import tailor as tailor_module
@@ -62,6 +63,15 @@ class AppState:
         self.batch: tailor_module.TailorBatch | None = None
         # Revision sessions outlive the tab, the same way a run does.
         self.desk = revise_module.ReviseDesk(config)
+        self.idle = idle_module.IdleClock()
+
+    def busy(self) -> bool:
+        """Whether anything would be lost by stopping the process now."""
+        if self.supervisor is not None and self.supervisor.state.running:
+            return True
+        if self.batch is not None and self.batch.running:
+            return True
+        return bool(self.desk.sessions())
 
     def state_dict(self) -> dict[str, Any]:
         if self.supervisor is None:
@@ -138,22 +148,24 @@ def _row_for(state: AppState, job_id: int) -> dict[str, Any] | None:
 
 
 def _name_the_rows(config: Config, batch: Any) -> None:
-    """Give each row a title and a company, so the studio has something to call
-    it. One query for the whole batch, before any work starts."""
+    """Give each row a title, a company and the posting link, so the batch has
+    something to call it and a way back to the source. One query for the whole
+    batch, before any work starts."""
     from jobhunt.db.models import Company, Job
 
     ids = [row.job_id for row in batch.rows]
     with session_scope(config.db_path) as session:
         found = session.execute(
-            select(Job.id, Job.title, Company.name)
+            select(Job.id, Job.title, Company.name, Job.apply_url)
             .join(Company, Job.company_id == Company.id, isouter=True)
             .where(Job.id.in_(ids))
         ).all()
-    named = {job_id: (title, company) for job_id, title, company in found}
+    named = {job_id: (title, company, url) for job_id, title, company, url in found}
     for row in batch.rows:
-        title, company = named.get(row.job_id, ("", ""))
+        title, company, url = named.get(row.job_id, ("", "", None))
         row.title = title or ""
         row.company = company or ""
+        row.url = url or None
 
 
 def _run_payload(state: Any, jh: AppState) -> dict[str, Any]:
@@ -236,6 +248,13 @@ def create_app(*, config: Config | None = None) -> FastAPI:
     agent_module.check(cfg)
     app = FastAPI(title="jobhunt", docs_url=None, redoc_url=None)
     app.state.jh = AppState(cfg)
+
+    @app.middleware("http")
+    async def _mark_activity(request: Any, call_next: Any) -> Any:
+        # Every request counts, including the poll behind an open tab: a page
+        # someone is looking at is a server someone is using.
+        app.state.jh.idle.touch()
+        return await call_next(request)
 
     # --- filters ------------------------------------------------------
 

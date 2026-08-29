@@ -49,9 +49,10 @@ class JobRun:
     findings: list[str] = dataclasses.field(default_factory=list)
     error: str | None = None
     # Filled in by whoever starts the batch, so the browser has something to
-    # call each row besides its id.
+    # call each row besides its id, and a way back to the posting itself.
     title: str = ""
     company: str = ""
+    url: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
