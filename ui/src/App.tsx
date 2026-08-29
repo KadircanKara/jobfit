@@ -4,6 +4,8 @@ import {
   api,
   type Filters,
   type JobRun,
+  type OutreachBudget,
+  type OutreachStates,
   type RevisableJob,
   type RunEvent,
   type RunState,
@@ -41,6 +43,8 @@ export default function App() {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [picked, setPicked] = useState<Set<number>>(new Set());
   const [applied, setApplied] = useState<Set<number>>(new Set());
+  const [outreachBudget, setOutreachBudget] = useState<OutreachBudget | null>(null);
+  const [outreachStates, setOutreachStates] = useState<OutreachStates>({});
   // The feed is the loudest thing on the page and the least often wanted, so
   // it starts shut and the phase strip above it carries the run's state.
   const [feedOpen, setFeedOpen] = useState(false);
@@ -78,6 +82,26 @@ export default function App() {
       .then((body) => setApplied(new Set(body.applied)))
       .catch(() => {
         /* the buttons simply start unmarked; pressing one still works */
+      });
+    api.outreachBudget().then(setOutreachBudget).catch(() => setOutreachBudget(null));
+    api
+      .outreachStates()
+      .then((body) => setOutreachStates(body.states))
+      .catch(() => {
+        /* the dots simply start neutral; a send still updates them */
+      });
+  }, []);
+
+  // The drawer reports a budget every time it loads or a send changes it -
+  // the natural moment to also refresh which dot each row should wear, so a
+  // send never leaves a stale dot behind.
+  const refreshOutreach = useCallback((budget: OutreachBudget) => {
+    setOutreachBudget(budget);
+    api
+      .outreachStates()
+      .then((body) => setOutreachStates(body.states))
+      .catch(() => {
+        /* leave the previous states in place rather than clearing them */
       });
   }, []);
 
@@ -403,6 +427,13 @@ export default function App() {
                     ? `${kept} jobs · stopped early, partial corpus`
                     : `${kept} jobs above the bar`}
                 </div>
+                {outreachBudget && (
+                  <div className="note">
+                    {outreachBudget.invites_used}/{outreachBudget.invites_max} invites ·{" "}
+                    {outreachBudget.dms_used}/{outreachBudget.dms_max} messages ·{" "}
+                    {outreachBudget.credits} InMail credits
+                  </div>
+                )}
               </div>
 
               {picked.size > 0 && (
@@ -447,6 +478,8 @@ export default function App() {
                   })
                 }
                 onPickAll={(on) => setPicked(on ? new Set(run.results.map((r) => r.job_id)) : new Set())}
+                outreachStates={outreachStates}
+                onBudget={refreshOutreach}
               />
             </div>
 

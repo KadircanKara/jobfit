@@ -1,6 +1,15 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import type { GateReport, RankReport, RunEvent, RunState, ShortlistRow } from "./api";
+import type {
+  GateReport,
+  OutreachBudget,
+  OutreachStates,
+  RankReport,
+  RunEvent,
+  RunState,
+  ShortlistRow,
+} from "./api";
 import { MarkApplied } from "./MarkApplied";
+import { OutreachDrawer } from "./Outreach";
 
 const PHASES: [string, string][] = [
   ["sync", "Sync"],
@@ -345,6 +354,8 @@ export function Shortlist({
   onPickAll,
   applied,
   onApplied,
+  outreachStates,
+  onBudget,
 }: {
   rows: ShortlistRow[];
   picked: Set<number>;
@@ -353,8 +364,13 @@ export function Shortlist({
   onPickAll: (on: boolean) => void;
   applied: Set<number>;
   onApplied: (id: number, on: boolean) => void;
+  outreachStates?: OutreachStates;
+  onBudget?: (budget: OutreachBudget) => void;
 }) {
   const [query, setQuery] = useState({ role: "", company: "", where: "" });
+  // One drawer at a time. Two open drawers put two sets of contacts on screen
+  // with nothing saying which row either belongs to.
+  const [openOutreach, setOpenOutreach] = useState<number | null>(null);
   // Filtering happens here rather than upstream: the run owns the rows, and a
   // typed narrowing is a way of reading this table, not a change to the run.
   const shown = useMemo(
@@ -401,6 +417,7 @@ export function Shortlist({
             <th>Where</th>
             <th>Why it ranked here</th>
             <th>Posting</th>
+            <th className="out">Outreach</th>
             <th>Sent</th>
           </tr>
           <tr className="filterrow">
@@ -412,12 +429,13 @@ export function Shortlist({
             <th />
             <th />
             <th />
+            <th />
           </tr>
         </thead>
         <tbody>
           {!shown.length && (
             <tr>
-              <td colSpan={8} className="co">
+              <td colSpan={9} className="co">
                 No job matches that filter.
               </td>
             </tr>
@@ -429,7 +447,7 @@ export function Shortlist({
                   market, and that is invisible if the rejected rows are gone. */}
               {row.below_bar && index > 0 && !shown[index - 1].below_bar && (
                 <tr className="cutrow">
-                  <td colSpan={8}>
+                  <td colSpan={9}>
                     <div className="cut">
                       <span>{bar != null ? `The bar · ${bar.toFixed(2)}` : "The bar"}</span>
                       <span className="aside">
@@ -477,6 +495,20 @@ export function Shortlist({
                   <span className="co">no link</span>
                 )}
               </td>
+              <td className="out">
+                <button
+                  type="button"
+                  className="outbtn"
+                  aria-expanded={openOutreach === row.job_id}
+                  onClick={() =>
+                    setOpenOutreach((current) => (current === row.job_id ? null : row.job_id))
+                  }
+                >
+                  <span className="dot" data-state={outreachStates?.[row.job_id]} />
+                  <span>Outreach</span>
+                  <span className="caret">{openOutreach === row.job_id ? "▾" : "▸"}</span>
+                </button>
+              </td>
               <td className="sent">
                 <MarkApplied
                   jobId={row.job_id}
@@ -485,6 +517,13 @@ export function Shortlist({
                 />
               </td>
             </tr>
+            {openOutreach === row.job_id && (
+              <tr className="drawer">
+                <td colSpan={9}>
+                  <OutreachDrawer jobId={row.job_id} onBudget={onBudget} />
+                </td>
+              </tr>
+            )}
             </Fragment>
           ))}
         </tbody>
