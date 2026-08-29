@@ -20,8 +20,6 @@ from jobhunt.outreach import caps, provider, service
 
 log = logging.getLogger(__name__)
 
-CHECK_INTERVAL = 300.0
-
 
 def tick(
     config: Config, sender: provider.LinkedInProvider, *, now: dt.datetime | None = None
@@ -63,12 +61,13 @@ def tick(
             continue
 
         try:
-            _release(config, sender, job_id, contact_id, now=now)
+            sent = _release(config, sender, job_id, contact_id, now=now)
         except caps.CapReached as refusal:
             # Still wanted, just not today. Left queued for the next tick.
             log.info("outreach queue held: %s", refusal.message)
             continue
-        released += 1
+        if sent:
+            released += 1
 
     return {"released": released, "expired": expired}
 
@@ -80,8 +79,14 @@ def _release(
     contact_id: int,
     *,
     now: dt.datetime,
-) -> None:
-    """Send the stored DM now that the invite is accepted."""
+) -> bool:
+    """Send the stored DM now that the invite is accepted.
+
+    Returns whether it actually sent. `tick`'s released count is the poller's
+    only external signal, so a guard that quietly no-ops (the row was resolved
+    by something else between listing and this call) must report False rather
+    than let the caller assume every non-raising call was a send.
+    """
     with session_scope(config.db_path) as session:
         row = session.scalars(
             select(Outreach).where(Outreach.job_id == job_id, Outreach.contact_id == contact_id)
@@ -89,7 +94,7 @@ def _release(
         if row.state != "queued":
             # A row already cancelled (or otherwise moved) is left alone even if
             # the invite is later accepted - the user's cancel wins.
-            return
+            return False
         contact = session.get(Contact, contact_id)
         caps.check(config, session, provider.DM, now=now)
         result = sender.send_dm(contact, row.body or "")
@@ -97,6 +102,7 @@ def _release(
         row.provider_ref = result.ref
         row.sent_at = utcnow()
         service._move(row, "sent")
+        return True
 
 
 def watch(

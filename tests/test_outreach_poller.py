@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+from sqlalchemy import select
+
 from jobhunt.db.models import Contact, Job, Outreach, utcnow
 from jobhunt.db.session import session_scope
 from jobhunt.outreach import poller, provider, service, stub
@@ -81,4 +83,31 @@ def test_a_cancelled_row_is_left_alone(cfg):
     service.cancel(cfg, job_id, contact_id)
     sender.accept(contact_id)
     assert poller.tick(cfg, sender, now=NOW) == {"released": 0, "expired": 0}
+    assert state_of(cfg) == "cancelled"
+
+
+def test_a_row_resolved_between_listing_and_release_is_not_counted(cfg):
+    """A concurrent tick that already moved the row wins; this one must not double-count it.
+
+    `_release` re-reads the row before sending, so the data was always safe. What
+    this covers is the *count*: released is the poller's only external signal, and
+    a guard that quietly no-ops must not be mistaken for a send that happened.
+    """
+    job_id, contact_id, sender = queued_row(cfg)
+
+    class RaceProvider(stub.StubProvider):
+        def invite_accepted(self, contact) -> bool:
+            # Simulates another tick resolving the row between `tick` listing it
+            # as queued and this call reaching `_release`.
+            with session_scope(cfg.db_path) as session:
+                row = session.scalars(
+                    select(Outreach).where(
+                        Outreach.job_id == job_id, Outreach.contact_id == contact_id
+                    )
+                ).one()
+                row.state = "cancelled"
+            return True
+
+    counts = poller.tick(cfg, RaceProvider(cfg), now=NOW)
+    assert counts["released"] == 0
     assert state_of(cfg) == "cancelled"
