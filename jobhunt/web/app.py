@@ -22,11 +22,14 @@ from jobhunt.config import load as load_config
 from jobhunt.db.models import Board, utcnow
 from jobhunt.db.session import session_scope
 from jobhunt.discovery import categories as categories_module
+from jobhunt.outreach import poller as outreach_poller
+from jobhunt.outreach import stub as outreach_stub
 from jobhunt.web import agent as agent_module
 from jobhunt.web import applied as applied_module
 from jobhunt.web import filters as webfilters
 from jobhunt.web import history as history_module
 from jobhunt.web import idle as idle_module
+from jobhunt.web import outreach as outreach_routes
 from jobhunt.web import profile as profile_module
 from jobhunt.web import revise as revise_module
 from jobhunt.web import tailor as tailor_module
@@ -307,6 +310,15 @@ def create_app(*, config: Config | None = None) -> FastAPI:
                 status_code=422, content={"message": f"no job {exc.job_id}"}
             )
         return {"job_id": job_id, "applied": state}
+
+    # --- outreach -------------------------------------------------------
+
+    # Routes plus the queue that releases a DM once its invite lands. The
+    # provider is a stub, so nothing here reaches LinkedIn.
+    outreach_sender = outreach_stub.StubProvider(cfg)
+    app.state.outreach_sender = outreach_sender
+    outreach_routes.register(app, cfg, outreach_sender)
+    outreach_poller.watch(cfg, outreach_sender)
 
     # --- feeds --------------------------------------------------------
 

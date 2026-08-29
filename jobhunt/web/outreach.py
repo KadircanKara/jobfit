@@ -1,0 +1,126 @@
+"""Outreach over HTTP. Thin on purpose - every decision is in jobhunt/outreach.
+
+Refusals matter as much as successes here: the drawer disables a button and
+states why, which it can only do if the reason survives the trip.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
+from sqlalchemy import select
+
+from jobhunt.config import Config
+from jobhunt.db.models import Outreach
+from jobhunt.db.session import session_scope
+from jobhunt.outreach import caps, provider, service
+
+# Ordering for "most advanced state" across a job's contacts. `failed` and
+# `cancelled` are not progress - a job whose only contact bounced should not
+# outrank one that is merely drafted, so both sit below "drafted".
+_STATE_RANK = {
+    "none": 0,
+    "failed": 1,
+    "cancelled": 1,
+    "drafted": 2,
+    "queued": 3,
+    "sent": 4,
+}
+
+
+def register(app: FastAPI, config: Config, sender: provider.LinkedInProvider) -> None:
+    """Attach the outreach routes to an app that already exists."""
+
+    def guarded(call, *args, **kwargs) -> Any:
+        try:
+            return call(*args, **kwargs)
+        except service.UnknownJob as error:
+            raise HTTPException(status_code=404, detail=f"No job {error.job_id}.") from error
+        except service.UnknownContact as error:
+            raise HTTPException(
+                status_code=404, detail=f"No contact {error.contact_id} on this job."
+            ) from error
+        except caps.CapReached as error:
+            raise HTTPException(status_code=409, detail=error.message) from error
+        except service.IllegalTransition as error:
+            raise HTTPException(
+                status_code=409, detail=f"Cannot go from {error.current} to {error.target}."
+            ) from error
+        except service.TooLong as error:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{error.length} characters; this route allows {error.limit}.",
+            ) from error
+
+    @app.get("/api/outreach/budget")
+    def read_budget() -> dict[str, Any]:
+        with session_scope(config.db_path) as session:
+            return service._budget_payload(config, session)
+
+    @app.get("/api/outreach/states")
+    def read_states() -> dict[str, dict[int, str]]:
+        # One query over every outreach row rather than a per-job loop through
+        # the service: the shortlist needs a status dot for every row on the
+        # page at once, and that has to stay cheap as the shortlist grows.
+        with session_scope(config.db_path) as session:
+            rows = session.execute(select(Outreach.job_id, Outreach.state)).all()
+        best: dict[int, str] = {}
+        for job_id, state in rows:
+            current = best.get(job_id)
+            if current is None or _STATE_RANK[state] > _STATE_RANK[current]:
+                best[job_id] = state
+        return {"states": best}
+
+    @app.get("/api/outreach/{job_id}")
+    def read_job(job_id: int) -> dict[str, Any]:
+        return guarded(service.for_job, config, job_id, sender)
+
+    @app.post("/api/outreach/{job_id}/contacts")
+    def add_contact(job_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        name = (payload.get("full_name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="A contact needs a name.")
+        return guarded(
+            service.add_contact,
+            config,
+            job_id,
+            full_name=name,
+            profile_url=(payload.get("profile_url") or None),
+            headline=(payload.get("headline") or None),
+        )
+
+    @app.delete("/api/outreach/contacts/{contact_id}")
+    def drop_contact(contact_id: int) -> dict[str, bool]:
+        guarded(service.remove_contact, config, contact_id)
+        return {"removed": True}
+
+    @app.patch("/api/outreach/contacts/{contact_id}/status")
+    def set_status(contact_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        # Stub-only. The real provider turns this into a read.
+        return guarded(
+            service.set_status,
+            config,
+            contact_id,
+            is_connection=payload.get("is_connection"),
+            can_send_inmail=payload.get("can_send_inmail"),
+        )
+
+    @app.post("/api/outreach/{job_id}/{contact_id}/draft")
+    def draft(job_id: int, contact_id: int, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return guarded(
+            service.draft, config, job_id, contact_id, sender, route=(payload or {}).get("route")
+        )
+
+    @app.put("/api/outreach/{job_id}/{contact_id}/body")
+    def save_body(job_id: int, contact_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return guarded(service.save_body, config, job_id, contact_id, payload.get("body") or "")
+
+    @app.post("/api/outreach/{job_id}/{contact_id}/approve")
+    def approve(job_id: int, contact_id: int, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return guarded(
+            service.approve, config, job_id, contact_id, sender, route=(payload or {}).get("route")
+        )
+
+    @app.post("/api/outreach/{job_id}/{contact_id}/cancel")
+    def cancel(job_id: int, contact_id: int) -> dict[str, Any]:
+        return guarded(service.cancel, config, job_id, contact_id)
