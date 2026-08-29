@@ -228,6 +228,8 @@ def draft(
         contact = session.get(Contact, contact_id)
         status = sender.status(contact)
         chosen = _resolve_route(row, status, route)
+        if "drafted" not in TRANSITIONS[row.state]:
+            raise IllegalTransition(row.state, "drafted")
         row.route = chosen
         row.body = drafts.template(job, contact, chosen)
         row.drafted_at = utcnow()
@@ -245,6 +247,11 @@ def save_body(config: Config, job_id: int, contact_id: int, body: str) -> dict[s
         row = _row(session, job_id, contact_id)
         contact = session.get(Contact, contact_id)
         row.body = body
+        if row.state == "none":
+            # A row with a saved body is drafted, whether or not `draft()` ever ran.
+            # Only "none" promotes here - any other state is left alone, so this
+            # never becomes a second way to change state.
+            _move(row, "drafted")
         status = provider.ContactStatus(contact.is_connection, contact.can_send_inmail, 0)
         return _payload(row, contact, status)
 
@@ -264,13 +271,18 @@ def approve(
         contact = session.get(Contact, contact_id)
         status = sender.status(contact)
         chosen = _resolve_route(row, status, route)
-        if row.state not in ("drafted", "none"):
-            raise IllegalTransition(row.state, "sent")
+        target = "queued" if chosen == provider.INVITE_THEN_DM else "sent"
+        if target not in TRANSITIONS[row.state]:
+            raise IllegalTransition(row.state, target)
         body = row.body or ""
         if drafts.over_limit(body, chosen):
             raise TooLong(len(body), drafts.limit_for(chosen))
         caps.check(config, session, chosen, now=now)
 
+        # Nothing above this line has told the provider or the row anything - a
+        # refusal up to here leaves both untouched. Everything below only runs
+        # once the transition is known to be legal, so a provider call can never
+        # be discarded by a rollback the way an unvalidated `_move` would.
         row.route = chosen
         row.approved_at = utcnow()
         if chosen == provider.INVITE_THEN_DM:
