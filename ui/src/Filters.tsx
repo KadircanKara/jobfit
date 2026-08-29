@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { api, FieldError, type Filters, type Vocab } from "./api";
 import { TagField } from "./TagField";
+import { TitlePresets } from "./TitlePresets";
 import { FeedsPanel } from "./Feeds";
 
 const LEVELS = ["junior", "mid", "senior", "staff", "lead", "principal"];
@@ -53,6 +54,9 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
   // Bumped after a save so the feeds section refetches: its proposals are
   // scored against the titles that were just written, not the old ones.
   const [feedsReload, setFeedsReload] = useState(0);
+  // Presets live beside the titles in filters.yaml, so they arrive with the
+  // filters and are re-read from whatever the group endpoints return.
+  const [groups, setGroups] = useState<Record<string, string[]>>(filters.title_groups ?? {});
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
@@ -120,7 +124,15 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
                 jobs
               </>
             }
-          />
+          >
+            <TitlePresets
+              groups={groups}
+              titles={draft.titles}
+              savedTitles={filters.titles}
+              onPick={(tags) => set("titles", tags)}
+              onGroups={setGroups}
+            />
+          </TagField>
 
           <TagField
             label="Locations"

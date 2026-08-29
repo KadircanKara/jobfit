@@ -10,6 +10,9 @@ export type Filters = {
   include_unstated_salary: boolean;
   max_age_days: number;
   top_n: number;
+  // Named selections of `titles`, so a set worth returning to can be picked
+  // again after the field is cleared.
+  title_groups: Record<string, string[]>;
 };
 
 export type VocabRow = { value: string; label: string; count: number };
@@ -289,6 +292,23 @@ export const api = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       }),
+    );
+  },
+  async saveTitleGroup(
+    name: string,
+    titles: string[],
+  ): Promise<{ title_groups: Record<string, string[]> }> {
+    return json(
+      await fetch("/api/title-groups", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, titles }),
+      }),
+    );
+  },
+  async deleteTitleGroup(name: string): Promise<{ title_groups: Record<string, string[]> }> {
+    return json(
+      await fetch(`/api/title-groups/${encodeURIComponent(name)}`, { method: "DELETE" }),
     );
   },
   async readFeeds(): Promise<FeedsBody> {

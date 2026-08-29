@@ -7,7 +7,7 @@ mistaken for one where messages actually went out.
 from __future__ import annotations
 
 from jobhunt.db.models import Contact
-from jobhunt.outreach import discovery, provider, stub
+from jobhunt.outreach import discovery, stub
 
 
 def contact(**kwargs) -> Contact:

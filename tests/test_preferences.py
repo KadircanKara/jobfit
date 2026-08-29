@@ -200,3 +200,76 @@ def test_loading_a_config_does_not_mutate_the_defaults() -> None:
     assert second["sync"]["max_boards_per_run"] == 200
     assert second["ranking"]["profile_summary"] is None
     assert config_module.DEFAULT_CONFIG["sync"]["max_boards_per_run"] == 200
+
+
+# --- saved title groups -------------------------------------------------------
+#
+# A group is a named selection of titles the user can pick again after clearing
+# the field. It rides in the managed block beside the titles themselves, so
+# there is no second file to keep in step.
+
+
+def test_a_saved_group_survives_a_round_trip(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    prefs = preferences.set_group(prefs, "test", ["backend engineer", "platform engineer"])
+    preferences.save(cfg, prefs)
+
+    reloaded, _ = preferences.load(cfg)
+
+    assert reloaded.title_groups == {"test": ["backend engineer", "platform engineer"]}
+
+
+def test_saving_a_group_leaves_the_titles_alone(cfg) -> None:
+    prefs = set_prefs(cfg, titles="data engineer")
+    prefs = preferences.set_group(prefs, "test", ["backend engineer"])
+    preferences.save(cfg, prefs)
+
+    reloaded, _ = preferences.load(cfg)
+
+    assert reloaded.titles == ["data engineer"]
+
+
+def test_a_group_saved_under_an_existing_name_replaces_it(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    prefs = preferences.set_group(prefs, "test", ["backend engineer"])
+    prefs = preferences.set_group(prefs, "TEST", ["data engineer"])
+
+    assert prefs.title_groups == {"TEST": ["data engineer"]}
+
+
+def test_a_group_needs_a_name(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+
+    with pytest.raises(PreferenceError):
+        preferences.set_group(prefs, "   ", ["backend engineer"])
+
+
+def test_a_group_needs_at_least_one_title(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+
+    with pytest.raises(PreferenceError):
+        preferences.set_group(prefs, "test", [])
+
+
+def test_a_group_keeps_the_first_spelling_of_a_repeated_title(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    prefs = preferences.set_group(prefs, "test", ["Backend Engineer", "backend engineer"])
+
+    assert prefs.title_groups["test"] == ["Backend Engineer"]
+
+
+def test_deleting_a_group_removes_only_that_one(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    prefs = preferences.set_group(prefs, "test", ["backend engineer"])
+    prefs = preferences.set_group(prefs, "ml", ["ml engineer"])
+
+    prefs = preferences.delete_group(prefs, "test")
+
+    assert list(prefs.title_groups) == ["ml"]
+
+
+def test_deleting_a_group_that_is_not_there_is_refused(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+
+    with pytest.raises(PreferenceError):
+        preferences.delete_group(prefs, "nope")

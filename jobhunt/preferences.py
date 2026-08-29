@@ -47,6 +47,10 @@ class Preferences:
     include_unstated_salary: bool = True
     max_age_days: int = 30
     top_n: int = 15
+    # Named selections of `titles`, so a set worth returning to can be picked
+    # again after the field is cleared. Only the browser writes these; the
+    # wizard neither shows nor asks about them.
+    title_groups: dict[str, list[str]] = dataclasses.field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -191,6 +195,50 @@ def _number(value: str) -> float:
 
 
 # --- translation to filter rules ----------------------------------------------
+
+
+def set_group(prefs: Preferences, name: str, titles: list[str]) -> Preferences:
+    """Save `titles` under `name`, replacing a group of that name if there is one.
+
+    Names collide case-insensitively: "test" and "Test" are one group, because
+    two chips reading the same word with different capitals is a trap rather
+    than a feature. The spelling last saved is the one kept.
+    """
+    label = name.strip()
+    if not label:
+        raise PreferenceError("A title group needs a name.")
+    members = _dedupe_titles(titles)
+    if not members:
+        raise PreferenceError("A title group needs at least one title.")
+    groups = {
+        key: value for key, value in prefs.title_groups.items() if key.lower() != label.lower()
+    }
+    groups[label] = members
+    prefs.title_groups = groups
+    return prefs
+
+
+def delete_group(prefs: Preferences, name: str) -> Preferences:
+    """Forget one group. The titles currently in the field are untouched."""
+    label = name.strip().lower()
+    groups = {key: value for key, value in prefs.title_groups.items() if key.lower() != label}
+    if len(groups) == len(prefs.title_groups):
+        raise PreferenceError(f"There is no title group called {name!r}.")
+    prefs.title_groups = groups
+    return prefs
+
+
+def _dedupe_titles(titles: list[str]) -> list[str]:
+    """Keep the first spelling of each title, compared case-insensitively."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for title in titles:
+        text = str(title).strip()
+        if not text or text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        out.append(text)
+    return out
 
 
 def title_patterns(titles: list[str]) -> list[str]:

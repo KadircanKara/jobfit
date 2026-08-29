@@ -10,6 +10,9 @@ type Props = {
   freeNote: string;
   emptyNote: string;
   hint?: React.ReactNode;
+  // Rendered between the input and the hint, so anything attached to the field
+  // (the title presets) reads as part of it rather than as a stray control.
+  children?: React.ReactNode;
   onChange: (tags: string[]) => void;
 };
 
@@ -27,6 +30,7 @@ export function TagField({
   freeNote,
   emptyNote,
   hint,
+  children,
   onChange,
 }: Props) {
   const [query, setQuery] = useState("");
@@ -171,6 +175,7 @@ export function TagField({
           </ul>
         )}
       </div>
+      {children}
       {hint && <div className="hint">{hint}</div>}
     </div>
   );

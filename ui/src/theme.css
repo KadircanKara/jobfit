@@ -2291,3 +2291,152 @@ tr.drawer > td {
 .outbtn .dot[data-state="sent"] {
   background: var(--good);
 }
+
+/* ---------------- title presets ---------------- */
+
+/* A saved selection of titles, sitting under the field it belongs to. The chip
+   marks itself while the field matches it, so "which set am I on" is answered
+   without opening anything. */
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+  margin-top: 10px;
+}
+.presets .lbl {
+  margin-right: 3px;
+  font-size: 11px;
+  letter-spacing: var(--label-sp);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.presets .none {
+  font-size: var(--small);
+  color: var(--ink-faint);
+}
+.preset {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad);
+  padding-right: 6px;
+  white-space: nowrap;
+}
+.preset:hover {
+  border-color: var(--ink-faint);
+}
+.preset[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+}
+.preset .pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: 0;
+  padding: 5px 4px 5px 12px;
+  font-size: var(--small);
+  color: var(--ink-dim);
+}
+.preset[aria-pressed="true"] .pick {
+  color: var(--accent);
+}
+.preset .pick:hover {
+  color: var(--ink);
+}
+.preset[aria-pressed="true"] .pick:hover {
+  color: var(--accent);
+}
+.preset .n {
+  font-family: var(--data);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+}
+.preset[aria-pressed="true"] .n {
+  color: var(--accent);
+}
+.preset .kill {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 50%;
+  line-height: 1;
+  color: var(--ink-faint);
+}
+.preset .kill:hover {
+  background: var(--crit);
+  color: var(--on-accent);
+}
+.preset button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.presetacts {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  margin-left: auto;
+}
+.linkbtn {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--rad);
+  padding: 5px 11px;
+  font-size: var(--small);
+  color: var(--ink-dim);
+}
+.linkbtn:hover:not(:disabled) {
+  border-color: var(--ink-faint);
+  color: var(--ink);
+}
+.linkbtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.linkbtn.armed {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+  color: var(--accent);
+}
+
+/* Naming a preset is a commitment, so it gets its own row rather than a
+   browser prompt that steals focus and cannot say what it will overwrite. */
+.saverow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 9px;
+  padding: 10px 12px;
+  border: 1px dashed var(--accent-soft);
+  border-radius: var(--rad);
+}
+.saverow input {
+  flex: 1 1 200px;
+  background: var(--surface2);
+  border: 1px solid var(--line);
+  border-radius: var(--rad);
+  color: var(--ink);
+  padding: 8px 11px;
+  font: inherit;
+  font-size: var(--small);
+}
+.saverow input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.saverow .why {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+.saverow .why.warn {
+  color: var(--warn);
+}

@@ -12,7 +12,7 @@ import pathlib
 import threading
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
@@ -284,6 +284,37 @@ def create_app(*, config: Config | None = None) -> FastAPI:
             "filters": _filters_payload(cfg),
             "title_impact": {"matched": matched, "total": total},
         }
+
+    # --- saved title groups -------------------------------------------
+
+    @app.post("/api/title-groups")
+    def save_title_group(payload: dict[str, Any]) -> Any:
+        """Name the titles the form currently holds.
+
+        Deliberately not `/api/filters`: naming a set worth returning to should
+        never change what the next run searches for.
+        """
+        prefs, _ = prefs_module.load(cfg)
+        try:
+            updated = prefs_module.set_group(
+                prefs, str(payload.get("name") or ""), list(payload.get("titles") or [])
+            )
+        except prefs_module.PreferenceError as exc:
+            # Tagged against the titles field, because that is the input the
+            # group was built from and the only one the form can mark.
+            return JSONResponse(status_code=422, content={"field": "titles", "message": str(exc)})
+        prefs_module.save(cfg, updated)
+        return {"title_groups": updated.title_groups}
+
+    @app.delete("/api/title-groups/{name}")
+    def delete_title_group(name: str) -> Any:
+        prefs, _ = prefs_module.load(cfg)
+        try:
+            updated = prefs_module.delete_group(prefs, name)
+        except prefs_module.PreferenceError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        prefs_module.save(cfg, updated)
+        return {"title_groups": updated.title_groups}
 
     # --- applied ------------------------------------------------------
 
