@@ -31,6 +31,52 @@ export type ShortlistRow = {
   below_bar: boolean;
 };
 
+export type OutreachRoute =
+  | "dm"
+  | "free_inmail"
+  | "invite_note"
+  | "invite_then_dm"
+  | "paid_inmail";
+
+export type OutreachState = "none" | "drafted" | "queued" | "sent" | "failed" | "cancelled";
+
+export type OutreachContact = {
+  contact_id: number;
+  full_name: string;
+  headline: string | null;
+  profile_url: string | null;
+  origin: string;
+  is_connection: boolean | null;
+  can_send_inmail: boolean | null;
+  // The route this contact resolves to right now. Null only when no free route
+  // exists and no fallback has been picked yet.
+  route: OutreachRoute | null;
+  allowed_routes: OutreachRoute[];
+  needs_choice: boolean;
+  state: OutreachState;
+  body: string | null;
+  limit: number;
+  provider_ref: string | null;
+  failure: string | null;
+  invited_at: string | null;
+  accepted_at: string | null;
+  sent_at: string | null;
+};
+
+export type OutreachBudget = {
+  invites_used: number;
+  invites_max: number;
+  dms_used: number;
+  dms_max: number;
+  credits: number;
+  delay_min: number;
+  delay_max: number;
+};
+
+export type OutreachBody = { contacts: OutreachContact[]; budget: OutreachBudget };
+
+export type OutreachStates = Record<number, OutreachState>;
+
 export type DropReason = { code: string; label: string; count: number; tunable: boolean };
 
 export type RankReport = {
@@ -310,6 +356,84 @@ export const api = {
         body: JSON.stringify({ applied }),
       }),
     );
+  },
+  async outreach(jobId: number): Promise<OutreachBody> {
+    return json(await fetch(`/api/outreach/${jobId}`));
+  },
+  async outreachBudget(): Promise<OutreachBudget> {
+    return json(await fetch("/api/outreach/budget"));
+  },
+  async addContact(
+    jobId: number,
+    body: { full_name: string; profile_url?: string | null },
+  ): Promise<OutreachContact> {
+    return json(
+      await fetch(`/api/outreach/${jobId}/contacts`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+  },
+  async removeContact(contactId: number): Promise<{ removed: boolean }> {
+    return json(await fetch(`/api/outreach/contacts/${contactId}`, { method: "DELETE" }));
+  },
+  async setContactStatus(
+    contactId: number,
+    body: { is_connection?: boolean; can_send_inmail?: boolean },
+  ): Promise<{ contact_id: number; is_connection: boolean | null; can_send_inmail: boolean | null }> {
+    return json(
+      await fetch(`/api/outreach/contacts/${contactId}/status`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+  },
+  async draftOutreach(
+    jobId: number,
+    contactId: number,
+    route?: OutreachRoute | null,
+  ): Promise<OutreachContact> {
+    return json(
+      await fetch(`/api/outreach/${jobId}/${contactId}/draft`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ route: route ?? null }),
+      }),
+    );
+  },
+  async saveOutreachBody(
+    jobId: number,
+    contactId: number,
+    body: string,
+  ): Promise<OutreachContact> {
+    return json(
+      await fetch(`/api/outreach/${jobId}/${contactId}/body`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ body }),
+      }),
+    );
+  },
+  async approveOutreach(
+    jobId: number,
+    contactId: number,
+    route?: OutreachRoute | null,
+  ): Promise<OutreachContact> {
+    return json(
+      await fetch(`/api/outreach/${jobId}/${contactId}/approve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ route: route ?? null }),
+      }),
+    );
+  },
+  async cancelOutreach(jobId: number, contactId: number): Promise<OutreachContact> {
+    return json(await fetch(`/api/outreach/${jobId}/${contactId}/cancel`, { method: "POST" }));
+  },
+  async outreachStates(): Promise<{ states: OutreachStates }> {
+    return json(await fetch("/api/outreach/states"));
   },
   async revisionPreview(jobId: number): Promise<RevisePreview> {
     return json(await fetch(`/api/revise/${jobId}/preview`));
