@@ -108,6 +108,20 @@ def test_the_body_endpoint_keeps_what_was_written(client, job_id):
     assert body["body"] == "mine"
 
 
+def test_the_body_endpoint_with_a_route_returns_the_new_route_and_body(client, job_id):
+    contact_id = add(client, job_id).json()["contact_id"]
+    client.patch(
+        f"/api/outreach/contacts/{contact_id}/status",
+        json={"is_connection": False, "can_send_inmail": False},
+    )
+    updated = client.put(
+        f"/api/outreach/{job_id}/{contact_id}/body",
+        json={"body": "switched routes, kept my words", "route": provider.INVITE_NOTE},
+    ).json()
+    assert updated["route"] == provider.INVITE_NOTE
+    assert updated["body"] == "switched routes, kept my words"
+
+
 def test_the_budget_endpoint_answers_on_its_own(client):
     body = client.get("/api/outreach/budget").json()
     assert body["dms_max"] == 25

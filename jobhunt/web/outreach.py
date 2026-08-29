@@ -113,7 +113,14 @@ def register(app: FastAPI, config: Config, sender: provider.LinkedInProvider) ->
 
     @app.put("/api/outreach/{job_id}/{contact_id}/body")
     def save_body(job_id: int, contact_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        return guarded(service.save_body, config, job_id, contact_id, payload.get("body") or "")
+        return guarded(
+            service.save_body,
+            config,
+            job_id,
+            contact_id,
+            payload.get("body") or "",
+            route=payload.get("route"),
+        )
 
     @app.post("/api/outreach/{job_id}/{contact_id}/approve")
     def approve(job_id: int, contact_id: int, payload: dict[str, Any] | None = None) -> dict[str, Any]:

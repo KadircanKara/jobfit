@@ -255,7 +255,13 @@ function ContactCard({
                 className="opt"
                 aria-pressed={chosen === route}
                 disabled={busy}
-                onClick={() => act(() => api.draftOutreach(jobId, contact.contact_id, route))}
+                onClick={() =>
+                  act(() =>
+                    contact.body
+                      ? api.saveOutreachBody(jobId, contact.contact_id, body, route)
+                      : api.draftOutreach(jobId, contact.contact_id, route),
+                  )
+                }
               >
                 <span className="mk" />
                 <span className="ttl">{ROUTE_LABEL[route]}</span>

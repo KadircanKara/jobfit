@@ -128,6 +128,27 @@ def test_an_edited_body_survives_a_route_change(cfg):
     assert body["route"] == provider.DM
 
 
+def test_saving_a_body_with_a_route_sets_it_and_keeps_the_body(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=False, can_send_inmail=False)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    body = service.save_body(
+        cfg, job_id, contact_id, "picked this route on purpose", route=provider.INVITE_NOTE
+    )
+    assert body["route"] == provider.INVITE_NOTE
+    assert body["body"] == "picked this route on purpose"
+
+
+def test_saving_a_body_with_a_route_not_allowed_for_the_status_is_refused(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=False, can_send_inmail=False)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    with pytest.raises(service.IllegalTransition):
+        service.save_body(cfg, job_id, contact_id, "not connected yet", route=provider.DM)
+
+
 def test_a_body_over_the_note_limit_is_refused(cfg):
     job_id = make_job(cfg)
     contact_id = connected_contact(cfg, is_connection=False, can_send_inmail=False)

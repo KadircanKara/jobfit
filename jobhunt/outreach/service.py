@@ -237,22 +237,38 @@ def draft(
         return _payload(row, contact, status)
 
 
-def save_body(config: Config, job_id: int, contact_id: int, body: str) -> dict[str, Any]:
-    """Store an edited message. Never changes the route, and never refuses on length.
+def save_body(
+    config: Config,
+    job_id: int,
+    contact_id: int,
+    body: str,
+    *,
+    route: str | None = None,
+) -> dict[str, Any]:
+    """Store an edited message, optionally recording a route pick alongside it.
 
-    Length is judged at approval, not while typing: a body caught mid-edit is not
-    a message anyone tried to send.
+    Never refuses on length: length is judged at approval, not while typing, so a
+    body caught mid-edit is not a message anyone tried to send.
+
+    When `route` is given it must be one of the routes currently allowed for this
+    contact's status - the same check `_resolve_route` runs before a send - and it
+    is the only thing this call changes about the route. The body is stored
+    exactly as given either way: switching routes must never touch it.
     """
     with session_scope(config.db_path) as session:
         row = _row(session, job_id, contact_id)
         contact = session.get(Contact, contact_id)
+        status = provider.ContactStatus(contact.is_connection, contact.can_send_inmail, 0)
+        if route is not None:
+            if route not in routing.allowed(status):
+                raise IllegalTransition(row.state, "approve")
+            row.route = route
         row.body = body
         if row.state == "none":
             # A row with a saved body is drafted, whether or not `draft()` ever ran.
             # Only "none" promotes here - any other state is left alone, so this
             # never becomes a second way to change state.
             _move(row, "drafted")
-        status = provider.ContactStatus(contact.is_connection, contact.can_send_inmail, 0)
         return _payload(row, contact, status)
 
 

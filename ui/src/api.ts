@@ -407,12 +407,13 @@ export const api = {
     jobId: number,
     contactId: number,
     body: string,
+    route?: OutreachRoute | null,
   ): Promise<OutreachContact> {
     return json(
       await fetch(`/api/outreach/${jobId}/${contactId}/body`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ body }),
+        body: JSON.stringify({ body, route: route ?? null }),
       }),
     );
   },
