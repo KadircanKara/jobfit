@@ -819,3 +819,67 @@ def test_a_band_of_one_level_refuses_a_level_it_cannot_place(cfg) -> None:
     job_id = make_job(cfg, title="Founding Engineer")
 
     assert not verdict_for(cfg, job_id, filters).passed
+
+
+# --- rules that changed since the last pass ------------------------------------
+#
+# Skipping already-scored jobs is what keeps a repeat run cheap, but it also
+# means a verdict outlives the rules that produced it. Narrowing the search to
+# internships and widening it again left the internships sitting on the
+# shortlist with a passing verdict nothing had revisited. The pass now notices
+# that the rules themselves changed and rescores on its own.
+
+
+def _set_titles(cfg, *titles: str) -> None:
+    from jobhunt import preferences
+
+    prefs, _ = preferences.load(cfg)
+    prefs.titles = list(titles)
+    preferences.save(cfg, prefs)
+
+
+def test_a_second_pass_still_skips_when_the_rules_have_not_changed(cfg) -> None:
+    make_job(cfg, country="DE")
+    runner.run_deterministic(cfg)
+
+    second = runner.run_deterministic(cfg)
+
+    assert second.scored == 0
+    assert second.skipped == 1
+
+
+def test_changing_the_rules_rescores_without_being_asked(cfg) -> None:
+    make_job(cfg, title="Senior Backend Engineer", country="DE")
+    runner.run_deterministic(cfg)
+
+    _set_titles(cfg, "Data Scientist")
+    second = runner.run_deterministic(cfg)
+
+    assert second.scored == 1
+    assert second.skipped == 0
+
+
+def test_a_verdict_follows_the_new_rules(cfg) -> None:
+    job_id = make_job(cfg, title="Senior Backend Engineer", country="DE")
+    runner.run_deterministic(cfg)
+
+    _set_titles(cfg, "Data Scientist")   # the job no longer matches any title
+    runner.run_deterministic(cfg)
+
+    with session_scope(cfg.db_path) as session:
+        score = session.query(Score).filter_by(job_id=job_id).one()
+        assert score.deterministic_pass is False
+
+
+def test_a_partial_pass_does_not_claim_the_corpus_is_current(cfg) -> None:
+    # A --limit or --market pass leaves most of the corpus on the old rules, so
+    # it must not record the new fingerprint and suppress the next full rescore.
+    make_job(cfg, title="Senior Backend Engineer", country="DE")
+    make_job(cfg, external_id="x2", title="Senior Backend Engineer", country="DE")
+    runner.run_deterministic(cfg)
+
+    _set_titles(cfg, "Data Scientist")
+    runner.run_deterministic(cfg, limit=1)
+    after = runner.run_deterministic(cfg)
+
+    assert after.scored == 2

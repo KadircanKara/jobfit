@@ -106,7 +106,11 @@ class AppState:
             "gate": dataclasses.asdict(state.gate, dict_factory=_without_payload)
             if state.gate
             else None,
-            "results": list(state.results),
+            # A finished run's list is a snapshot, and the corpus moves under
+            # it: a rescore, a gate ingest or an edit to the filters all change
+            # what belongs on screen. While the run is still going its own rows
+            # are the live ones, so only a finished run is rebuilt.
+            "results": list(state.results) if state.running else _last_shortlist(self.config),
             "stopping": self.supervisor.stopping,
             "last_seq": self.log.latest_seq(),
         }

@@ -95,6 +95,7 @@ def test_the_app_serves_the_ui_route(client):
 
 
 def test_starting_a_run_reports_it_as_running(client, monkeypatch):
+
     from jobhunt.web import app as app_module
 
     monkeypatch.setattr(app_module, "build_pipeline", lambda cfg, hooks: _SlowPipeline())
@@ -105,6 +106,7 @@ def test_starting_a_run_reports_it_as_running(client, monkeypatch):
 
 
 def test_a_second_start_while_one_runs_is_refused(client, monkeypatch):
+
     from jobhunt.web import app as app_module
 
     monkeypatch.setattr(app_module, "build_pipeline", lambda cfg, hooks: _SlowPipeline())
@@ -117,6 +119,7 @@ def test_a_second_start_while_one_runs_is_refused(client, monkeypatch):
 
 def test_a_run_cannot_start_while_the_filters_are_broken(client, monkeypatch):
     """A broken filter set would waste the whole run, so it never reaches the engine."""
+
     from jobhunt.web import app as app_module
 
     monkeypatch.setattr(app_module, "build_pipeline", lambda cfg, hooks: _SlowPipeline())
@@ -500,3 +503,49 @@ def test_a_running_batch_counts_as_busy(client) -> None:
 
     state.batch = Batch()
     assert state.busy()
+
+
+# --- a finished run goes stale ------------------------------------------------
+
+
+def test_a_finished_run_reflects_scores_written_after_it(cfg, client) -> None:
+    """The shortlist a finished run left behind is a snapshot, and the corpus
+    moves under it: a rescore, a gate ingest or an edit to the filters all
+    change what should be on screen. Reloading the page has to show that,
+    rather than serving the same frozen list until the process restarts.
+    """
+    from jobhunt.db.models import Job, Score
+    from jobhunt.db.session import session_scope
+
+    state = client.app.state.jh
+
+    class FinishedRun:
+        phase, running, outcome, error = "done", False, "completed", None
+        degraded, counters, results = [], {}, []
+        run_id, started_at, finished_at = "r1", "t0", "t1"
+        resumable, rank, gate = False, None, None
+
+    class FinishedSupervisor:
+        pausing = stopping = False
+        state = FinishedRun()
+
+    state.supervisor = FinishedSupervisor()
+    assert client.get("/api/runs/current").json()["results"] == []
+
+    with session_scope(cfg.db_path) as session:
+        job = Job(
+            external_id="late-1", source="ashby", market="global_remote",
+            title="AI Engineer", title_normalized="ai engineer", is_active=True,
+        )
+        session.add(job)
+        session.flush()
+        session.add(
+            Score(
+                job_id=job.id, profile="global_remote", deterministic_pass=True,
+                deterministic_notes={"passed": True, "reasons": [], "codes": []},
+                llm_score=0.9, llm_reasoning="fits",
+            )
+        )
+
+    titles = [row["title"] for row in client.get("/api/runs/current").json()["results"]]
+    assert "AI Engineer" in titles
