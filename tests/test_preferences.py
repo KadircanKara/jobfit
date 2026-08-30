@@ -406,3 +406,25 @@ def test_the_impact_count_includes_what_the_seniority_keywords_add(cfg) -> None:
     prefs = Preferences(titles=["Software Engineer", "Backend Engineer"], experience_min="intern")
 
     assert preferences.title_impact(cfg, prefs) == (1, 2)
+
+
+def test_the_shipped_filters_do_not_exclude_internships() -> None:
+    """Internships are a seniority decision, not a phrase to ban.
+
+    The shipped `yc` profile used to hard-exclude "intern" and "internship" and
+    `tr_local` "stajyer", which silently overrode an intern experience floor: the
+    phrase fired on the title before seniority was ever consulted. Unpaid work is
+    still excluded, which is what those entries were really guarding against.
+    """
+    import yaml as _yaml
+
+    from jobhunt.rank.deterministic import PACKAGED_FILTERS
+
+    document = _yaml.safe_load(PACKAGED_FILTERS.read_text(encoding="utf-8"))
+    banned = {"intern", "internship", "stajyer", "trainee", "working student"}
+    for market, profile in (document.get("profiles") or {}).items():
+        excluded = {str(p).lower() for p in (profile.get("hard_excludes") or [])}
+        assert not (excluded & banned), f"{market} still excludes {excluded & banned}"
+    assert "unpaid" in {
+        str(p).lower() for p in document["profiles"]["yc"].get("hard_excludes") or []
+    }

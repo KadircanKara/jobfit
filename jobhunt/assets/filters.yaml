@@ -8,7 +8,10 @@
 
 profiles:
   yc:
-    hard_excludes: ["unpaid", "equity only", "intern", "internship"]
+    # Unpaid work only. Internships are a seniority decision, made by the
+    # experience floor: banning the phrase overrode that floor before seniority
+    # was ever consulted, and dropped every paid internship with it.
+    hard_excludes: ["unpaid", "equity only"]
     seniority_min: mid
     boost:
       recent_batch: 1.3          # last 4 batches
@@ -37,7 +40,7 @@ profiles:
   tr_local:
     hard_requires:
       country: [TR]
-    hard_excludes: ["stajyer", "yarı zamanlı", "part time", "çağrı merkezi"]
+    hard_excludes: ["yarı zamanlı", "part time", "çağrı merkezi"]
     seniority_min: mid
     llm_gate_prompt: prompts/tr_fit.md
     min_score_to_surface: 0.6
