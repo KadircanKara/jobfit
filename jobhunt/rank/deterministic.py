@@ -224,17 +224,27 @@ def _phrase_pattern(phrase: str) -> re.Pattern[str]:
 
 
 def _check_seniority(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
+    minimum = profile.get("seniority_min")
+    maximum = profile.get("seniority_max")
+
     if not job.seniority or job.seniority not in SENIORITY_ORDER:
+        # Unknown is normally not a rejection: most postings never state a level,
+        # and dropping them all would empty the corpus. Asking for exactly one
+        # level is a different request, though - "internships, nothing else"
+        # cannot be honoured while every unclassified senior role sails through -
+        # so a band of one level, and only that, reads unknown as a miss.
+        if minimum and minimum == maximum and minimum in SENIORITY_ORDER:
+            stated = job.seniority or "unstated"
+            verdict.drop("seniority_unstated", f"seniority {stated} is not {minimum}")
         return
+
     level = SENIORITY_ORDER.index(job.seniority)
 
-    minimum = profile.get("seniority_min")
     if minimum in SENIORITY_ORDER and level < SENIORITY_ORDER.index(str(minimum)):
         verdict.drop("seniority_low", f"seniority {job.seniority} below {minimum}")
 
     # A ceiling is not symmetry for its own sake: a senior engineer applying to a
     # principal or VP-level posting wastes a gate call and an application.
-    maximum = profile.get("seniority_max")
     if maximum in SENIORITY_ORDER and level > SENIORITY_ORDER.index(str(maximum)):
         verdict.drop("seniority_high", f"seniority {job.seniority} above {maximum}")
 

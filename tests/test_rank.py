@@ -758,3 +758,64 @@ def test_the_shipped_prompts_only_penalise_a_stated_residency_requirement() -> N
     assert "must already be" in text
     assert "no location penalty" in text
     assert "The candidate will relocate" in text
+
+
+# --- a band of one level ------------------------------------------------------
+#
+# Unclassified seniority normally passes: most postings never state a level, and
+# dropping them would empty the corpus. But asking for exactly one level is a
+# different request - "internships, nothing else" cannot be honoured while every
+# unclassified senior role sails through. So a band of one level, and only that,
+# treats an unknown level as a miss.
+
+
+def test_a_band_of_one_level_refuses_an_unclassified_job(cfg) -> None:
+    filters = {"profiles": {"global_remote": {"seniority_min": "intern",
+                                              "seniority_max": "intern"}}, "global": {}}
+    job_id = make_job(cfg, title="Backend Engineer")  # no level anyone can read
+
+    verdict = verdict_for(cfg, job_id, filters)
+
+    assert not verdict.passed
+    assert any("intern" in reason for reason in verdict.reasons)
+
+
+def test_a_band_of_one_level_keeps_that_level(cfg) -> None:
+    filters = {"profiles": {"global_remote": {"seniority_min": "intern",
+                                              "seniority_max": "intern"}}, "global": {}}
+    job_id = make_job(cfg, title="Backend Engineering Intern")
+
+    assert verdict_for(cfg, job_id, filters).passed
+
+
+def test_a_band_of_one_level_refuses_a_level_outside_it(cfg) -> None:
+    filters = {"profiles": {"global_remote": {"seniority_min": "intern",
+                                              "seniority_max": "intern"}}, "global": {}}
+    job_id = make_job(cfg, title="Senior Backend Engineer")
+
+    assert not verdict_for(cfg, job_id, filters).passed
+
+
+def test_a_wider_band_still_passes_an_unclassified_job(cfg) -> None:
+    # The lenient default is load-bearing everywhere else and is left alone.
+    filters = {"profiles": {"global_remote": {"seniority_min": "junior",
+                                              "seniority_max": "senior"}}, "global": {}}
+    job_id = make_job(cfg, title="Backend Engineer")
+
+    assert verdict_for(cfg, job_id, filters).passed
+
+
+def test_a_floor_with_no_ceiling_still_passes_an_unclassified_job(cfg) -> None:
+    filters = {"profiles": {"global_remote": {"seniority_min": "intern"}}, "global": {}}
+    job_id = make_job(cfg, title="Backend Engineer")
+
+    assert verdict_for(cfg, job_id, filters).passed
+
+
+def test_a_band_of_one_level_refuses_a_level_it_cannot_place(cfg) -> None:
+    # "founding" is a real classification that is not on the ladder at all.
+    filters = {"profiles": {"global_remote": {"seniority_min": "intern",
+                                              "seniority_max": "intern"}}, "global": {}}
+    job_id = make_job(cfg, title="Founding Engineer")
+
+    assert not verdict_for(cfg, job_id, filters).passed

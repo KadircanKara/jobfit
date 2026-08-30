@@ -9,6 +9,15 @@ import { FeedsPanel } from "./Feeds";
 // would let someone pick a ceiling the server then refuses.
 const LEVELS = ["intern", "junior", "mid", "senior", "staff", "lead", "principal"];
 const UNITS = ["hours", "days", "weeks", "months"] as const;
+// Mirrors EMPLOYMENT_TYPES in jobhunt/pipeline/normalize.py. The label is what a
+// person calls it; the value is what the filter stores.
+const JOB_TYPES: [string, string][] = [
+  ["full_time", "full time"],
+  ["part_time", "part time"],
+  ["contract", "contract"],
+  ["internship", "internship"],
+  ["temporary", "temporary"],
+];
 
 // Sample rates until the server reports the snapshot it fetched for the run.
 // Shown with their timestamp so nobody reads a stale number as live.
@@ -25,6 +34,7 @@ type Draft = {
   titles: string[];
   locations: string[];
   work_model: string[];
+  job_types: string[];
   experience_min: string;
   experience_max: string;
   min_salary: string;
@@ -39,6 +49,7 @@ function draftFrom(filters: Filters): Draft {
     titles: filters.titles,
     locations: filters.locations,
     work_model: filters.work_model.length ? filters.work_model : ["remote", "hybrid", "onsite"],
+    job_types: filters.job_types ?? [],
     experience_min: filters.experience_min ?? "junior",
     experience_max: filters.experience_max ?? "none",
     min_salary: filters.min_salary ? String(filters.min_salary) : "",
@@ -78,6 +89,7 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
         titles: draft.titles,
         locations: draft.locations,
         work_model: draft.work_model,
+        job_types: draft.job_types,
         experience_min: draft.experience_min,
         experience_max: draft.experience_max === "none" ? null : draft.experience_max,
         min_salary: draft.min_salary || null,
@@ -178,6 +190,36 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
               ))}
             </div>
             <div className="hint">any combination</div>
+          </div>
+
+          <div className="field">
+            <label>
+              <span>Job type</span>
+            </label>
+            <div className="toggles">
+              {JOB_TYPES.map(([value, label]) => (
+                <button
+                  key={value}
+                  className="chip"
+                  aria-pressed={draft.job_types.includes(value)}
+                  onClick={() =>
+                    set(
+                      "job_types",
+                      draft.job_types.includes(value)
+                        ? draft.job_types.filter((t) => t !== value)
+                        : [...draft.job_types, value],
+                    )
+                  }
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="hint">
+              {draft.job_types.length
+                ? "a posting that does not state its type is still kept"
+                : "no restriction"}
+            </div>
           </div>
 
           <div className={messages.experience_max ? "field bad" : "field"}>
