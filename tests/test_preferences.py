@@ -273,3 +273,136 @@ def test_deleting_a_group_that_is_not_there_is_refused(cfg) -> None:
 
     with pytest.raises(PreferenceError):
         preferences.delete_group(prefs, "nope")
+
+
+# --- seniority-aware title patterns -------------------------------------------
+#
+# An internship rarely spells out the role the way a permanent posting does:
+# "Backend Intern" never contains "Backend Engineer". Setting the experience
+# floor to intern makes those jobs eligible, but the title gate is separate, so
+# without help they are still dropped as title_unmatched.
+#
+# The keywords are added to the generated regex only, never to prefs.titles, and
+# always in conjunction with a role word the user actually asked for: a bare
+# "Intern" alternative matches "Internal Audit Lead", and a bare "Junior" one
+# matches "Junior Accountant".
+
+
+def matched(prefs: Preferences, title: str) -> bool:
+    import re as _re
+
+    return any(_re.search(p, title) for p in preferences.title_patterns_for(prefs))
+
+
+def entry_prefs(**kwargs) -> Preferences:
+    base = Preferences(titles=["Software Engineer", "Backend Engineer", "Python Developer"])
+    for key, value in kwargs.items():
+        setattr(base, key, value)
+    return base
+
+
+def test_an_intern_floor_finds_an_internship_the_role_titles_miss() -> None:
+    prefs = entry_prefs(experience_min="intern")
+
+    assert matched(prefs, "Backend Intern")
+    assert matched(prefs, "Software Engineering Intern (Fall 2026)")
+
+
+def test_the_intern_keyword_never_matches_international_or_internal() -> None:
+    prefs = entry_prefs(experience_min="intern")
+
+    assert not matched(prefs, "Internal Audit Data Analytics Lead")
+    assert not matched(prefs, "Senior Manager, International Indirect Tax")
+
+
+def test_an_internship_in_another_field_is_still_refused() -> None:
+    prefs = entry_prefs(experience_min="intern")
+
+    assert not matched(prefs, "CNC Machine Park Internship")
+    assert not matched(prefs, "Internship Global Supply Chain Management (m/w/d)")
+
+
+def test_a_junior_floor_finds_a_graduate_posting() -> None:
+    prefs = entry_prefs(experience_min="junior")
+
+    assert matched(prefs, "Graduate Software Engineer")
+    assert matched(prefs, "New Grad Backend Engineer 2027")
+
+
+def test_the_junior_keyword_does_not_admit_another_field() -> None:
+    prefs = entry_prefs(experience_min="junior")
+
+    assert not matched(prefs, "Junior Accountant")
+
+
+def test_a_junior_floor_does_not_reach_down_to_internships() -> None:
+    prefs = entry_prefs(experience_min="junior")
+
+    assert not matched(prefs, "Backend Intern")
+
+
+def test_only_the_bottom_of_the_range_gets_keywords(cfg) -> None:
+    # A senior floor needs no help: a senior posting spells the role out in full.
+    prefs = entry_prefs(experience_min="senior")
+
+    assert preferences.title_patterns_for(prefs) == preferences.title_patterns(prefs.titles)
+
+
+def test_a_ceiling_below_junior_adds_no_junior_keywords() -> None:
+    prefs = entry_prefs(experience_min="intern", experience_max="intern")
+    generated = " ".join(preferences.title_patterns_for(prefs))
+
+    assert matched(prefs, "Backend Intern")
+    # "Graduate Backend Developer" is out of range, and nothing generated for it.
+    assert "graduate" not in generated
+    assert not matched(prefs, "Graduate Accountant")
+
+
+def test_a_level_the_user_already_typed_adds_nothing() -> None:
+    typed = Preferences(
+        titles=["Software Engineer", "Software Engineering Intern"],
+        experience_min="intern",
+        experience_max="intern",
+    )
+
+    assert preferences.title_patterns_for(typed) == preferences.title_patterns(typed.titles)
+
+
+def test_the_plain_title_patterns_still_come_first() -> None:
+    prefs = entry_prefs(experience_min="intern")
+    patterns = preferences.title_patterns_for(prefs)
+
+    assert patterns[0] == preferences.title_patterns(prefs.titles)[0]
+    assert matched(prefs, "Senior Backend Engineer")
+
+
+def test_no_titles_means_no_seniority_patterns_either() -> None:
+    # With no titles there is no role side to the conjunction, and a bare
+    # seniority keyword would match every internship in every field.
+    prefs = Preferences(titles=[], experience_min="intern")
+
+    assert preferences.title_patterns_for(prefs) == []
+
+
+def test_the_impact_count_includes_what_the_seniority_keywords_add(cfg) -> None:
+    # The count under the Titles field is what a person judges the filter by, so
+    # it has to count the same patterns the filter will actually run.
+    from jobhunt.db.models import Job
+    from jobhunt.db.session import session_scope
+
+    with session_scope(cfg.db_path) as session:
+        for title in ("Backend Intern", "Warehouse Associate"):
+            session.add(
+                Job(
+                    external_id=title,
+                    source="greenhouse",
+                    market="global_remote",
+                    title=title,
+                    title_normalized=title.lower(),
+                    is_active=True,
+                )
+            )
+
+    prefs = Preferences(titles=["Software Engineer", "Backend Engineer"], experience_min="intern")
+
+    assert preferences.title_impact(cfg, prefs) == (1, 2)

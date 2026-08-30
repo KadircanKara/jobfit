@@ -253,6 +253,97 @@ def title_patterns(titles: list[str]) -> list[str]:
     return [rf"(?i)(?<!\w)({alternatives})"]
 
 
+# Levels whose postings name themselves differently from a permanent role:
+# "Backend Intern" never contains "Backend Engineer", so the role titles alone
+# never find it. Only the bottom two are listed. A senior or staff posting
+# spells the role out in full, and a "senior" alternative would earn nothing
+# while matching "Senior Manager, International Indirect Tax".
+SENIORITY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "intern": ("intern", "interns", "internship", "internships", "working student",
+               "werkstudent", "trainee", "stajyer"),
+    "junior": ("junior", "graduate", "grad", "new grad", "entry level", "entry-level"),
+}
+
+# Words that say nothing about the role. Left in, "full" would match "Full Time
+# Intern" and "engineer" would match "Manufacturing Engineering Internship" -
+# real internships, in fields nobody here asked for.
+_GENERIC_TITLE_WORDS = frozenset({
+    "engineer", "engineers", "engineering", "developer", "developers", "dev",
+    "full", "senior", "junior", "intern", "internship", "staff", "lead", "principal",
+    "the", "and", "of", "i", "ii", "iii",
+})
+
+
+def _role_tokens(titles: list[str]) -> list[str]:
+    """The distinctive words of the titles asked for, in first-seen order.
+
+    "Software Engineer" contributes "software": that is the half that survives
+    in "Software Engineering Intern", where the role word has been declined into
+    something the plain pattern would still catch but "Backend Intern" would not.
+    """
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for title in titles:
+        for word in re.split(r"[^\w+#]+", title.lower()):
+            if len(word) < 2 or word in _GENERIC_TITLE_WORDS or word in seen:
+                continue
+            seen.add(word)
+            tokens.append(word)
+    return tokens
+
+
+def _bounded(alternatives: tuple[str, ...] | list[str]) -> str:
+    """An alternation matched as whole words, at both ends.
+
+    The trailing boundary is the whole point here and is deliberately not what
+    `title_patterns` does: "intern" without it matches "International", while
+    "Software Engineer" *needs* the loose end to match "Software Engineering".
+    """
+    joined = "|".join(re.escape(str(value)) for value in alternatives)
+    return rf"(?<!\w)(?:{joined})(?!\w)"
+
+
+def title_patterns_for(prefs: Preferences) -> list[str]:
+    """The title patterns for these preferences, seniority included.
+
+    The keywords are generated here rather than written into `prefs.titles`, so
+    what the user typed stays what the user typed and this rule can change
+    later without a migration.
+    """
+    patterns = title_patterns(prefs.titles)
+    if not patterns:
+        return patterns
+
+    tokens = _role_tokens(prefs.titles)
+    if not tokens:
+        return patterns
+
+    floor = prefs.experience_min or SENIORITY_ORDER[0]
+    ceiling = prefs.experience_max or SENIORITY_ORDER[-1]
+    typed = " ".join(prefs.titles).lower()
+
+    for level, keywords in SENIORITY_KEYWORDS.items():
+        if not _level_in_range(level, floor, ceiling):
+            continue
+        # Asked for by hand already: the plain pattern covers it, and a second
+        # alternative would only widen what that spelling was meant to pin down.
+        if any(re.search(_bounded([keyword]), typed) for keyword in keywords):
+            continue
+        patterns.append(
+            rf"(?i)^(?=.*{_bounded(keywords)})(?=.*{_bounded(tokens)}).*$"
+        )
+    return patterns
+
+
+def _level_in_range(level: str, floor: str, ceiling: str) -> bool:
+    if level not in SENIORITY_ORDER:
+        return False
+    at = SENIORITY_ORDER.index(level)
+    low = SENIORITY_ORDER.index(floor) if floor in SENIORITY_ORDER else 0
+    high = SENIORITY_ORDER.index(ceiling) if ceiling in SENIORITY_ORDER else len(SENIORITY_ORDER) - 1
+    return low <= at <= high
+
+
 def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -> dict[str, Any]:
     """The managed block: exactly the keys this module owns, and nothing else."""
     codes, worldwide = regions.resolve(prefs.locations)
@@ -289,7 +380,7 @@ def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -
     return {
         "profiles": profiles,
         "global": {
-            "require_titles_regex": title_patterns(prefs.titles),
+            "require_titles_regex": title_patterns_for(prefs),
             "max_age_days": prefs.max_age_days,
         },
         "digest": {"limit": prefs.top_n},
@@ -376,7 +467,7 @@ def title_impact(config: Config, prefs: Preferences) -> tuple[int, int]:
     from jobhunt.db.models import Job
     from jobhunt.db.session import session_scope
 
-    patterns = [_re.compile(p) for p in title_patterns(prefs.titles)]
+    patterns = [_re.compile(p) for p in title_patterns_for(prefs)]
     with session_scope(config.db_path) as session:
         titles = [
             title
