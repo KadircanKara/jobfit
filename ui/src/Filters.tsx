@@ -4,7 +4,10 @@ import { TagField } from "./TagField";
 import { TitlePresets } from "./TitlePresets";
 import { FeedsPanel } from "./Feeds";
 
-const LEVELS = ["junior", "mid", "senior", "staff", "lead", "principal"];
+// Mirrors SENIORITY_ORDER in jobhunt/rank/deterministic.py, order included: the
+// ceiling is disabled against the floor by index, so a list in a different order
+// would let someone pick a ceiling the server then refuses.
+const LEVELS = ["intern", "junior", "mid", "senior", "staff", "lead", "principal"];
 const UNITS = ["hours", "days", "weeks", "months"] as const;
 
 // Sample rates until the server reports the snapshot it fetched for the run.
