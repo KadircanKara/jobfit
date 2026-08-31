@@ -29,6 +29,32 @@ WORK_MODELS = ("remote", "hybrid", "onsite")
 EMPLOYMENT_TYPES = norm.EMPLOYMENT_TYPES
 DEFAULT_MARKETS = ("global_remote", "yc", "tr_local")
 
+# `ats` is a group, not an adapter: ticking twelve boxes is not the feature the
+# user asked for. `upwork` is known but expands to nothing until the source exists,
+# so a stored selection naming it can never silently widen a run.
+SOURCE_CHOICES: tuple[str, ...] = ("ats", "linkedin", "upwork")
+LINKEDIN_SOURCE = "linkedin"
+
+
+def _ats_sources() -> tuple[str, ...]:
+    # Imported here, not at module scope: the linkedin adapter reaches back into
+    # this module, and a top-level import would close that circle.
+    from jobhunt import sources as source_registry
+
+    return tuple(sorted(name for name in source_registry.REGISTRY if name != LINKEDIN_SOURCE))
+
+
+def adapters_for(selection: list[str]) -> list[str]:
+    """Group names to the adapter ids a run may actually call."""
+    names: list[str] = []
+    for group in selection:
+        if group == "ats":
+            names.extend(_ats_sources())
+        elif group == LINKEDIN_SOURCE:
+            names.append(LINKEDIN_SOURCE)
+        # `upwork` deliberately expands to nothing.
+    return sorted(set(names))
+
 
 class PreferenceError(ValueError):
     """A preference the user can fix, phrased for them rather than for a log."""
@@ -51,6 +77,10 @@ class Preferences:
     # again after the field is cleared. Only the browser writes these; the
     # wizard neither shows nor asks about them.
     title_groups: dict[str, list[str]] = dataclasses.field(default_factory=dict)
+    # Which corpora a run may fetch from and shortlist out of. Both, deliberately:
+    # a run that fetches only LinkedIn but shortlists everything cannot show what
+    # LinkedIn alone is worth.
+    sources: list[str] = dataclasses.field(default_factory=lambda: ["ats", "linkedin"])
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -377,12 +407,20 @@ def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -
         if rules:
             profiles[market] = rules
 
+    selected = adapters_for(prefs.sources)
+    everything = adapters_for(["ats", LINKEDIN_SOURCE])
+    global_rules: dict[str, Any] = {
+        "require_titles_regex": title_patterns_for(prefs),
+        "max_age_days": prefs.max_age_days,
+    }
+    # Omitted when nothing is restricted, so an unchanged selection does not
+    # churn the filter fingerprint every time an adapter is added.
+    if selected != everything:
+        global_rules["sources"] = selected
+
     return {
         "profiles": profiles,
-        "global": {
-            "require_titles_regex": title_patterns_for(prefs),
-            "max_age_days": prefs.max_age_days,
-        },
+        "global": global_rules,
         "digest": {"limit": prefs.top_n},
     }
 

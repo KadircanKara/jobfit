@@ -428,3 +428,34 @@ def test_the_shipped_filters_do_not_exclude_internships() -> None:
     assert "unpaid" in {
         str(p).lower() for p in document["profiles"]["yc"].get("hard_excludes") or []
     }
+
+
+# --- sources: which corpora a run draws from -----------------------------------
+
+
+def test_sources_defaults_to_ats_and_linkedin() -> None:
+    assert preferences.Preferences().sources == ["ats", "linkedin"]
+
+
+def test_ats_expands_to_every_existing_adapter() -> None:
+    expanded = preferences.adapters_for(["ats"])
+    assert "greenhouse" in expanded and "workable" in expanded
+    assert "linkedin" not in expanded
+
+
+def test_linkedin_only_expands_to_linkedin_alone() -> None:
+    assert preferences.adapters_for(["linkedin"]) == ["linkedin"]
+
+
+def test_upwork_expands_to_nothing_until_it_is_built() -> None:
+    assert preferences.adapters_for(["upwork"]) == []
+
+
+def test_filters_carry_the_selected_adapter_ids() -> None:
+    prefs = preferences.Preferences(titles=["Backend Engineer"], sources=["linkedin"])
+    assert preferences.to_filters(prefs)["global"]["sources"] == ["linkedin"]
+
+
+def test_filters_omit_sources_when_everything_is_selected() -> None:
+    prefs = preferences.Preferences(titles=["Backend Engineer"], sources=["ats", "linkedin"])
+    assert "sources" not in preferences.to_filters(prefs)["global"]
