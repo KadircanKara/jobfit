@@ -28,6 +28,7 @@ or with the search page that preceded them.
 """
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -38,7 +39,6 @@ from bs4 import BeautifulSoup
 from jobhunt import preferences as preferences_module
 from jobhunt.config import Config
 from jobhunt.pipeline import normalize as norm
-from jobhunt.preferences import Preferences
 from jobhunt.sources import linkedin_query as query
 from jobhunt.sources.base import BoardRef, HttpAdapter, JobPosting, RateLimit
 from jobhunt.sources.linkedin_guard import CrawlGuard
@@ -97,7 +97,7 @@ def _retry_after(response: httpx.Response) -> float | None:
     # A NaN reaches `dt.timedelta(seconds=...)` inside the guard and raises
     # there instead of here; an inf or negative value is not a real wait.
     # Either way this header is malformed, not a real instruction to honour.
-    if seconds != seconds or seconds in (float("inf"), float("-inf")) or seconds < 0:
+    if not math.isfinite(seconds) or seconds < 0:
         return None
     return seconds
 
@@ -121,7 +121,7 @@ class LinkedInAdapter(HttpAdapter):
         self.guard = CrawlGuard(config) if config is not None else None
         self.known_ids = known_ids or set()
 
-    def board_refs(self, prefs: Preferences) -> list[BoardRef]:
+    def board_refs(self, prefs: preferences_module.Preferences) -> list[BoardRef]:
         """One search per title and location. LinkedIn has no boards to seed."""
         locations = prefs.locations or [""]
         return [

@@ -208,17 +208,98 @@ def test_a_malformed_retry_after_does_not_raise(cfg) -> None:
 
 
 def test_the_detail_loop_paces_itself(cfg, _no_real_sleeping: list[float]) -> None:
+    """Asserting only a sleep count would pass a `sleep(0)` too. Stubbing
+    `guard.delay()` to a sentinel and checking the exact slept values proves
+    the pacing actually came from the guard, not merely that *a* sleep ran."""
     def handler(request: httpx.Request) -> httpx.Response:
         if "seeMoreJobPostings" in str(request.url):
             return httpx.Response(200, text=_page_html(["a1", "a2"]))
         return httpx.Response(200, text="<div class='description__text'>hi</div>")
 
     adapter = LinkedInAdapter(config=cfg)
+    adapter.guard.delay = lambda: 7.25  # sentinel, unmistakable if it's ever slept
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         raw = adapter.fetch(_ref(), client)
     assert len(raw["details"]) == 2
     # One search page short of a full page never sleeps between pages, so every
     # recorded sleep here belongs to the detail loop - one per detail fetch,
-    # including the one that follows the search page.
-    assert len(_no_real_sleeping) == 2
+    # including the one that follows the search page - and each is the exact
+    # value the guard handed back.
+    assert _no_real_sleeping == [7.25, 7.25]
+
+
+def test_the_guard_refusing_mid_loop_stops_the_detail_pass_immediately(cfg) -> None:
+    """`continue` and `break` both skip the request for the id that first sees a
+    refusal, so counting *requests* can't tell them apart - both send none for
+    it. What differs is whether every id *after* that one still pays for an
+    `allow()` check (`continue` walks them all; `break` stops at the first).
+    Counting only the `allow()` calls made while the guard is already tripped
+    isolates that, regardless of how many calls the search-pagination loop
+    made before the guard ever tripped."""
+    ids = [f"d{i}" for i in range(5)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "seeMoreJobPostings" in str(request.url):
+            return httpx.Response(200, text=_page_html(ids))
+        detail_calls.append(request.url)
+        if len(detail_calls) == 2:
+            adapter.guard.tripped = True
+        return httpx.Response(200, text="<div class='description__text'>hi</div>")
+
+    detail_calls: list = []
+    adapter = LinkedInAdapter(config=cfg)
+    calls_while_tripped: list[bool] = []
+    real_allow = adapter.guard.allow
+
+    def spy_allow(*args: object, **kwargs: object) -> bool:
+        was_already_tripped = adapter.guard.tripped
+        result = real_allow(*args, **kwargs)
+        if was_already_tripped:
+            calls_while_tripped.append(result)
+        return result
+
+    adapter.guard.allow = spy_allow
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        adapter.fetch(_ref(), client)
+    # d0 and d1 are requested and the second trips the guard. d2 sees the trip
+    # and must stop the pass right there - d3 and d4 must never even be asked
+    # about, which is exactly the one `allow()` call this asserts.
+    assert len(detail_calls) == 2
+    assert calls_while_tripped == [False]
+
+
+def _card_html_missing_urn() -> str:
+    """A card LinkedIn served without (or with a malformed) `data-entity-urn`.
+
+    Still a real card for pagination purposes - it takes up a slot on the
+    page - it just yields no id.
+    """
+    return (
+        "<li><div class=\"base-card\">"
+        '<h3 class="base-search-card__title">Backend Engineer</h3>'
+        '<h4 class="base-search-card__subtitle"><a href="https://www.linkedin.com/company/acme">Acme'
+        "</a></h4>"
+        '<span class="job-search-card__location">Remote</span>'
+        "</div></li>"
+    )
+
+
+def test_a_card_missing_its_urn_does_not_look_like_a_short_page(cfg) -> None:
+    """Sizing a page by id count rather than card count reads a full page with
+    one un-parseable card as a short page and stops pagination early."""
+    page1_ids = [f"p1-{i}" for i in range(9)]
+    page1 = "<ul>" + "".join(_card_html(job_id) for job_id in page1_ids) + _card_html_missing_urn() + "</ul>"
+    page2 = _page_html(["p2-0", "p2-1"])
+    pages = [page1, page2]
+    calls: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        return httpx.Response(200, text=pages[len(calls) - 1])
+
+    known = set(page1_ids) | {"p2-0", "p2-1"}
+    adapter = LinkedInAdapter(config=cfg, known_ids=known)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        adapter.fetch(_ref(), client)
+    assert len(calls) == 2
 
