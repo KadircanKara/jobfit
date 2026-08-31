@@ -1526,6 +1526,10 @@ tr.below:hover td {
   background: var(--crit);
   border-color: var(--crit);
 }
+.dot[data-state="cancelled"] {
+  background: var(--warn);
+  border-color: var(--warn);
+}
 
 .picker {
   position: relative;

@@ -396,6 +396,35 @@ function ContactCard({
     );
   }
 
+  if (contact.state === "cancelled") {
+    return (
+      <div className="contact" data-active="true">
+        <Who contact={contact} />
+        <div className="rail">
+          <div className="statusline">
+            <span className="dot" data-state="cancelled" />
+            <span>
+              <b>Cancelled.</b>{" "}
+              {contact.body
+                ? "The draft is still there - Redraft picks up where you left off."
+                : "Nothing was sent."}
+            </span>
+          </div>
+          <div className="acts">
+            <button
+              type="button"
+              className="btn ghost sm"
+              disabled={busy}
+              onClick={() => act(() => api.draftOutreach(jobId, contact.contact_id, chosen))}
+            >
+              Redraft
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (contact.state === "sent") {
     return (
       <div className="contact" data-active="true">
