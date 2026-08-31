@@ -424,8 +424,21 @@ def sync_source(
             # `discover()`. Everything else is still owed its fetch by
             # `due_boards()`. The cap applies either way, so a preference set
             # with forty titles cannot turn into a four-hundred-search run.
-            if source_registry.get(source).generates_refs:
-                refs = list(build_adapter(config, source).discover())[:limit]
+            adapter_cls = source_registry.get(source)
+            if adapter_cls.generates_refs:
+                # `only_status="candidate"` means "prove out unvalidated board
+                # guesses" (jobhunt boards --validate, jobhunt discover); a
+                # generated ref is never a candidate board, so there is nothing
+                # to validate here. A `market` filter (e.g. `sync --market yc`)
+                # is meant to narrow which boards run; a generated source has
+                # no per-ref market to narrow, only its own fixed one, so it
+                # runs only when the filter already matches it. Either way this
+                # must stay a no-op rather than kick off a full preference-
+                # driven crawl from a command whose contract is "just boards".
+                if only_status is not None or (market is not None and market != adapter_cls.market):
+                    refs = []
+                else:
+                    refs = list(build_adapter(config, source).discover())[:limit]
             else:
                 refs = due_boards(
                     config, source, force, limit, only_status=only_status, market=market

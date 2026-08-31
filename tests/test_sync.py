@@ -16,7 +16,8 @@ from jobhunt import preferences as prefs_module
 from jobhunt import store, sync
 from jobhunt.db.models import Board, Company, Job, Run, utcnow
 from jobhunt.db.session import session_scope
-from jobhunt.sources.base import JobPosting
+from jobhunt.sources.base import JobPosting, RateLimit
+from jobhunt.sources.linkedin import LinkedInAdapter
 
 
 def place_raw(cfg, source: str, token: str, run_key: str, payload: dict) -> None:
@@ -494,6 +495,7 @@ def test_sync_source_actually_fetches_a_generated_linkedin_ref(cfg, monkeypatch)
 
 def test_a_generated_ref_source_still_respects_the_run_cap(cfg, monkeypatch) -> None:
     """Forty titles must not turn into forty searches in one run."""
+    monkeypatch.setattr(LinkedInAdapter, "rate_limit", RateLimit(0.0))  # no real sleep in a test
     prefs, _ = prefs_module.load(cfg)
     prefs.titles = [f"Title {i}" for i in range(40)]
     prefs.locations = ["Germany"]
@@ -513,3 +515,64 @@ def test_a_generated_ref_source_still_respects_the_run_cap(cfg, monkeypatch) -> 
 
     result = sync.sync_source(cfg, "linkedin")
     assert result.boards == 5
+
+
+def test_a_candidate_only_pass_never_starts_a_linkedin_crawl(cfg, monkeypatch) -> None:
+    """`only_status="candidate"` means "prove out unvalidated board guesses"
+    (jobhunt boards --validate, jobhunt discover). A generated ref is never a
+    candidate board, so this must stay a no-op rather than spend the daily
+    request budget on a full preference-driven crawl."""
+    prefs, _ = prefs_module.load(cfg)
+    prefs.titles = ["Backend Engineer"]
+    prefs.locations = ["Germany"]
+    prefs_module.save(cfg, prefs)
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, text="<li></li>")
+
+    real_client = httpx.Client
+
+    def fake_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(sync.httpx, "Client", fake_client)
+
+    result = sync.sync_source(cfg, "linkedin", only_status="candidate")
+
+    assert calls == []
+    assert result.boards == 0
+
+
+def test_a_market_filtered_pass_skips_linkedin_when_the_market_does_not_match(
+    cfg, monkeypatch
+) -> None:
+    """`sync --market yc` narrows which boards run. LinkedIn has no per-ref
+    market to narrow, only its own fixed market, so a filter for a different
+    market must not run it at all."""
+    prefs, _ = prefs_module.load(cfg)
+    prefs.titles = ["Backend Engineer"]
+    prefs.locations = ["Germany"]
+    prefs_module.save(cfg, prefs)
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, text="<li></li>")
+
+    real_client = httpx.Client
+
+    def fake_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(sync.httpx, "Client", fake_client)
+
+    result = sync.sync_source(cfg, "linkedin", market="yc")
+
+    assert calls == []
+    assert result.boards == 0
