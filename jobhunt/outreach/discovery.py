@@ -19,6 +19,7 @@ import json
 from typing import Any, Protocol
 
 from jobhunt import store
+from jobhunt.config import Config
 from jobhunt.db.models import Job, utcnow
 from jobhunt.db.session import session_scope
 
@@ -72,7 +73,11 @@ def _cache_key(company_name: str) -> str:
     return _CACHE_KEY.format(company=company_name.strip().lower())
 
 
-def _cached(config: Any, company_name: str, now: dt.datetime) -> list[ContactCandidate] | None:
+def _cached(config: Config, company_name: str, now: dt.datetime) -> list[ContactCandidate] | None:
+    # A session of its own, committing independently of whatever request called
+    # in: a cache read/write is a side effect of answering the question, not
+    # part of the question's own transaction, and there is nothing here that
+    # needs to roll back together with the caller's session.
     with session_scope(config.db_path) as session:
         raw = store.meta_get(session, _cache_key(company_name))
     if raw is None:
@@ -81,17 +86,21 @@ def _cached(config: Any, company_name: str, now: dt.datetime) -> list[ContactCan
         payload = json.loads(raw)
         stamp = dt.datetime.fromisoformat(payload["stamp"])
         items = payload["candidates"]
+        candidates = [ContactCandidate(**item) for item in items]
     except (ValueError, KeyError, TypeError):
-        # A cache entry that fails to parse is not a reason to raise out of a
-        # read path - treat it the same as no cache and search again.
+        # A cache entry that fails to parse - malformed JSON, a missing key, or
+        # (since ContactCandidate(**item) lives in this same try) a stored
+        # "candidates" value shaped wrong for that constructor - is not a
+        # reason to raise out of a read path. Treat it the same as no cache
+        # and search again.
         return None
     if now - stamp > dt.timedelta(hours=CACHE_HOURS):
         return None
-    return [ContactCandidate(**item) for item in items]
+    return candidates
 
 
 def _store(
-    config: Any, company_name: str, candidates: list[ContactCandidate], now: dt.datetime
+    config: Config, company_name: str, candidates: list[ContactCandidate], now: dt.datetime
 ) -> None:
     payload = {
         "stamp": now.isoformat(),
@@ -105,7 +114,7 @@ def search_company(
     client: SearchesPeople,
     company_name: str,
     *,
-    config: Any,
+    config: Config,
     now: dt.datetime | None = None,
     limit: int = 5,
 ) -> list[ContactCandidate]:
@@ -134,14 +143,23 @@ def search_company(
     for item in items:
         if not isinstance(item, dict):
             continue
-        name = str(item.get("name") or "").strip()
-        if not name:
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
             continue
+        headline = item.get("headline")
+        profile_url = item.get("profile_url")
         candidates.append(
             ContactCandidate(
-                full_name=name,
-                headline=(item.get("headline") or None),
-                profile_url=(item.get("profile_url") or None),
+                full_name=name.strip(),
+                # A field that isn't a string (Unipile handing back a nested
+                # object where a scalar was expected - exactly the shape
+                # uncertainty this task exists to absorb) must not reach
+                # `ContactCandidate` unchecked: `normalize_profile_url`
+                # downstream calls `.strip()` on this value.
+                headline=(headline if isinstance(headline, str) and headline.strip() else None),
+                profile_url=(
+                    profile_url if isinstance(profile_url, str) and profile_url.strip() else None
+                ),
                 origin="company_search",
             )
         )

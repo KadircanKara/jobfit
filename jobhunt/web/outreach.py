@@ -30,7 +30,15 @@ _STATE_RANK = {
 
 
 def _existing_profile_urls(session) -> set[str]:
-    return {url for url, in session.execute(select(Contact.profile_url)) if url}
+    # Normalized on read, not trusted from storage: `add_contact` normalizes
+    # before writing today, but this set is what decides "existing" for every
+    # future writer too, and a raw URL here would silently stop matching a
+    # candidate's normalized one the day that stops being the only writer.
+    return {
+        normalized
+        for url, in session.execute(select(Contact.profile_url))
+        if (normalized := service.normalize_profile_url(url))
+    }
 
 
 def _candidate_payload(

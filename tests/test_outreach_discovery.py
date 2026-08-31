@@ -94,6 +94,20 @@ def test_a_malformed_item_is_skipped_not_raised(cfg) -> None:
     assert [c.full_name for c in found] == ["Jane Doe"]
 
 
+def test_a_non_string_headline_or_profile_url_is_dropped_not_raised(cfg) -> None:
+    client = FakeSearch([{"name": "Jane Doe", "headline": {"nested": True}, "profile_url": ["x"]}])
+    found = discovery.search_company(client, "Acme", config=cfg)
+    assert found[0].headline is None
+    assert found[0].profile_url is None
+
+
+def test_an_empty_result_is_still_cached(cfg) -> None:
+    client = FakeSearch([])
+    assert discovery.search_company(client, "Acme", config=cfg) == []
+    assert discovery.search_company(client, "Acme", config=cfg) == []
+    assert client.calls == 1
+
+
 def test_upsert_posting_carries_the_poster_into_the_database(cfg) -> None:
     posting = JobPosting(
         source="linkedin",
