@@ -26,6 +26,7 @@ dist/
 docs/superpowers/
 docs/plans/
 docs/specs/
+.superpowers/
 
 # frontend
 ui/node_modules/
