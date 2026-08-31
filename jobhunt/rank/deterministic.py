@@ -38,6 +38,7 @@ PACKAGED_FILTERS = pathlib.Path(__file__).resolve().parent.parent / "assets" / F
 # summary can count. Without the code a histogram would have one bar per
 # distinct salary figure.
 REASON_LABELS: dict[str, str] = {
+    "source_excluded": "source not selected",
     "age": "older than the age limit",
     "company_blocked": "company blocklisted",
     "title_excluded": "title matches an excluded pattern",
@@ -109,6 +110,7 @@ def evaluate(
 
     haystack = _haystack(job)
 
+    _check_source(job, global_rules, verdict)
     _check_age(job, global_rules, now, verdict)
     _check_excluded_company(company, global_rules, verdict)
     _check_excluded_titles(job, global_rules, verdict)
@@ -134,6 +136,19 @@ def _haystack(job: Job) -> str:
     """
     body = (job.description_text or job.description_md or "")[:4000]
     return f"{job.title}\n{job.location_raw or ''}\n{body}".lower()
+
+
+def _check_source(job: Job, rules: dict[str, Any], verdict: Verdict) -> None:
+    """Drop anything the user did not ask to draw from.
+
+    Absent means unrestricted: a filter document written before this key existed
+    must keep meaning "every source", never "no source".
+    """
+    allowed = rules.get("sources")
+    if not allowed:
+        return
+    if job.source not in set(allowed):
+        verdict.drop("source_excluded", f"source {job.source} is not selected")
 
 
 def _check_age(job: Job, rules: dict[str, Any], now: dt.datetime, verdict: Verdict) -> None:

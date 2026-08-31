@@ -182,6 +182,31 @@ def test_a_broken_regex_in_the_config_does_not_take_the_run_down(cfg) -> None:
     assert verdict_for(cfg, make_job(cfg), filters).passed
 
 
+def test_a_job_from_an_unselected_source_is_dropped(cfg) -> None:
+    job_id = make_job(cfg, source="ashby", external_id="src1")
+    filters = {**FILTERS, "global": {**FILTERS["global"], "sources": ["linkedin"]}}
+    verdict = verdict_for(cfg, job_id, filters)
+    assert not verdict.passed
+    assert "source_excluded" in verdict.codes
+
+
+def test_a_job_from_a_selected_source_survives(cfg) -> None:
+    job_id = make_job(cfg, source="linkedin", external_id="src2")
+    filters = {**FILTERS, "global": {**FILTERS["global"], "sources": ["linkedin"]}}
+    assert "source_excluded" not in verdict_for(cfg, job_id, filters).codes
+
+
+def test_no_source_key_restricts_nothing(cfg) -> None:
+    job_id = make_job(cfg, source="ashby", external_id="src3")
+    assert "source_excluded" not in verdict_for(cfg, job_id).codes
+
+
+def test_changing_the_source_selection_changes_the_fingerprint() -> None:
+    base = {"global": {"max_age_days": 30}}
+    narrowed = {"global": {"max_age_days": 30, "sources": ["linkedin"]}}
+    assert runner.filters_fingerprint(base) != runner.filters_fingerprint(narrowed)
+
+
 def test_boosts_multiply_but_never_rescue(cfg) -> None:
     job_id = make_job(cfg, market="yc", title="Founding AI Engineer", country="DE")
     verdict = verdict_for(cfg, job_id)
