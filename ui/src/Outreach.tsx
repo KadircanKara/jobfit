@@ -89,14 +89,22 @@ export function OutreachDrawer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
 
-  async function act(work: () => Promise<unknown>) {
+  /**
+   * Runs one drawer action against busy/error state. Returns whether `work`
+   * succeeded so a caller that needs to know - `addCandidate` below - can act
+   * on it; every existing call site already ignores the return value, so this
+   * is additive and does not change their behaviour.
+   */
+  async function act(work: () => Promise<unknown>): Promise<boolean> {
     setBusy(true);
     try {
       await work();
       await load();
       setError(null);
+      return true;
     } catch (err) {
       setError(String(err));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -136,10 +144,12 @@ export function OutreachDrawer({
   }
 
   async function addCandidate(candidate: ContactCandidate) {
-    await act(() =>
+    const ok = await act(() =>
       api.addContact(jobId, { full_name: candidate.full_name, profile_url: candidate.profile_url }),
     );
-    setCandidates((prev) => prev.map((c) => (c === candidate ? { ...c, existing: true } : c)));
+    if (ok) {
+      setCandidates((prev) => prev.map((c) => (c === candidate ? { ...c, existing: true } : c)));
+    }
   }
 
   return (
@@ -269,7 +279,7 @@ function ContactCard({
   contact: OutreachContact;
   budget: OutreachBudget | null;
   busy: boolean;
-  act: (work: () => Promise<unknown>) => Promise<void>;
+  act: (work: () => Promise<unknown>) => Promise<boolean>;
 }) {
   const [body, setBody] = useState(contact.body ?? "");
   useEffect(() => setBody(contact.body ?? ""), [contact.body]);
