@@ -33,9 +33,13 @@ function capReason(route: OutreachRoute | null, budget: OutreachBudget | null): 
   if (!route || !budget) return null;
   const isInvite = route === "invite_note" || route === "invite_then_dm";
   if (isInvite) {
-    return budget.invites_used >= budget.invites_max
-      ? `Daily invite cap reached (${budget.invites_max}). It resets at midnight UTC.`
-      : null;
+    if (budget.invites_used >= budget.invites_max) {
+      return `Daily invite cap reached (${budget.invites_max}). It resets at midnight UTC.`;
+    }
+    if (budget.invites_week_used >= budget.invites_week_max) {
+      return `Weekly invite cap reached (${budget.invites_week_max}). LinkedIn restricts accounts over invite volume, so this one is a rolling week.`;
+    }
+    return null;
   }
   if (budget.dms_used >= budget.dms_max) {
     return `Daily message cap reached (${budget.dms_max}). It resets at midnight UTC.`;
@@ -103,8 +107,9 @@ export function OutreachDrawer({
         </span>
         {budget && (
           <span className="drawerbudget">
-            {budget.invites_used}/{budget.invites_max} invites · {budget.dms_used}/{budget.dms_max}{" "}
-            messages · {budget.credits} credits
+            {budget.invites_used}/{budget.invites_max} invites ·{" "}
+            {budget.invites_week_used}/{budget.invites_week_max} this week ·{" "}
+            {budget.dms_used}/{budget.dms_max} messages · {budget.credits} credits
           </span>
         )}
       </div>

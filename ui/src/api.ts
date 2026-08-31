@@ -70,6 +70,8 @@ export type OutreachContact = {
 export type OutreachBudget = {
   invites_used: number;
   invites_max: number;
+  invites_week_used: number;
+  invites_week_max: number;
   dms_used: number;
   dms_max: number;
   credits: number;

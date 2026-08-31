@@ -171,3 +171,56 @@ def test_spacing_draws_from_the_configured_window(cfg):
     high = caps.spacing_seconds(cfg, rand=lambda a, b: b)
     assert low == cfg.get("outreach", "invite_delay_min_seconds")
     assert high == cfg.get("outreach", "invite_delay_max_seconds")
+
+
+def test_the_weekly_invite_ceiling_refuses_the_next_invite(cfg):
+    rows = [
+        (provider.INVITE_NOTE, "invited_at", NOW - dt.timedelta(days=day))
+        for day in range(7)
+        for _ in range(15)
+    ]
+    seed(cfg, rows)
+    with session_scope(cfg.db_path) as session:
+        with pytest.raises(caps.CapReached) as excinfo:
+            caps.check(cfg, session, provider.INVITE_NOTE, now=NOW, rand=zero)
+    assert excinfo.value.kind in ("invites", "invites_week")
+
+
+def test_an_invite_from_eight_days_ago_does_not_count(cfg):
+    seed(cfg, [(provider.INVITE_NOTE, "invited_at", NOW - dt.timedelta(days=8))])
+    with session_scope(cfg.db_path) as session:
+        assert caps.budget(cfg, session, now=NOW).invites_week_used == 0
+
+
+def test_the_budget_reports_both_invite_windows(cfg):
+    with session_scope(cfg.db_path) as session:
+        current = caps.budget(cfg, session, now=NOW)
+    assert current.invites_max == 20
+    assert current.invites_week_max == 100
+
+
+def test_a_failed_invite_does_not_consume_the_weekly_cap(cfg):
+    """Task 11 leaves a failed send's invited_at unset; the weekly count must
+
+    follow the same timestamp column as the daily one, or a failure that is
+    safe against the daily cap would quietly start costing the weekly one.
+    """
+    with session_scope(cfg.db_path) as session:
+        job = Job(
+            external_id="ext-1", source="greenhouse", market="global_remote",
+            title="Backend Engineer", title_normalized="backend engineer",
+        )
+        session.add(job)
+        session.flush()
+        contact = Contact(full_name="Person 0", origin="manual")
+        session.add(contact)
+        session.flush()
+        session.add(
+            Outreach(
+                job_id=job.id, contact_id=contact.id, route=provider.INVITE_NOTE,
+                state="failed", invited_at=None, failure="boom",
+            )
+        )
+        session.flush()
+        assert caps.budget(cfg, session, now=NOW).invites_week_used == 0
+        caps.check(cfg, session, provider.INVITE_NOTE, now=NOW, rand=zero)  # does not raise

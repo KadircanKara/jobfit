@@ -164,6 +164,8 @@ def _budget_payload(config: Config, session: Session) -> dict[str, Any]:
     return {
         "invites_used": budget.invites_used,
         "invites_max": budget.invites_max,
+        "invites_week_used": budget.invites_week_used,
+        "invites_week_max": budget.invites_week_max,
         "dms_used": budget.dms_used,
         "dms_max": budget.dms_max,
         "credits": budget.credits,

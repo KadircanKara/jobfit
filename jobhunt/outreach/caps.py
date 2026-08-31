@@ -1,11 +1,15 @@
 """Today's budget, and the refusal when it is spent.
 
-Two separate budgets, not one: the daily invite and DM caps reset at UTC
-midnight, while InMail credits are a stock the account holds. Conflating them
-would let a day of DMs quietly eat the credits, or a spent credit unblock itself
-tomorrow.
+Three separate budgets, not one: the daily invite and DM caps reset at UTC
+midnight, InMail credits are a stock the account holds, and the weekly invite
+ceiling is a rolling seven-day window on top of the daily one. Conflating the
+first two would let a day of DMs quietly eat the credits, or a spent credit
+unblock itself tomorrow. The weekly ceiling exists on its own because LinkedIn
+restricts accounts over invite volume specifically, and the commonly cited safe
+band - 100 to 200 a week - sits well under what the daily cap of 20 allows
+across seven enthusiastic days; the daily reset alone would never catch that.
 
-Spacing is the third refusal here rather than a caller's courtesy: it binds on
+Spacing is the fourth refusal here rather than a caller's courtesy: it binds on
 the poller, which can otherwise release several queued DMs in the same second.
 """
 from __future__ import annotations
@@ -25,6 +29,7 @@ from jobhunt.outreach import provider
 INVITES = "invites"
 DMS = "dms"
 CREDITS = "credits"
+INVITES_WEEK = "invites_week"
 
 _KINDS: dict[str, str] = {
     provider.INVITE_NOTE: INVITES,
@@ -38,8 +43,8 @@ _KINDS: dict[str, str] = {
 # other, so it spends the daily cap *and* a credit; `invite_then_dm` spends only
 # an invite here, because its DM is checked again on the day the poller releases it.
 _CHECKED: dict[str, tuple[str, ...]] = {
-    provider.INVITE_NOTE: (INVITES,),
-    provider.INVITE_THEN_DM: (INVITES,),
+    provider.INVITE_NOTE: (INVITES, INVITES_WEEK),
+    provider.INVITE_THEN_DM: (INVITES, INVITES_WEEK),
     provider.DM: (DMS,),
     provider.FREE_INMAIL: (DMS,),
     provider.PAID_INMAIL: (DMS, CREDITS),
@@ -61,6 +66,7 @@ _LABELS = {
     INVITES: "daily invite cap",
     DMS: "daily message cap",
     CREDITS: "InMail credits",
+    INVITES_WEEK: "weekly invite cap",
 }
 
 
@@ -77,6 +83,8 @@ class CapReached(Exception):
 class Budget:
     invites_used: int
     invites_max: int
+    invites_week_used: int
+    invites_week_max: int
     dms_used: int
     dms_max: int
     credits: int
@@ -103,6 +111,12 @@ def _count(session: Session, column, routes: tuple[str, ...], now: dt.datetime) 
     ) or 0
 
 
+def _count_since(session: Session, column, routes: tuple[str, ...], since: dt.datetime) -> int:
+    return session.scalar(
+        select(func.count()).select_from(Outreach).where(Outreach.route.in_(routes), column >= since)
+    ) or 0
+
+
 def _credits_spent(session: Session) -> int:
     """Every paid InMail ever sent. Credits are a stock, so this does not reset."""
     return session.scalar(
@@ -123,6 +137,10 @@ def budget(config: Config, session: Session, *, now: dt.datetime | None = None) 
     return Budget(
         invites_used=_count(session, Outreach.invited_at, _INVITE_ROUTES, now),
         invites_max=int(config.get("outreach", "max_daily_invites", default=20)),
+        invites_week_used=_count_since(
+            session, Outreach.invited_at, _INVITE_ROUTES, now - dt.timedelta(days=7)
+        ),
+        invites_week_max=int(config.get("outreach", "max_weekly_invites", default=100)),
         dms_used=_count(session, Outreach.sent_at, _DM_ROUTES, now),
         dms_max=int(config.get("outreach", "max_daily_dms", default=25)),
         credits=int(config.get("outreach", "inmail_credits", default=0)) - _credits_spent(session),
@@ -155,6 +173,12 @@ def check(
         if kind == INVITES and current.invites_used >= current.invites_max:
             raise CapReached(
                 kind, f"{_LABELS[kind]} reached ({current.invites_max}). It resets at midnight UTC."
+            )
+        if kind == INVITES_WEEK and current.invites_week_used >= current.invites_week_max:
+            raise CapReached(
+                kind,
+                f"{_LABELS[kind]} reached ({current.invites_week_max}). "
+                "LinkedIn restricts accounts over invite volume, so this one is a rolling week.",
             )
         if kind == DMS and current.dms_used >= current.dms_max:
             raise CapReached(
