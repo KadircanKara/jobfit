@@ -125,12 +125,12 @@ def test_a_plain_identifier_still_works() -> None:
 
 
 def test_a_non_https_dsn_is_rejected() -> None:
-    with pytest.raises(uc.MissingCredentials):
+    with pytest.raises(uc.UnipileError):
         uc.UnipileClient(dsn="http://api1.unipile.com", api_key="secret", account_id="acct-1")
 
 
 def test_a_malformed_dsn_is_rejected() -> None:
-    with pytest.raises(uc.MissingCredentials):
+    with pytest.raises(uc.UnipileError):
         uc.UnipileClient(dsn="not-a-url", api_key="secret", account_id="acct-1")
 
 
@@ -148,3 +148,27 @@ def test_search_people_rejects_a_non_dict_payload() -> None:
 
     with pytest.raises(uc.UnipileError):
         _client(handler).search_people("Acme", ["engineer"])
+
+
+def test_a_dot_identifier_is_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("request should never be sent for a bad identifier")
+
+    with pytest.raises(uc.UnipileError):
+        _client(handler).get_user(".")
+
+
+def test_a_dot_dot_identifier_is_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("request should never be sent for a bad identifier")
+
+    with pytest.raises(uc.UnipileError):
+        _client(handler).get_user("..")
+
+
+def test_a_non_string_identifier_raises_unipile_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("request should never be sent for a bad identifier")
+
+    with pytest.raises(uc.UnipileError):
+        _client(handler).get_user(None)

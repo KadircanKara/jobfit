@@ -15,7 +15,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_\-%.]{1,128}$")
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9-]{1,128}$")
 
 
 class UnipileError(Exception):
@@ -57,7 +57,7 @@ class UnipileClient:
             # An http:// DSN would ship the API key in cleartext; a malformed one
             # would raise httpx.InvalidURL deep inside a request. Reject both here,
             # at construction, rather than partway through a call.
-            raise MissingCredentials(f"UNIPILE_DSN must be an https URL with a host, got: {dsn!r}")
+            raise UnipileError(f"UNIPILE_DSN must be an https URL with a host, got: {dsn!r}")
         self.dsn = dsn
         self.account_id = account_id
         self._key = api_key
@@ -67,7 +67,7 @@ class UnipileClient:
         self._client = client or httpx.Client(timeout=30.0)
 
     def get_user(self, identifier: str) -> dict[str, Any]:
-        if not _IDENTIFIER_RE.match(identifier):
+        if not isinstance(identifier, str) or not _IDENTIFIER_RE.match(identifier):
             raise UnipileError("get_user: identifier has an unexpected shape")
         segment = quote(identifier, safe="")
         return self._call("GET", f"/api/v1/users/{segment}", params={"account_id": self.account_id})
