@@ -182,9 +182,9 @@ def build_adapter(config: Config, source: str):
     if source != "linkedin":
         return cls()
     prefs, _ = prefs_module.load(config)
-    known_ids = _known_linkedin_ids(config)
-    refs = cls(config=config, known_ids=known_ids).board_refs(prefs)
-    return cls(refs, config=config, known_ids=known_ids)
+    adapter = cls(config=config, known_ids=_known_linkedin_ids(config))
+    adapter.set_refs(adapter.board_refs(prefs))
+    return adapter
 
 
 def _known_linkedin_ids(config: Config) -> set[str]:
@@ -419,9 +419,17 @@ def sync_source(
     try:
         if from_raw is None:
             limit = int(config.get("sync", "max_boards_per_run", default=200))
-            refs = due_boards(
-                config, source, force, limit, only_status=only_status, market=market
-            )
+            # A generated-ref source (LinkedIn) has no Board rows to query: its
+            # refs come from preferences, fresh every run, via its own
+            # `discover()`. Everything else is still owed its fetch by
+            # `due_boards()`. The cap applies either way, so a preference set
+            # with forty titles cannot turn into a four-hundred-search run.
+            if source_registry.get(source).generates_refs:
+                refs = list(build_adapter(config, source).discover())[:limit]
+            else:
+                refs = due_boards(
+                    config, source, force, limit, only_status=only_status, market=market
+                )
             result.boards = len(refs)
             if not refs:
                 result.status = "ok"

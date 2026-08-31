@@ -106,6 +106,9 @@ class LinkedInAdapter(HttpAdapter):
     source_id = "linkedin"
     market = "global_remote"
     rate_limit = RateLimit(3.0)
+    # No boards table entry gets a LinkedIn fetch: refs come from preferences,
+    # generated fresh by `board_refs` every run. See SourceAdapter.generates_refs.
+    generates_refs = True
     MAX_PAGES = 5
     PAGE_SIZE = 10
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt_module
 import json
 
+import httpx
 from conftest import load_fixture
 
 from jobhunt import preferences as prefs_module
@@ -454,3 +455,61 @@ def test_an_ats_adapter_is_unaffected_by_a_linkedin_job_in_the_corpus(cfg) -> No
     adapter = sync.build_adapter(cfg, "greenhouse")
     assert not hasattr(adapter, "known_ids")
     assert not hasattr(adapter, "guard")
+
+
+def test_sync_source_actually_fetches_a_generated_linkedin_ref(cfg, monkeypatch) -> None:
+    """`sync_source` used to take its refs from `due_boards()`, which queries the
+    `Board` table by provider. No Board row is ever written for `provider="linkedin"`
+    (its refs are generated from preferences, not seeded), so `refs` was always []
+    and `adapter.fetch()` was never called - the guard, the daily budget and the
+    known-id skip were dead code even after `build_adapter` existed. This proves a
+    real `sync_source("linkedin")` run makes the request."""
+    prefs, _ = prefs_module.load(cfg)
+    prefs.titles = ["Backend Engineer"]
+    prefs.locations = ["Germany"]
+    prefs_module.save(cfg, prefs)
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, text="<li></li>")
+
+    real_client = httpx.Client
+
+    def fake_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(sync.httpx, "Client", fake_client)
+
+    result = sync.sync_source(cfg, "linkedin")
+
+    assert calls, "fetch() never made a request - refs must have been empty"
+    assert result.boards == 1
+    raw = sync.load_raw(cfg, "linkedin", result.run_key)
+    assert len(raw) == 1
+    assert raw[0]["token"] == "Backend Engineer|Germany"
+
+
+def test_a_generated_ref_source_still_respects_the_run_cap(cfg, monkeypatch) -> None:
+    """Forty titles must not turn into forty searches in one run."""
+    prefs, _ = prefs_module.load(cfg)
+    prefs.titles = [f"Title {i}" for i in range(40)]
+    prefs.locations = ["Germany"]
+    prefs_module.save(cfg, prefs)
+    cfg.raw["sync"] = {"max_boards_per_run": 5}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<li></li>")
+
+    real_client = httpx.Client
+
+    def fake_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(sync.httpx, "Client", fake_client)
+
+    result = sync.sync_source(cfg, "linkedin")
+    assert result.boards == 5

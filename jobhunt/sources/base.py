@@ -99,6 +99,15 @@ class SourceAdapter(Protocol):
     source_id: str
     market: str
     rate_limit: RateLimit
+    # Most sources are seeded: their refs are Board rows a crawl strategy
+    # discovered once and the sync loop re-fetches on a schedule out of the
+    # `boards` table. LinkedIn has no boards to seed - its refs are generated
+    # fresh from the user's saved preferences on every run. `sync_source`
+    # checks this flag to decide whether to pull refs from `due_boards()` (the
+    # seeded case) or from the adapter's own `discover()` (the generated
+    # case), so a generated-ref source is never silently starved by a query
+    # that only ever finds rows for the seeded kind.
+    generates_refs: bool = False
 
     def discover(self) -> Iterator[BoardRef]:
         """Yield the boards or queries to fetch."""
@@ -119,9 +128,22 @@ class HttpAdapter:
     source_id: str = "base"
     market: str = "global_remote"
     rate_limit: RateLimit = RateLimit(1.0)
+    # See SourceAdapter.generates_refs above.
+    generates_refs: bool = False
 
     def __init__(self, refs: list[BoardRef] | None = None) -> None:
         self._refs = refs or []
+
+    def set_refs(self, refs: list[BoardRef]) -> None:
+        """Replace the refs `discover()` yields.
+
+        For a `generates_refs` adapter, the refs depend on preferences the
+        constructor cannot see without also owning `config`/`known_ids` wiring
+        that has nothing to do with what gets fetched. This lets a caller build
+        the adapter once and supply its refs afterward, instead of reaching
+        into `_refs` directly or constructing the adapter twice.
+        """
+        self._refs = refs
 
     def discover(self) -> Iterator[BoardRef]:
         yield from self._refs
