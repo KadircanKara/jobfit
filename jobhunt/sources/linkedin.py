@@ -33,7 +33,7 @@ import math
 import time
 from collections.abc import Iterator
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -86,18 +86,44 @@ def _card_ids(html: str) -> list[str]:
 
 
 def _clean_url(href: str | None) -> str | None:
-    """Absolute URL, minus the query string and a trailing slash.
+    """Absolute URL, minus the query string, fragment, and a trailing slash.
 
     The hirer card commonly emits a relative `/in/slug`. Stored verbatim it
     contains no `linkedin.com/in/`, so the Unipile provider cannot recognise a
     profile and refuses the send, and the drawer renders `https:///in/slug`.
+
+    Deliberately leaves the host alone: this also cleans `apply_url`, whose
+    regional subdomain (`de.linkedin.com/jobs/view/...`) is part of the link
+    the applicant is meant to follow, not an artefact to normalise away. See
+    `_clean_profile_url` for the poster-URL case, where the host *is* noise.
     """
     if not href:
         return None
-    text = href.strip().split("?")[0]
+    text = href.strip().split("?", 1)[0].split("#", 1)[0]
     if not text:
         return None
     return urljoin(_BASE, text).rstrip("/") or None
+
+
+def _clean_profile_url(href: str | None) -> str | None:
+    """`_clean_url`, plus canonicalising the host to `www.linkedin.com`.
+
+    The guest job-poster block links to the poster's *regional* subdomain
+    (`uk.linkedin.com/in/...`). `normalize_profile_url` only strips a `www.`
+    prefix, not an arbitrary regional one, so a stored `uk.linkedin.com` URL
+    would dedupe as a different person from the same profile reached via
+    `www.linkedin.com` - and would still resolve through Unipile today only
+    because `_PROFILE_MARKER` is a substring check, not a host check.
+    Canonicalising here, the same way `source_url` is already built, keeps
+    that from being an accident.
+    """
+    cleaned = _clean_url(href)
+    if cleaned is None:
+        return None
+    parsed = urlsplit(cleaned)
+    if parsed.netloc.lower().endswith("linkedin.com") and parsed.netloc.lower() != "www.linkedin.com":
+        parsed = parsed._replace(netloc="www.linkedin.com")
+    return urlunsplit(parsed).rstrip("/") or None
 
 
 def _retry_after(response: httpx.Response) -> float | None:
@@ -392,11 +418,30 @@ class LinkedInAdapter(HttpAdapter):
 
         poster_name: str | None = None
         poster_profile_url: str | None = None
-        hirer = soup.select_one("div.hirer-card__hirer-information")
-        if hirer is not None:
-            link = hirer.select_one("a[href]")
-            if link is not None:
-                poster_profile_url = _clean_url(link.get("href"))
+
+        # `message-the-recruiter` is the guest detail page's real markup - the
+        # only variant this adapter ever fetches, since the guest endpoint is
+        # all `fetch` is able to reach. `hirer-card__hirer-information` below
+        # is the authenticated shape; kept as a fallback in case LinkedIn ever
+        # serves it here, but it has never actually been observed on a guest
+        # fetch.
+        recruiter = soup.select_one("div.message-the-recruiter")
+        if recruiter is not None:
+            link = recruiter.select_one("a[href*='/in/']") or recruiter.select_one("a[href]")
+            title_el = recruiter.select_one(".base-main-card__title")
+            if title_el is not None:
+                poster_name = title_el.get_text(strip=True) or None
+            elif link is not None:
                 poster_name = link.get_text(strip=True) or None
+            if link is not None:
+                poster_profile_url = _clean_profile_url(link.get("href"))
+
+        if poster_name is None and poster_profile_url is None:
+            hirer = soup.select_one("div.hirer-card__hirer-information")
+            if hirer is not None:
+                link = hirer.select_one("a[href]")
+                if link is not None:
+                    poster_profile_url = _clean_profile_url(link.get("href"))
+                    poster_name = link.get_text(strip=True) or None
 
         return description_html, description_text, poster_name, poster_profile_url

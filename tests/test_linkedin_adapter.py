@@ -84,6 +84,12 @@ def test_a_card_without_a_detail_document_is_still_a_posting() -> None:
 
 
 def test_the_hiring_team_is_carried_through() -> None:
+    """`linkedin_detail.html` carries the real guest markup: a
+    `message-the-recruiter` block linking to the poster's regional subdomain
+    with a `trk` tracking query. Both must be gone from what is stored, or
+    the profile URL dedupes and resolves through Unipile as a different
+    person from the same profile reached via `www.linkedin.com`.
+    """
     postings = list(LinkedInAdapter().normalize(_envelope(), _ref()))
     posting = next(p for p in postings if p.external_id == "3901234567")
     assert posting.poster_name == "Jane Doe"
