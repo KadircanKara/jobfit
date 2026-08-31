@@ -18,13 +18,12 @@ def test_the_sources_are_the_registered_ones(cfg):
 
 
 def test_the_engine_fetches_only_from_selected_sources(cfg) -> None:
-    """Selecting linkedin alone must exclude the twelve ats adapters. The registry
-    has no linkedin adapter until Task 7, so the honest result of that selection
-    today is an empty run, not a silent fall-back to every ats adapter."""
+    """Selecting linkedin alone must exclude the twelve ats adapters, and include
+    only linkedin - not a silent fall-back to every ats adapter."""
     prefs, _ = prefs_module.load(cfg)
     prefs.sources = ["linkedin"]
     prefs_module.save(cfg, prefs)
-    assert engine_module.EnginePipeline(cfg).sources() == []
+    assert engine_module.EnginePipeline(cfg).sources() == ["linkedin"]
 
 
 def test_the_engine_fetches_every_ats_adapter_by_default(cfg) -> None:

@@ -88,6 +88,11 @@ class JobPosting:
     departments: list[str] = dataclasses.field(default_factory=list)
     raw_ref: str | None = None  # path of the raw payload this came from
 
+    # LinkedIn is the only source that publishes who posted a job. Optional on
+    # every other adapter's postings, which simply never set them.
+    poster_name: str | None = None
+    poster_profile_url: str | None = None
+
 
 @runtime_checkable
 class SourceAdapter(Protocol):
