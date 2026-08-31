@@ -231,9 +231,9 @@ def test_the_detail_loop_paces_itself(cfg, _no_real_sleeping: list[float]) -> No
 def test_the_guard_refusing_mid_loop_stops_the_detail_pass_immediately(cfg) -> None:
     """`continue` and `break` both skip the request for the id that first sees a
     refusal, so counting *requests* can't tell them apart - both send none for
-    it. What differs is whether every id *after* that one still pays for an
-    `allow()` check (`continue` walks them all; `break` stops at the first).
-    Counting only the `allow()` calls made while the guard is already tripped
+    it. What differs is whether every id *after* that one still pays for a
+    guard check (`continue` walks them all; `break` stops at the first).
+    Counting only the guard checks made while the guard is already tripped
     isolates that, regardless of how many calls the search-pagination loop
     made before the guard ever tripped."""
     ids = [f"d{i}" for i in range(5)]
@@ -248,24 +248,25 @@ def test_the_guard_refusing_mid_loop_stops_the_detail_pass_immediately(cfg) -> N
 
     detail_calls: list = []
     adapter = LinkedInAdapter(config=cfg)
-    calls_while_tripped: list[bool] = []
-    real_allow = adapter.guard.allow
+    calls_while_tripped: list[str | None] = []
+    real_refusal = adapter.guard.refusal
 
-    def spy_allow(*args: object, **kwargs: object) -> bool:
+    # `allow` delegates to `refusal`, so spying here catches both spellings.
+    def spy_refusal(*args: object, **kwargs: object) -> str | None:
         was_already_tripped = adapter.guard.tripped
-        result = real_allow(*args, **kwargs)
+        result = real_refusal(*args, **kwargs)
         if was_already_tripped:
             calls_while_tripped.append(result)
         return result
 
-    adapter.guard.allow = spy_allow
+    adapter.guard.refusal = spy_refusal
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         adapter.fetch(_ref(), client)
     # d0 and d1 are requested and the second trips the guard. d2 sees the trip
     # and must stop the pass right there - d3 and d4 must never even be asked
-    # about, which is exactly the one `allow()` call this asserts.
+    # about, which is exactly the one guard check this asserts.
     assert len(detail_calls) == 2
-    assert calls_while_tripped == [False]
+    assert calls_while_tripped == ["the circuit breaker tripped for this run"]
 
 
 def _card_html_missing_urn() -> str:
@@ -303,3 +304,66 @@ def test_a_card_missing_its_urn_does_not_look_like_a_short_page(cfg) -> None:
         adapter.fetch(_ref(), client)
     assert len(calls) == 2
 
+
+
+def test_a_refused_fetch_says_so_on_the_envelope(cfg) -> None:
+    """An empty envelope that does not admit it was refused is read downstream as
+    "this search found nothing", which retires jobs the ref still has."""
+    adapter = LinkedInAdapter(config=cfg)
+    adapter.guard.tripped = True
+    with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200))) as client:
+        raw = adapter.fetch(_ref(), client)
+    assert raw["truncated"] is True
+
+
+def test_a_complete_pass_is_not_marked_truncated(cfg) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "seeMoreJobPostings" in str(request.url):
+            return httpx.Response(200, text=_page_html(["only1"]))
+        return httpx.Response(200, text="<div class='description__text'>hi</div>")
+
+    adapter = LinkedInAdapter(config=cfg)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        raw = adapter.fetch(_ref(), client)
+    assert raw["truncated"] is False
+
+
+def test_a_403_truncates_and_is_logged(cfg, caplog) -> None:
+    adapter = LinkedInAdapter(config=cfg)
+    with caplog.at_level("WARNING", logger="jobhunt.sources.linkedin"):
+        with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(403))) as client:
+            raw = adapter.fetch(_ref(), client)
+    assert raw["truncated"] is True
+    assert "403" in caplog.text
+
+
+def test_a_403_persists_a_cooldown_so_the_next_run_does_not_hammer(cfg) -> None:
+    """The breaker is per-run. Without a persisted cooldown the next run starts
+    hopeful and goes straight back at a source that just refused us outright."""
+    adapter = LinkedInAdapter(config=cfg)
+    with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(403))) as client:
+        adapter.fetch(_ref(), client)
+    assert adapter.guard.cooling_until() is not None
+    assert LinkedInAdapter(config=cfg).guard.allow() is False
+
+
+def test_an_exhausted_guard_stops_the_fetch_loop_pacing(cfg) -> None:
+    adapter = LinkedInAdapter(config=cfg)
+    assert adapter.still_fetching() is True
+    adapter.guard.tripped = True
+    assert adapter.still_fetching() is False
+
+
+def test_a_relative_hirer_link_becomes_an_absolute_profile_url(cfg) -> None:
+    """LinkedIn's hirer card commonly emits `/in/slug`. Stored verbatim it has no
+    `linkedin.com/in/` in it, so the Unipile provider refuses to send to it."""
+    detail = (
+        "<div class='description__text'>hi</div>"
+        "<div class='hirer-card__hirer-information'><a href='/in/jane-doe/'>Jane Doe</a></div>"
+    )
+    postings = list(
+        LinkedInAdapter().normalize(
+            {"cards": [_page_html(["j1"])], "details": {"j1": detail}}, _ref()
+        )
+    )
+    assert postings[0].poster_profile_url == "https://www.linkedin.com/in/jane-doe"

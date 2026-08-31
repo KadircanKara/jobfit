@@ -603,3 +603,50 @@ def test_a_market_filtered_pass_skips_linkedin_when_the_market_does_not_match(
 
     assert calls == []
     assert result.boards == 0
+
+
+def test_a_truncated_fetch_does_not_retire_the_jobs_it_never_saw(cfg) -> None:
+    """A guard refusal yields an empty envelope. Read as a complete listing it
+    means every job of that ref vanished, and two such runs deactivate them all -
+    which, with 20 refs against a 400/day budget, is the steady state for the
+    tail refs rather than an edge case."""
+    from conftest import FIXTURES
+
+    cards = [(FIXTURES / "linkedin_search.html").read_text(encoding="utf-8")]
+    place_raw(cfg, "linkedin", "t1", "R1", {"cards": cards, "details": {}})
+    sync.normalize_pass(cfg, "linkedin", "R1")
+
+    for run_key in ("R2", "R3"):
+        place_raw(cfg, "linkedin", "t1", run_key, {"cards": [], "details": {}, "truncated": True})
+        result = sync.normalize_pass(cfg, "linkedin", run_key)
+        assert result.deactivated == 0
+        assert result.truncated == 1
+
+    with session_scope(cfg.db_path) as session:
+        jobs = session.query(Job).filter_by(source="linkedin").all()
+        assert jobs and all(job.is_active for job in jobs)
+        assert all(job.missed_runs == 0 for job in jobs)
+
+
+def test_an_untruncated_empty_listing_still_retires_its_jobs(cfg) -> None:
+    """The guard's refusal is the only thing being excused here. A search that
+    genuinely came back empty twice still means those jobs are gone."""
+    from conftest import FIXTURES
+
+    cards = [(FIXTURES / "linkedin_search.html").read_text(encoding="utf-8")]
+    place_raw(cfg, "linkedin", "t1", "R1", {"cards": cards, "details": {}})
+    sync.normalize_pass(cfg, "linkedin", "R1")
+
+    for run_key in ("R2", "R3"):
+        place_raw(cfg, "linkedin", "t1", run_key, {"cards": [], "details": {}})
+        sync.normalize_pass(cfg, "linkedin", run_key)
+
+    with session_scope(cfg.db_path) as session:
+        assert not any(job.is_active for job in session.query(Job).filter_by(source="linkedin"))
+
+
+def test_a_run_with_a_truncated_ref_reports_degraded_rather_than_ok(cfg) -> None:
+    place_raw(cfg, "linkedin", "t1", "R9", {"cards": [], "details": {}, "truncated": True})
+    result = sync.sync_source(cfg, "linkedin", from_raw="R9")
+    assert result.status == "degraded"
+    assert "ended early" in (result.error_detail or "")

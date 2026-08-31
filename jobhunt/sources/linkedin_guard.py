@@ -26,6 +26,9 @@ from jobhunt.db.session import session_scope
 
 DAILY_BUDGET = 400
 MAX_COOLDOWN_SECONDS = 3600
+# A 403 is the loudest refusal this source gives, so it buys the longest pause
+# the cooldown allows rather than a graduated one.
+FORBIDDEN_COOLDOWN_SECONDS = MAX_COOLDOWN_SECONDS
 BREAKER_AFTER = 3
 BASE_DELAY = 3.0
 JITTER = 1.0
@@ -41,13 +44,25 @@ class CrawlGuard:
         self.tripped = False
 
     def allow(self, *, now: dt.datetime | None = None) -> bool:
+        return self.refusal(now=now) is None
+
+    def refusal(self, *, now: dt.datetime | None = None) -> str | None:
+        """Why the next request must not go out, phrased for a log line.
+
+        The caller needs the reason, not just the verdict: a refusal that says
+        nothing looks exactly like a search that legitimately found no jobs, and
+        the pipeline then retires the jobs this ref actually still has.
+        """
         now = now or utcnow()
         if self.tripped:
-            return False
+            return "the circuit breaker tripped for this run"
         until = self.cooling_until()
         if until is not None and now < until:
-            return False
-        return self._spent(now) < DAILY_BUDGET
+            return f"a cooldown is in force until {until.isoformat()}"
+        spent = self._spent(now)
+        if spent >= DAILY_BUDGET:
+            return f"today's budget of {DAILY_BUDGET} requests is spent ({spent})"
+        return None
 
     def spend(self, n: int = 1, *, now: dt.datetime | None = None) -> None:
         now = now or utcnow()
@@ -74,9 +89,22 @@ class CrawlGuard:
         with session_scope(self.config.db_path) as session:
             store.meta_set(session, _COOLDOWN_KEY, (now + dt.timedelta(seconds=seconds)).isoformat())
 
-    def record_403(self) -> None:
-        """A 403 is not a rate limit. Nothing about waiting fixes it."""
+    def record_403(self, *, now: dt.datetime | None = None) -> None:
+        """A 403 is not a rate limit, but it is not an invitation to retry either.
+
+        The breaker only lasts this run, and the next run starts hopeful - which
+        for a source that just refused us outright means hammering it again
+        minutes later. The cooldown is persisted so that pause outlives the
+        process, the same way a 429's does.
+        """
+        now = now or utcnow()
         self.tripped = True
+        with session_scope(self.config.db_path) as session:
+            store.meta_set(
+                session,
+                _COOLDOWN_KEY,
+                (now + dt.timedelta(seconds=FORBIDDEN_COOLDOWN_SECONDS)).isoformat(),
+            )
 
     def cooling_until(self) -> dt.datetime | None:
         with session_scope(self.config.db_path) as session:

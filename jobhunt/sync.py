@@ -46,6 +46,9 @@ class SourceResult:
     dead_boards: int = 0
     rejected: int = 0
     errors: int = 0
+    # Refs whose fetch ended early - a crawl guard refused, or the source did.
+    # Not an error: nothing failed, we simply did not see the whole listing.
+    truncated: int = 0
     status: str = "ok"
     error_detail: str | None = None
 
@@ -54,7 +57,7 @@ class SourceResult:
             f"{self.source}: {self.status} boards={self.boards} fetched={self.raw_fetched} "
             f"normalized={self.normalized} new={self.new} updated={self.updated} "
             f"unchanged={self.unchanged} deactivated={self.deactivated} "
-            f"clustered={self.clustered} errors={self.errors} "
+            f"clustered={self.clustered} errors={self.errors} truncated={self.truncated} "
             f"rejected={self.rejected} dead_boards={self.dead_boards} run={self.run_key}"
         )
 
@@ -234,7 +237,7 @@ def fetch_pass(
         for index, ref in enumerate(refs):
             if should_stop is not None and should_stop():
                 break
-            if index:
+            if index and adapter.still_fetching():
                 adapter.rate_limit.sleep()
             try:
                 payload = adapter.fetch(ref, client)
@@ -325,6 +328,16 @@ def load_raw(config: Config, source: str, run_key: str) -> list[dict[str, Any]]:
     ]
 
 
+def _is_truncated(envelope: dict[str, Any]) -> bool:
+    """Whether this payload's fetch ended before it saw the whole listing.
+
+    Only the LinkedIn adapter says so today; every other payload is a complete
+    listing or an error, and a missing key means complete.
+    """
+    payload = envelope.get("payload")
+    return bool(isinstance(payload, dict) and payload.get("truncated"))
+
+
 def normalize_pass(
     config: Config, source: str, run_key: str, dry_run: bool = False
 ) -> SourceResult:
@@ -349,6 +362,7 @@ def normalize_pass(
     # through keeps the boards already done.
     for envelope in envelopes:
         ref = BoardRef(envelope["provider"], envelope["token"], envelope["market"])
+        truncated = _is_truncated(envelope)
         with session_scope(config.db_path) as session:
             board = store.get_or_create_board(
                 session, ref.provider, ref.token, "sync", ref.market
@@ -362,7 +376,13 @@ def normalize_pass(
                 count += 1
                 setattr(result, outcome, getattr(result, outcome) + 1)
             result.normalized += count
-            result.deactivated += store.deactivate_missing(session, board, seen)
+            # A partial listing is not evidence that anything disappeared from it.
+            # Retiring jobs on the strength of a fetch that was cut short is how a
+            # source that keeps getting refused loses its whole corpus.
+            if truncated:
+                result.truncated += 1
+            else:
+                result.deactivated += store.deactivate_missing(session, board, seen)
             _record_board_outcome(board, count)
 
     with session_scope(config.db_path) as session:
@@ -459,7 +479,9 @@ def sync_source(
             result.errors = len(failed_tokens) - result.rejected
 
         normalized = normalize_pass(config, source, run_key, dry_run=dry_run)
-        for field in ("normalized", "new", "updated", "unchanged", "deactivated", "clustered"):
+        for field in (
+            "normalized", "new", "updated", "unchanged", "deactivated", "clustered", "truncated",
+        ):
             setattr(result, field, getattr(normalized, field))
         if from_raw is not None:
             result.boards = normalized.boards
@@ -469,6 +491,14 @@ def sync_source(
             result.status = "degraded"
         elif result.errors:
             result.status = "failed"
+        # A run that stopped fetching partway through did not fail, but it did not
+        # do the job either, and "ok" is the one thing it must not claim.
+        if result.truncated:
+            result.status = "failed" if result.status == "failed" else "degraded"
+            messages.append(
+                f"{result.truncated} of {result.boards} searches ended early "
+                f"(crawl guard or the source refused); their jobs were left active"
+            )
         result.error_detail = "\n".join(messages) or None
     except Exception as exc:  # noqa: BLE001 - source isolation
         result.status = "failed"

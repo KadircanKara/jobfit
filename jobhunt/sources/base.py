@@ -117,6 +117,10 @@ class SourceAdapter(Protocol):
         """Return the raw payload for one ref. Must not transform it."""
         ...
 
+    def still_fetching(self) -> bool:
+        """Whether the fetch loop should keep pacing between refs. See HttpAdapter."""
+        ...
+
     def normalize(self, raw: Any, ref: BoardRef) -> Iterator[JobPosting]:
         """Raw payload -> canonical records. Pure function, no I/O."""
         ...
@@ -133,6 +137,17 @@ class HttpAdapter:
 
     def __init__(self, refs: list[BoardRef] | None = None) -> None:
         self._refs = refs or []
+
+    def still_fetching(self) -> bool:
+        """Whether further refs are worth pacing for.
+
+        The fetch loop sleeps between refs to be polite. An adapter that has
+        stopped making requests at all - LinkedIn once its crawl guard refuses -
+        has nothing to be polite about, and with many refs those sleeps are
+        minutes spent between no-op fetches. Everything else keeps fetching until
+        it runs out of refs, so the default is simply True.
+        """
+        return True
 
     def set_refs(self, refs: list[BoardRef]) -> None:
         """Replace the refs `discover()` yields.

@@ -28,10 +28,12 @@ or with the search page that preceded them.
 """
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections.abc import Iterator
 from typing import Any
+from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
@@ -50,6 +52,10 @@ from jobhunt.sources.linkedin_guard import CrawlGuard
 # rather than respect it. The User-Agent itself comes from the shared client
 # built in sync.fetch_pass, from config, same as every other source.
 _HEADERS = {"Accept": "text/html,application/xhtml+xml", "Accept-Language": "en-US,en;q=0.9"}
+
+log = logging.getLogger(__name__)
+
+_BASE = "https://www.linkedin.com"
 
 
 def _job_ids(cards_html: list[str]) -> list[str]:
@@ -80,10 +86,18 @@ def _card_ids(html: str) -> list[str]:
 
 
 def _clean_url(href: str | None) -> str | None:
-    """Drop the query string and a trailing slash, so ids compare cleanly."""
+    """Absolute URL, minus the query string and a trailing slash.
+
+    The hirer card commonly emits a relative `/in/slug`. Stored verbatim it
+    contains no `linkedin.com/in/`, so the Unipile provider cannot recognise a
+    profile and refuses the send, and the drawer renders `https:///in/slug`.
+    """
     if not href:
         return None
-    return href.strip().split("?")[0].rstrip("/") or None
+    text = href.strip().split("?")[0]
+    if not text:
+        return None
+    return urljoin(_BASE, text).rstrip("/") or None
 
 
 def _retry_after(response: httpx.Response) -> float | None:
@@ -133,6 +147,11 @@ class LinkedInAdapter(HttpAdapter):
             for location in locations
         ]
 
+    def still_fetching(self) -> bool:
+        """False once the guard refuses everything: the remaining refs cost a
+        rate-limit sleep each and return an empty envelope regardless."""
+        return self.guard is None or self.guard.allow()
+
     # --- fetch ------------------------------------------------------------
 
     def fetch(self, ref: BoardRef, client: httpx.Client) -> dict[str, Any]:
@@ -142,6 +161,13 @@ class LinkedInAdapter(HttpAdapter):
         and ends the pass early, same as any other non-200. Only a config-less
         adapter (no guard at all) returns immediately - that shape exists for
         `normalize`-only tests and is never how a real run constructs this.
+
+        A pass that ended early sets `truncated` on the envelope. Without it an
+        empty envelope is indistinguishable from "this search genuinely returned
+        nothing", and `deactivate_missing` reads that as every job of this ref
+        having vanished: two refused runs and they all go inactive. With 20 refs
+        against a 400/day budget the tail refs are refused every single run, so
+        that is the steady state rather than an edge case.
         """
         empty: dict[str, Any] = {"cards": [], "details": {}, "posters": {}}
         if self.guard is None:
@@ -151,39 +177,68 @@ class LinkedInAdapter(HttpAdapter):
             prefs, _ = preferences_module.load(self.config)
         except Exception:
             # A malformed filters.yaml is a config problem, not a fetch problem.
-            # This source is never allowed to fail a run over it.
-            return empty
+            # This source is never allowed to fail a run over it - but it did not
+            # learn that this ref has no jobs either, so the envelope is truncated.
+            log.warning("linkedin fetch for %r skipped: preferences could not be read", ref.token)
+            return empty | {"truncated": True}
         title, _, location = ref.token.partition("|")
+
+        truncated = False
+
+        def refused(pass_name: str) -> bool:
+            """Whether the guard will not allow another request, and says so.
+
+            A refusal that logs nothing and shows nowhere is how a starved ref
+            loses its jobs quietly, so every one of them is stated out loud.
+            """
+            nonlocal truncated
+            reason = self.guard.refusal()
+            if reason is None:
+                return False
+            truncated = True
+            log.warning("linkedin %s for %r stopped: %s", pass_name, ref.token, reason)
+            return True
+
+        def stopped(pass_name: str, why: str) -> None:
+            nonlocal truncated
+            truncated = True
+            log.warning("linkedin %s for %r stopped: %s", pass_name, ref.token, why)
 
         cards: list[str] = []
         page = 0
         page_count = self.PAGE_SIZE  # primes the loop for a first request
-        while self.guard.allow() and page_count == self.PAGE_SIZE and page < self.MAX_PAGES:
+        while not refused("search") and page_count == self.PAGE_SIZE and page < self.MAX_PAGES:
             params = query.search_params(title, location or None, prefs, start=page * self.PAGE_SIZE)
             self.guard.spend()
             try:
                 response = client.get(query.SEARCH_URL, params=params, headers=_HEADERS)
-            except httpx.HTTPError:
+            except httpx.HTTPError as error:
+                stopped("search", f"{type(error).__name__}: {error}")
                 break
             if response.status_code == 429:
                 self.guard.record_429(_retry_after(response))
+                stopped("search", "429 from LinkedIn")
                 break
             if response.status_code == 403:
                 self.guard.record_403()
+                stopped("search", "403 from LinkedIn")
                 break
             if response.status_code != 200:
+                stopped("search", f"HTTP {response.status_code} from LinkedIn")
                 break
             self.guard.record_ok()
             html = response.text
             cards.append(html)
             page_count = len(_cards(html))
             page += 1
-            if self.guard.allow() and page_count == self.PAGE_SIZE and page < self.MAX_PAGES:
+            # Plain `allow()`, not `refused()`: a refusal here is logged by the
+            # loop condition on the next turn rather than twice.
+            if page_count == self.PAGE_SIZE and page < self.MAX_PAGES and self.guard.allow():
                 time.sleep(self.guard.delay())
 
         details: dict[str, str] = {}
         for job_id in _job_ids(cards):
-            if not self.guard.allow():
+            if refused("detail fetch"):
                 break
             if job_id in self.known_ids:
                 continue
@@ -198,9 +253,11 @@ class LinkedInAdapter(HttpAdapter):
                 continue
             if response.status_code == 429:
                 self.guard.record_429(_retry_after(response))
+                stopped("detail fetch", "429 from LinkedIn")
                 break
             if response.status_code == 403:
                 self.guard.record_403()
+                stopped("detail fetch", "403 from LinkedIn")
                 break
             if response.status_code != 200:
                 continue
@@ -212,7 +269,7 @@ class LinkedInAdapter(HttpAdapter):
         # to be attached separately here yet. Kept in the envelope shape so
         # `normalize` and any later caller don't have to special-case its
         # absence.
-        return {"cards": cards, "details": details, "posters": {}}
+        return {"cards": cards, "details": details, "posters": {}, "truncated": truncated}
 
     # --- normalize ----------------------------------------------------------
 

@@ -19,6 +19,9 @@ class StubAdapter:
         self.fail_token = fail_token
         self.rate_limit = type("NoWait", (), {"sleep": lambda self: None})()
 
+    def still_fetching(self) -> bool:
+        return True
+
     def fetch(self, ref, client):
         if ref.token == self.fail_token:
             raise ConnectionError("unreachable")
