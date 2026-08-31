@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import unquote
 
 from jobhunt.config import Config
 from jobhunt.db.models import Contact
@@ -23,6 +24,29 @@ from jobhunt.outreach.unipile_client import UnipileClient, UnipileError, credent
 log = logging.getLogger(__name__)
 
 _PROFILE_MARKER = "linkedin.com/in/"
+
+# Characters a decoded slug must never contain. `.` and `/` (and `\` for a
+# Windows-style path read downstream) are how a traversal payload walks out of
+# the identifier segment once it's no longer percent-encoded; a control
+# character (below 0x20, or 0x7f/DEL) has no business in a profile slug and
+# some have historically been used to smuggle terminators or escape codes
+# through logs and headers.
+_UNSAFE_SLUG_CHARS = frozenset("./\\")
+
+
+def _is_safe_slug(value: str) -> bool:
+    """True if a decoded slug is still just a slug, not a path-traversal payload.
+
+    Runs after the single `unquote()` pass in `_identifier`: an input that was
+    plain text stays plain text, but `..`, `/`, or a control character that only
+    existed in percent-encoded form (`%2e%2e`, `%2f`) is now visible in the clear
+    and must be caught here rather than handed to the HTTP layer.
+    """
+    if not value:
+        return False
+    if any(char in _UNSAFE_SLUG_CHARS for char in value):
+        return False
+    return all(char >= " " and char != "\x7f" for char in value)
 
 
 class UnipileProvider:
@@ -135,6 +159,12 @@ class UnipileProvider:
 
         Reuses `normalize_profile_url` rather than re-parsing the URL, so there is
         exactly one place that knows what a LinkedIn profile URL looks like.
+
+        LinkedIn percent-encodes non-ASCII slugs in the URL it hands out (e.g. a
+        Turkish or Czech name), so the raw path segment is decoded back to its true
+        Unicode form here. `UnipileClient._call` re-encodes it with `quote(...,
+        safe="")` when it builds the request, so the identifier only ever exists
+        percent-encoded on the wire, never in application code.
         """
         if contact.provider_id:
             return contact.provider_id
@@ -146,7 +176,16 @@ class UnipileProvider:
         # of the path (`.../recent-activity/all/`), which would otherwise be
         # handed to `get_user` as though it were part of the identifier.
         remainder = normalized.split(_PROFILE_MARKER, 1)[1]
-        return remainder.split("/", 1)[0] or None
+        slug = remainder.split("/", 1)[0]
+        if not slug:
+            return None
+        # unquote() decodes exactly one pass. Decoding again would turn a
+        # double-encoded traversal payload (`%252e%252e`, which is literally the
+        # text "%2e%2e" once decoded) into `..` on the second pass - so this must
+        # stay a single decode, and the result must still be checked below rather
+        # than trusted because it came out of unquote.
+        decoded = unquote(slug)
+        return decoded if _is_safe_slug(decoded) else None
 
     @staticmethod
     def _remember(contact: Contact, user: dict) -> None:

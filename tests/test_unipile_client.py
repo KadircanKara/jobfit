@@ -208,3 +208,68 @@ def test_a_percent_identifier_is_still_rejected() -> None:
 
     with pytest.raises(uc.UnipileError):
         _client(handler).get_user("jane%2e%2e")
+
+
+def test_a_slash_encoded_identifier_is_still_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("request should never be sent for a bad identifier")
+
+    with pytest.raises(uc.UnipileError):
+        _client(handler).get_user("jane%2fdoe")
+
+
+def test_a_dot_dot_slash_encoded_identifier_is_still_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("request should never be sent for a bad identifier")
+
+    with pytest.raises(uc.UnipileError):
+        _client(handler).get_user("%2e%2e%2f")
+
+
+def test_a_dot_dot_slash_dot_dot_identifier_is_still_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("request should never be sent for a bad identifier")
+
+    with pytest.raises(uc.UnipileError):
+        _client(handler).get_user("..%2f..")
+
+
+def test_a_control_character_identifier_is_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("request should never be sent for a bad identifier")
+
+    with pytest.raises(uc.UnipileError):
+        _client(handler).get_user("jane\x00doe")
+
+
+def test_an_empty_identifier_is_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("request should never be sent for a bad identifier")
+
+    with pytest.raises(uc.UnipileError):
+        _client(handler).get_user("")
+
+
+@pytest.mark.parametrize(
+    ("decoded", "wire_form"),
+    [
+        ("esra-çakal-18579461", "esra-%C3%A7akal-18579461"),
+        ("aslı-kemaloğlu-93303985", "asl%C4%B1-kemalo%C4%9Flu-93303985"),
+        ("petra-horáková", "petra-hor%C3%A1kov%C3%A1"),
+    ],
+)
+def test_a_decoded_unicode_slug_is_accepted_and_re_encoded_on_the_wire(decoded, wire_form) -> None:
+    """The real defect: a Turkish/Czech slug must pass validation and hit the
+
+    exact percent-encoded path LinkedIn's own URL uses, so `quote(..., safe="")`
+    inside `_call` is the only place encoding happens - never the identifier
+    itself.
+    """
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"provider_id": "ACoAAA"})
+
+    _client(handler).get_user(decoded)
+    assert wire_form in seen["url"]

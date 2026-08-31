@@ -2,7 +2,7 @@ import pytest
 
 from jobhunt.db.models import Contact
 from jobhunt.outreach import stub as stub_module
-from jobhunt.outreach.unipile import UnipileProvider, build_sender
+from jobhunt.outreach.unipile import UnipileProvider, _is_safe_slug, build_sender
 
 
 class FakeClient:
@@ -139,6 +139,88 @@ def test_resolving_a_non_dict_user_during_a_send_refuses_rather_than_raising(cfg
     result = UnipileProvider(cfg, Weird()).send_dm(contact, "hello")
     assert result.ok is False
     assert contact.provider_id is None
+
+
+@pytest.mark.parametrize(
+    ("encoded_slug", "expected_identifier"),
+    [
+        ("esra-%C3%A7akal-18579461", "esra-çakal-18579461"),
+        ("asl%C4%B1-kemalo%C4%9Flu-93303985", "aslı-kemaloğlu-93303985"),
+        ("petra-hor%C3%A1kov%C3%A1", "petra-horáková"),
+    ],
+)
+def test_a_percent_encoded_non_ascii_slug_resolves_to_its_unicode_identifier(
+    cfg, encoded_slug, expected_identifier
+) -> None:
+    """The real defect: LinkedIn's own URL for a Turkish/Czech name is percent-encoded.
+
+    `_identifier` must decode it once, rather than handing the raw `%C3%A7`-laden
+    slug to `get_user`, which is what previously made every non-ASCII contact
+    unreachable at send time despite looking fine in the drawer.
+    """
+    client = FakeClient()
+    contact = Contact(
+        full_name="Non-ASCII Contact",
+        provider_id=None,
+        profile_url=f"https://www.linkedin.com/in/{encoded_slug}",
+    )
+    UnipileProvider(cfg, client).send_dm(contact, "hello")
+    assert ("get_user", expected_identifier) in client.calls
+
+
+@pytest.mark.parametrize(
+    "encoded_slug",
+    [
+        "jane%2fdoe",  # decodes to jane/doe - a path segment split
+        "..%2f..",  # decodes to ../.. - a traversal
+        "%2e%2e%2f",  # decodes to ../ - a traversal
+        "%00etc",  # decodes to a control character
+    ],
+)
+def test_a_traversal_payload_in_the_profile_url_never_reaches_get_user(cfg, encoded_slug) -> None:
+    """A slug is scraped off a page an attacker can shape, so decoding it must
+
+    never resurrect the traversal the original ASCII-only regex was closing.
+    """
+    client = FakeClient()
+    contact = Contact(
+        full_name="Attacker Contact",
+        provider_id=None,
+        profile_url=f"https://www.linkedin.com/in/{encoded_slug}",
+    )
+    result = UnipileProvider(cfg, client).send_dm(contact, "hello")
+    assert result.ok is False
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("esra-çakal-18579461", True),
+        ("jane-doe", True),
+        ("..", False),
+        (".", False),
+        ("jane/doe", False),
+        ("jane\\doe", False),
+        ("\x00", False),
+        ("", False),
+    ],
+)
+def test_is_safe_slug_rejects_traversal_and_control_characters(value, expected) -> None:
+    assert _is_safe_slug(value) is expected
+
+
+def test_a_provider_id_bypasses_decoding_entirely(cfg) -> None:
+    """`Contact.provider_id` (an `ACoAAA...` LinkedIn URN) must keep working unchanged:
+
+    it is returned before the profile-url slug is ever looked at, so nothing
+    about the decode touches it.
+    """
+    client = FakeClient()
+    contact = _contact(profile_url="https://www.linkedin.com/in/esra-%C3%A7akal-18579461")
+    UnipileProvider(cfg, client).send_dm(contact, "hello")
+    assert not any(call[0] == "get_user" for call in client.calls)
+    assert client.calls[-1][:2] == ("start_chat", "ACoAAA")
 
 
 def test_the_default_config_resolves_to_the_stub(cfg) -> None:

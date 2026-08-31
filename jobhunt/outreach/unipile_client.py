@@ -15,7 +15,21 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+# \w is Unicode-aware in Python's re by default, so it accepts a Turkish "ç" or
+# a Czech "á" alongside ASCII letters/digits/underscore - needed now that
+# `UnipileProvider._identifier` hands this a percent-decoded slug rather than
+# the raw (still-ASCII) URL path segment. The hyphen is added explicitly since
+# `\w` doesn't include it and real slugs are hyphen-separated. What stays
+# excluded, and why:
+#   `.` and `/` (and `\`)  - how a path-traversal payload escapes this segment
+#                            once it's no longer percent-encoded (`..`, `../`).
+#   `%`                    - re-admitting it would let a caller hand this regex
+#                            an already-percent-encoded (or double-encoded)
+#                            string that `quote(..., safe="")` would then encode
+#                            a second time, corrupting the request.
+#   whitespace / controls  - not part of `\w`; a raw slug has no business
+#                            carrying either.
+_IDENTIFIER_RE = re.compile(r"^[\w-]{1,128}$")
 
 
 class UnipileError(Exception):
