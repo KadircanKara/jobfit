@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import type { OutreachBudget, OutreachContact, OutreachRoute } from "./api";
+import type { ContactCandidate, OutreachBudget, OutreachContact, OutreachRoute } from "./api";
 
 /**
  * Outreach for one job, opened from its shortlist row.
@@ -68,6 +68,9 @@ export function OutreachDrawer({
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
+  const [candidates, setCandidates] = useState<ContactCandidate[]>([]);
+  const [finding, setFinding] = useState(false);
+  const [findError, setFindError] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -99,6 +102,46 @@ export function OutreachDrawer({
     }
   }
 
+  /**
+   * A 502 from `find` still carries the stated candidate in `detail.candidates`
+   * - the inferred company search failing is not a reason to throw away a
+   * perfectly good named contact. `api.findContacts` goes through `detailJson`,
+   * which stringifies a non-string `detail` into the error message, so that
+   * JSON is parsed back apart here rather than discarding the whole response.
+   */
+  async function find() {
+    setFinding(true);
+    try {
+      const body = await api.findContacts(jobId);
+      setCandidates(body.candidates);
+      setFindError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      let shown = message;
+      try {
+        const parsed = JSON.parse(message) as {
+          detail?: { message?: string; candidates?: ContactCandidate[] };
+        };
+        if (parsed.detail && typeof parsed.detail === "object") {
+          if (typeof parsed.detail.message === "string") shown = parsed.detail.message;
+          if (Array.isArray(parsed.detail.candidates)) setCandidates(parsed.detail.candidates);
+        }
+      } catch {
+        // Not a JSON body - show it raw rather than swallow it.
+      }
+      setFindError(shown);
+    } finally {
+      setFinding(false);
+    }
+  }
+
+  async function addCandidate(candidate: ContactCandidate) {
+    await act(() =>
+      api.addContact(jobId, { full_name: candidate.full_name, profile_url: candidate.profile_url }),
+    );
+    setCandidates((prev) => prev.map((c) => (c === candidate ? { ...c, existing: true } : c)));
+  }
+
   return (
     <div className="drawerbox">
       <div className="drawerhead">
@@ -128,6 +171,56 @@ export function OutreachDrawer({
           />
         ))}
       </div>
+
+      <div className="findrow">
+        <button type="button" className="btn ghost sm" disabled={finding} onClick={find}>
+          {finding ? "Looking…" : "Find contacts"}
+        </button>
+        <span className="hint">
+          Searches for who posted this job and who works at the company on LinkedIn.
+        </span>
+      </div>
+
+      {findError && <div className="err">{findError}</div>}
+
+      {candidates.length > 0 && (
+        <div className="candidates">
+          {candidates.map((candidate, i) => (
+            <div className="candidate" key={`${candidate.profile_url ?? candidate.full_name}-${i}`}>
+              <div>
+                <div className="name">{candidate.full_name}</div>
+                {candidate.headline && <div className="headline">{candidate.headline}</div>}
+                <div className="src">
+                  <span className={candidate.origin === "job_poster" ? "chip stated" : "chip inferred"}>
+                    {candidate.origin === "job_poster" ? "posted this job" : "works here"}
+                  </span>
+                  {candidate.profile_url && (
+                    <a
+                      href={`https://${candidate.profile_url.replace(/^https?:\/\//, "")}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {candidate.profile_url} ↗
+                    </a>
+                  )}
+                </div>
+              </div>
+              {candidate.existing ? (
+                <span className="existingtag">already a contact</span>
+              ) : (
+                <button
+                  type="button"
+                  className="btn ghost sm"
+                  disabled={busy}
+                  onClick={() => addCandidate(candidate)}
+                >
+                  Add
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="addrow">
         <input
@@ -204,6 +297,33 @@ function ContactCard({
               onClick={() => act(() => api.cancelOutreach(jobId, contact.contact_id))}
             >
               Cancel the queued DM
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (contact.state === "failed") {
+    return (
+      <div className="contact" data-active="true">
+        <Who contact={contact} />
+        <div className="rail">
+          <div className="statusline">
+            <span className="dot" data-state="failed" />
+            <span>
+              <b>{chosen ? ROUTE_LABEL[chosen] : "Send"} failed.</b>{" "}
+              {contact.failure || "LinkedIn refused it."}
+            </span>
+          </div>
+          <div className="acts">
+            <button
+              type="button"
+              className="btn ghost sm"
+              disabled={busy}
+              onClick={() => act(() => api.draftOutreach(jobId, contact.contact_id, chosen))}
+            >
+              Redraft
             </button>
           </div>
         </div>
@@ -336,12 +456,16 @@ function ContactCard({
               type="button"
               className="btn sm"
               disabled={busy || over || !chosen || capped !== null}
-              onClick={() =>
+              onClick={() => {
+                const recipient = contact.profile_url
+                  ? `${contact.full_name} (${contact.profile_url})`
+                  : contact.full_name;
+                if (!window.confirm(`Send to ${recipient}?`)) return;
                 act(async () => {
                   await api.saveOutreachBody(jobId, contact.contact_id, body);
                   await api.approveOutreach(jobId, contact.contact_id, chosen);
-                })
-              }
+                });
+              }}
             >
               {chosen === "invite_then_dm" ? "Send invite, queue the DM" : "Approve and send"}
             </button>

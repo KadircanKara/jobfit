@@ -439,6 +439,19 @@ main {
   border-color: var(--accent);
   color: var(--accent);
 }
+/* A candidate's origin, not a toggle - rendered as a span, not a button. A
+   stated contact (the posting named them) is worth more when writing the
+   message than an inferred one (a company-search guess), and the two must
+   read differently at a glance. */
+.chip.stated {
+  display: inline-block;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.chip.inferred {
+  display: inline-block;
+  color: var(--ink-faint);
+}
 
 /* ---------------- tag field ---------------- */
 
@@ -1509,6 +1522,10 @@ tr.below:hover td {
   background: var(--accent);
   border-color: var(--accent);
 }
+.dot[data-state="failed"] {
+  background: var(--crit);
+  border-color: var(--crit);
+}
 
 .picker {
   position: relative;
@@ -2230,6 +2247,62 @@ tr.drawer > td {
   50% {
     opacity: 0.35;
   }
+}
+
+.findrow {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.findrow .hint {
+  color: var(--ink-faint);
+  font-size: 12px;
+}
+
+.candidates {
+  display: grid;
+  gap: 8px;
+}
+.candidate {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: start;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--rad);
+  padding: 11px 14px;
+}
+.candidate .name {
+  font-weight: 600;
+}
+.candidate .headline {
+  color: var(--ink-dim);
+  font-size: var(--small);
+}
+.candidate .src {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 4px;
+  font-family: var(--data);
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+.candidate .src a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.candidate .src a:hover {
+  text-decoration: underline;
+}
+.existingtag {
+  font-family: var(--data);
+  font-size: 11px;
+  color: var(--ink-faint);
+  white-space: nowrap;
 }
 
 .addrow {
