@@ -11,6 +11,7 @@ import json
 
 from conftest import load_fixture
 
+from jobhunt import preferences as prefs_module
 from jobhunt import store, sync
 from jobhunt.db.models import Board, Company, Job, Run, utcnow
 from jobhunt.db.session import session_scope
@@ -392,3 +393,64 @@ def test_a_stale_lock_does_not_block_forever(cfg) -> None:
 
     with sync.SyncLock(cfg) as fresh:
         assert fresh.acquired
+
+
+def test_the_linkedin_adapter_is_built_with_config_and_refs(cfg) -> None:
+    prefs, _ = prefs_module.load(cfg)
+    prefs.titles = ["Backend Engineer"]
+    prefs.locations = ["Germany"]
+    prefs_module.save(cfg, prefs)
+
+    adapter = sync.build_adapter(cfg, "linkedin")
+    assert adapter.config is cfg
+    assert [ref.token for ref in adapter.discover()] == ["Backend Engineer|Germany"]
+
+
+def test_an_ats_adapter_is_built_the_old_way(cfg) -> None:
+    adapter = sync.build_adapter(cfg, "greenhouse")
+    assert adapter.source_id == "greenhouse"
+
+
+def test_a_linkedin_adapter_carries_a_guard_and_the_known_ids_already_in_the_corpus(
+    cfg,
+) -> None:
+    """The whole point of Task 8's wiring: the crawl guard and the known-id skip
+    are dead code unless a real run's adapter actually carries them."""
+    with session_scope(cfg.db_path) as session:
+        store.upsert_posting(
+            session,
+            JobPosting(
+                source="linkedin",
+                external_id="999",
+                market="global_remote",
+                title="Backend Engineer",
+                company_name="Acme, Inc.",
+            ),
+        )
+
+    prefs, _ = prefs_module.load(cfg)
+    prefs.titles = ["Backend Engineer"]
+    prefs.locations = ["Germany"]
+    prefs_module.save(cfg, prefs)
+
+    adapter = sync.build_adapter(cfg, "linkedin")
+    assert adapter.guard is not None
+    assert adapter.known_ids == {"999"}
+
+
+def test_an_ats_adapter_is_unaffected_by_a_linkedin_job_in_the_corpus(cfg) -> None:
+    with session_scope(cfg.db_path) as session:
+        store.upsert_posting(
+            session,
+            JobPosting(
+                source="linkedin",
+                external_id="999",
+                market="global_remote",
+                title="Backend Engineer",
+                company_name="Acme, Inc.",
+            ),
+        )
+
+    adapter = sync.build_adapter(cfg, "greenhouse")
+    assert not hasattr(adapter, "known_ids")
+    assert not hasattr(adapter, "guard")

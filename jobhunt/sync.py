@@ -21,10 +21,11 @@ from typing import Any
 import httpx
 from sqlalchemy import select
 
+from jobhunt import preferences as prefs_module
 from jobhunt import sources as source_registry
 from jobhunt import store
 from jobhunt.config import Config
-from jobhunt.db.models import Board, Run, utcnow
+from jobhunt.db.models import Board, Job, Run, utcnow
 from jobhunt.db.session import session_scope
 from jobhunt.pipeline.dedupe import apply_clustering
 from jobhunt.sources.base import BoardRef
@@ -168,6 +169,34 @@ class SyncLock:
         return age.total_seconds() < LOCK_STALE_SECONDS
 
 
+def build_adapter(config: Config, source: str):
+    """Construct one adapter.
+
+    LinkedIn is the only source whose work units come from saved preferences
+    rather than from seeded boards, and the only one whose fetch needs the
+    corpus to know which detail pages it can skip. Every other adapter takes
+    no arguments at all, so that difference is confined to this one function
+    instead of being special-cased at each call site.
+    """
+    cls = source_registry.get(source)
+    if source != "linkedin":
+        return cls()
+    prefs, _ = prefs_module.load(config)
+    known_ids = _known_linkedin_ids(config)
+    refs = cls(config=config, known_ids=known_ids).board_refs(prefs)
+    return cls(refs, config=config, known_ids=known_ids)
+
+
+def _known_linkedin_ids(config: Config) -> set[str]:
+    """External ids already in the corpus, so `fetch` never re-fetches a detail
+    page it has already paid for just to refresh an unchanged description."""
+    with session_scope(config.db_path) as session:
+        rows = session.scalars(
+            select(Job.external_id).where(Job.source == "linkedin")
+        ).all()
+    return set(rows)
+
+
 # --- pass 1: fetch ------------------------------------------------------------
 
 
@@ -191,7 +220,7 @@ def fetch_pass(
     `should_stop` is checked before each board so a stop request lands within
     one fetch rather than at the end of the source.
     """
-    adapter = source_registry.get(source)()
+    adapter = build_adapter(config, source)
     out_dir = raw_dir(config, source, run_key)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -299,7 +328,7 @@ def load_raw(config: Config, source: str, run_key: str) -> list[dict[str, Any]]:
 def normalize_pass(
     config: Config, source: str, run_key: str, dry_run: bool = False
 ) -> SourceResult:
-    adapter = source_registry.get(source)()
+    adapter = build_adapter(config, source)
     result = SourceResult(source=source, run_key=run_key)
     envelopes = load_raw(config, source, run_key)
     result.boards = len(envelopes)
