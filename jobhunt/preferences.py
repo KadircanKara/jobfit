@@ -164,6 +164,15 @@ def _job_types(values: list[str]) -> list[str]:
 
 
 def _sources(values: list[str]) -> list[str]:
+    """Validate a source selection, here and only here.
+
+    A selection that expands to no adapter at all - nothing ticked, or `upwork`
+    alone, which is a plan rather than a source - is rejected rather than stored:
+    the run would fetch nothing while the shortlist restricted nothing, so the
+    two would silently disagree about what the corpus is. The browser disables
+    Save on an empty pick, but `jobhunt config set` and PUT /api/filters reach
+    the same state and the backend has to answer for itself.
+    """
     out = []
     for value in values:
         text = value.strip().lower()
@@ -172,6 +181,11 @@ def _sources(values: list[str]) -> list[str]:
                 f"unknown source {value!r}. use one of: {', '.join(SOURCE_CHOICES)}"
             )
         out.append(text)
+    if not adapters_for(out):
+        usable = [choice for choice in SOURCE_CHOICES if adapters_for([choice])]
+        raise PreferenceError(
+            f"that leaves no sources to search. use one or more of: {', '.join(usable)}"
+        )
     return out
 
 
@@ -203,7 +217,9 @@ def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
         elif key == "job_types":
             prefs.job_types = [] if blank else _job_types(_split(value))
         elif key == "sources":
-            prefs.sources = [] if blank else _sources(_split(value))
+            # No `blank` shortcut: "none" is a request for an empty corpus, which
+            # `_sources` is the one place that refuses.
+            prefs.sources = _sources([] if blank else _split(value))
         elif key == "experience":
             prefs.experience_min = None if blank else _seniority(value)
         elif key == "experience_max":

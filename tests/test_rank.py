@@ -201,6 +201,15 @@ def test_no_source_key_restricts_nothing(cfg) -> None:
     assert "source_excluded" not in verdict_for(cfg, job_id).codes
 
 
+def test_an_empty_source_list_restricts_everything(cfg) -> None:
+    """Present-and-empty is a selection of nothing, not the absence of a rule.
+    Reading it as "unrestricted" made the fetch pass and the shortlist disagree:
+    the run fetched no source at all while the shortlist kept serving all of them."""
+    job_id = make_job(cfg, source="ashby", external_id="src4")
+    filters = {**FILTERS, "global": {**FILTERS["global"], "sources": []}}
+    assert "source_excluded" in verdict_for(cfg, job_id, filters).codes
+
+
 def test_changing_the_source_selection_changes_the_fingerprint() -> None:
     base = {"global": {"max_age_days": 30}}
     narrowed = {"global": {"max_age_days": 30, "sources": ["linkedin"]}}

@@ -145,7 +145,11 @@ def _check_source(job: Job, rules: dict[str, Any], verdict: Verdict) -> None:
     must keep meaning "every source", never "no source".
     """
     allowed = rules.get("sources")
-    if not allowed:
+    # Key absent means unrestricted, so a document written before this key existed
+    # keeps meaning "every source". Key present and empty is a different statement -
+    # nothing was selected - and must drop everything rather than quietly re-open
+    # the corpus the fetch pass just refused to fill.
+    if allowed is None:
         return
     if job.source not in set(allowed):
         verdict.drop("source_excluded", f"source {job.source} is not selected")

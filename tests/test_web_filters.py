@@ -78,3 +78,19 @@ def test_an_empty_title_list_clears_the_rule_rather_than_matching_nothing():
     prefs = webfilters.apply(Preferences(titles=["AI Engineer"]), {"titles": []})
 
     assert prefs.titles == []
+
+
+def test_unticking_every_source_is_rejected_rather_than_stored():
+    """An empty list flattens to the CLI's "none", which used to store an empty
+    selection: the run fetched nothing and the shortlist restricted nothing."""
+    with pytest.raises(webfilters.FieldError) as exc:
+        webfilters.apply(Preferences(), {"sources": []})
+
+    assert exc.value.field == "sources"
+    assert "ats" in str(exc.value)
+
+
+def test_a_selection_of_only_upwork_is_rejected():
+    """`upwork` is a plan, not an adapter: it expands to nothing."""
+    with pytest.raises(webfilters.FieldError):
+        webfilters.apply(Preferences(), {"sources": ["upwork"]})

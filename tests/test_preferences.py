@@ -481,3 +481,13 @@ def test_widening_the_source_selection_removes_the_restriction_from_the_document
     preferences.save(cfg, prefs)
     _, widened = preferences.load(cfg)
     assert "sources" not in widened["global"]
+
+
+def test_clearing_every_source_is_rejected(cfg) -> None:
+    with pytest.raises(preferences.PreferenceError):
+        set_prefs(cfg, sources="none")
+
+
+def test_a_selection_that_expands_to_no_adapter_is_rejected(cfg) -> None:
+    with pytest.raises(preferences.PreferenceError):
+        set_prefs(cfg, sources="upwork")
