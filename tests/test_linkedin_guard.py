@@ -69,3 +69,22 @@ def test_the_delay_is_jittered_around_three_seconds(cfg) -> None:
     delays = {round(CrawlGuard(cfg).delay(), 3) for _ in range(50)}
     assert len(delays) > 1
     assert all(2.0 <= d <= 4.0 for d in delays)
+
+def test_a_hostile_retry_after_is_clamped_to_the_cap(cfg) -> None:
+    from jobhunt.sources.linkedin_guard import MAX_COOLDOWN_SECONDS
+
+    guard = CrawlGuard(cfg)
+    before = utcnow()
+    guard.record_429(retry_after=999999)
+    until = guard.cooling_until()
+    assert until is not None
+    assert until <= before + dt.timedelta(seconds=MAX_COOLDOWN_SECONDS + 2)
+
+
+def test_a_zero_retry_after_is_honoured_not_backed_off(cfg) -> None:
+    guard = CrawlGuard(cfg)
+    before = utcnow()
+    guard.record_429(retry_after=0.0)
+    until = guard.cooling_until()
+    assert until is not None
+    assert until <= before + dt.timedelta(seconds=2)

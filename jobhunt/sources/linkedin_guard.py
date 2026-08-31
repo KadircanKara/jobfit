@@ -66,7 +66,7 @@ class CrawlGuard:
             self.tripped = True
         # Exponential in the streak, so a source that keeps refusing is left alone
         # for longer each time rather than probed at a fixed rhythm.
-        if retry_after:
+        if retry_after is not None:
             seconds = float(retry_after)
         else:
             seconds = float(min(60 * (2 ** (self._streak - 1)), MAX_COOLDOWN_SECONDS))
