@@ -11,9 +11,10 @@ from fastapi import FastAPI, HTTPException
 from sqlalchemy import select
 
 from jobhunt.config import Config
-from jobhunt.db.models import Outreach
+from jobhunt.db.models import Contact, Job, Outreach
 from jobhunt.db.session import session_scope
-from jobhunt.outreach import caps, provider, service
+from jobhunt.outreach import caps, discovery, provider, service
+from jobhunt.outreach.unipile_client import UnipileError
 
 # Ordering for "most advanced state" across a job's contacts. `failed` and
 # `cancelled` are not progress - a job whose only contact bounced should not
@@ -26,6 +27,28 @@ _STATE_RANK = {
     "queued": 3,
     "sent": 4,
 }
+
+
+def _existing_profile_urls(session) -> set[str]:
+    return {url for url, in session.execute(select(Contact.profile_url)) if url}
+
+
+def _candidate_payload(
+    candidates: list[discovery.ContactCandidate], existing_urls: set[str]
+) -> list[dict[str, Any]]:
+    payload = []
+    for candidate in candidates:
+        normalized = service.normalize_profile_url(candidate.profile_url)
+        payload.append(
+            {
+                "full_name": candidate.full_name,
+                "headline": candidate.headline,
+                "profile_url": candidate.profile_url,
+                "origin": candidate.origin,
+                "existing": normalized is not None and normalized in existing_urls,
+            }
+        )
+    return payload
 
 
 def register(app: FastAPI, config: Config, sender: provider.LinkedInProvider) -> None:
@@ -74,6 +97,43 @@ def register(app: FastAPI, config: Config, sender: provider.LinkedInProvider) ->
     @app.get("/api/outreach/{job_id}")
     def read_job(job_id: int) -> dict[str, Any]:
         return guarded(service.for_job, config, job_id, sender)
+
+    @app.post("/api/outreach/{job_id}/find")
+    def find(job_id: int) -> dict[str, Any]:
+        """Both kinds of candidate, stated ones first.
+
+        Reads `app.state.outreach_sender` rather than the closed-over `sender`
+        so a test (or a future admin toggle) can swap the sender after the app
+        is built, the same seam `outreach_stop` already uses.
+
+        The company search fires only here, and only when the current sender
+        actually exposes one - the stub, the default, does not. Nothing on the
+        fetch/sync path holds a reference to this function at all.
+        """
+        current_sender = getattr(app.state, "outreach_sender", sender)
+        with session_scope(config.db_path) as session:
+            job = session.get(Job, job_id)
+            if job is None:
+                raise HTTPException(status_code=404, detail=f"No job {job_id}.")
+            candidates = discovery.find_contacts(job)
+            client = getattr(current_sender, "client", None)
+            company = job.company.name if job.company else None
+            if client is not None and hasattr(client, "search_people") and company:
+                try:
+                    candidates = candidates + discovery.search_company(
+                        client, company, config=config
+                    )
+                except UnipileError as error:
+                    existing_urls = _existing_profile_urls(session)
+                    raise HTTPException(
+                        status_code=502,
+                        detail={
+                            "message": str(error),
+                            "candidates": _candidate_payload(candidates, existing_urls),
+                        },
+                    ) from error
+            existing_urls = _existing_profile_urls(session)
+            return {"candidates": _candidate_payload(candidates, existing_urls)}
 
     @app.post("/api/outreach/{job_id}/contacts")
     def add_contact(job_id: int, payload: dict[str, Any]) -> dict[str, Any]:

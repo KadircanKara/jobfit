@@ -8,9 +8,10 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from jobhunt.db.models import Job
+from jobhunt.db.models import Company, Contact, Job
 from jobhunt.db.session import session_scope
 from jobhunt.outreach import provider
+from jobhunt.outreach.unipile_client import UnipileError
 from jobhunt.web.app import create_app
 
 
@@ -175,3 +176,89 @@ def test_the_poller_thread_stops_when_the_app_shuts_down(cfg):
     with TestClient(app):
         assert not app.state.outreach_stop.is_set()
     assert app.state.outreach_stop.is_set()
+
+
+class FakeSearchClient:
+    def __init__(self, items):
+        self.items = items
+
+    def search_people(self, company, keywords, *, limit=5):
+        return self.items
+
+
+class FakeSenderWithClient:
+    """Stands in for `UnipileProvider`: a sender whose `.client` can search."""
+
+    def __init__(self, items):
+        self.client = FakeSearchClient(items)
+
+
+class BrokenSearchClient:
+    def search_people(self, company, keywords, *, limit=5):
+        raise UnipileError("search_people: response body was not the expected shape")
+
+
+def _linkedin_job_with_poster(cfg) -> int:
+    with session_scope(cfg.db_path) as session:
+        company = Company(name="Acme", normalized_name="acme")
+        session.add(company)
+        session.flush()
+        job = Job(
+            external_id="li-1", source="linkedin", market="global_remote",
+            title="Backend Engineer", title_normalized="backend engineer",
+            company_id=company.id,
+            poster_name="Jane Doe",
+            poster_profile_url="https://www.linkedin.com/in/jane-doe",
+        )
+        session.add(job)
+        session.flush()
+        return job.id
+
+
+def test_find_contacts_returns_the_posted_contact_and_the_searched_ones(client, cfg) -> None:
+    job_id = _linkedin_job_with_poster(cfg)
+    with session_scope(cfg.db_path) as session:
+        session.add(Contact(full_name="Priya Shah", profile_url="linkedin.com/in/priya", origin="manual"))
+
+    app = client.app
+    app.state.outreach_sender = FakeSenderWithClient([
+        {"name": "Priya Shah", "headline": "Recruiter", "profile_url": "https://www.linkedin.com/in/priya"},
+        {"name": "Sam Lee", "headline": "Engineering Manager", "profile_url": "https://www.linkedin.com/in/sam"},
+    ])
+
+    response = client.post(f"/api/outreach/{job_id}/find")
+    assert response.status_code == 200
+    candidates = response.json()["candidates"]
+    assert [c["origin"] for c in candidates] == ["job_poster", "company_search", "company_search"]
+    assert candidates[0]["full_name"] == "Jane Doe"
+    priya = next(c for c in candidates if c["full_name"] == "Priya Shah")
+    assert priya["existing"] is True
+    sam = next(c for c in candidates if c["full_name"] == "Sam Lee")
+    assert sam["existing"] is False
+
+
+def test_find_contacts_on_an_unknown_job_is_a_404(client) -> None:
+    assert client.post("/api/outreach/9999/find").status_code == 404
+
+
+def test_find_contacts_with_a_sender_that_cannot_search_returns_the_stated_contact_only(
+    client, cfg
+) -> None:
+    job_id = _linkedin_job_with_poster(cfg)
+    # The default sender is the stub, which has no `.client` at all.
+    response = client.post(f"/api/outreach/{job_id}/find")
+    assert response.status_code == 200
+    candidates = response.json()["candidates"]
+    assert [c["origin"] for c in candidates] == ["job_poster"]
+
+
+def test_a_failed_search_still_returns_the_stated_contact_as_a_502(client, cfg) -> None:
+    job_id = _linkedin_job_with_poster(cfg)
+    client.app.state.outreach_sender = FakeSenderWithClient.__new__(FakeSenderWithClient)
+    client.app.state.outreach_sender.client = BrokenSearchClient()
+
+    response = client.post(f"/api/outreach/{job_id}/find")
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert "not the expected shape" in detail["message"]
+    assert [c["full_name"] for c in detail["candidates"]] == ["Jane Doe"]

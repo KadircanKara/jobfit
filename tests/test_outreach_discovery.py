@@ -39,6 +39,61 @@ def test_no_job_yields_nothing() -> None:
     assert discovery.find_contacts(None) == []
 
 
+class FakeSearch:
+    def __init__(self, items):
+        self.items = items
+        self.calls = 0
+
+    def search_people(self, company, keywords, *, limit=5):
+        self.calls += 1
+        return self.items
+
+
+def test_company_search_returns_candidates(cfg) -> None:
+    client = FakeSearch([
+        {"name": "Jane Doe", "headline": "Talent Partner", "profile_url": "https://www.linkedin.com/in/jane"},
+    ])
+    found = discovery.search_company(client, "Acme", config=cfg)
+    assert [c.full_name for c in found] == ["Jane Doe"]
+    assert found[0].origin == "company_search"
+
+
+def test_a_repeat_search_within_a_day_is_served_from_cache(cfg) -> None:
+    client = FakeSearch([{"name": "Jane Doe", "profile_url": "https://www.linkedin.com/in/jane"}])
+    discovery.search_company(client, "Acme", config=cfg)
+    discovery.search_company(client, "Acme", config=cfg)
+    assert client.calls == 1
+
+
+def test_the_cache_expires_after_a_day(cfg) -> None:
+    import datetime as dt
+
+    from jobhunt.db.models import utcnow
+
+    client = FakeSearch([{"name": "Jane Doe", "profile_url": "https://www.linkedin.com/in/jane"}])
+    discovery.search_company(client, "Acme", config=cfg)
+    discovery.search_company(client, "Acme", config=cfg, now=utcnow() + dt.timedelta(hours=25))
+    assert client.calls == 2
+
+
+def test_a_candidate_without_a_name_is_skipped(cfg) -> None:
+    client = FakeSearch([{"headline": "Recruiter"}])
+    assert discovery.search_company(client, "Acme", config=cfg) == []
+
+
+def test_a_differently_cased_company_name_shares_the_cache(cfg) -> None:
+    client = FakeSearch([{"name": "Jane Doe", "profile_url": "https://www.linkedin.com/in/jane"}])
+    discovery.search_company(client, "Acme", config=cfg)
+    discovery.search_company(client, "  ACME  ", config=cfg)
+    assert client.calls == 1
+
+
+def test_a_malformed_item_is_skipped_not_raised(cfg) -> None:
+    client = FakeSearch(["not-a-dict", {"name": "Jane Doe", "profile_url": None}])
+    found = discovery.search_company(client, "Acme", config=cfg)
+    assert [c.full_name for c in found] == ["Jane Doe"]
+
+
 def test_upsert_posting_carries_the_poster_into_the_database(cfg) -> None:
     posting = JobPosting(
         source="linkedin",

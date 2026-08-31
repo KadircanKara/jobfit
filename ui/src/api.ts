@@ -81,6 +81,16 @@ export type OutreachBudget = {
 
 export type OutreachBody = { contacts: OutreachContact[]; budget: OutreachBudget };
 
+// A candidate is not yet a contact - "existing" is the only bridge between the
+// two, and it is what lets the drawer grey out someone already added.
+export type ContactCandidate = {
+  full_name: string;
+  headline: string | null;
+  profile_url: string | null;
+  origin: string;
+  existing: boolean;
+};
+
 export type OutreachStates = Record<number, OutreachState>;
 
 export type DropReason = { code: string; label: string; count: number; tunable: boolean };
@@ -479,6 +489,11 @@ export const api = {
   },
   async outreachStates(): Promise<{ states: OutreachStates }> {
     return detailJson(await fetch("/api/outreach/states"));
+  },
+  // Fires a company-scoped LinkedIn people search. Only ever call this from a
+  // user action on one job's drawer - never from anything that loops over jobs.
+  async findContacts(jobId: number): Promise<{ candidates: ContactCandidate[] }> {
+    return detailJson(await fetch(`/api/outreach/${jobId}/find`, { method: "POST" }));
   },
   async revisionPreview(jobId: number): Promise<RevisePreview> {
     return json(await fetch(`/api/revise/${jobId}/preview`));
