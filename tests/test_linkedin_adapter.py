@@ -39,6 +39,9 @@ def test_a_card_becomes_a_posting() -> None:
     assert first.company_name == "Acme"
     assert first.source == "linkedin"
     assert first.source_url == "https://www.linkedin.com/jobs/view/3901234567"
+    assert first.apply_url == (
+        "https://de.linkedin.com/jobs/view/backend-engineer-at-acme-3901234567"
+    )
 
 
 def test_the_description_comes_from_the_detail_document() -> None:

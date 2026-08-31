@@ -331,10 +331,16 @@ class LinkedInAdapter(HttpAdapter):
         time_el = card.select_one("time.job-search-card__listdate")
         posted_at = norm.parse_datetime(time_el.get("datetime")) if time_el else None
 
+        # The card's href is regional and slugged (e.g. https://de.linkedin.com/jobs/view/
+        # back-end-developer-at-hartleyco-4458072484): fine to click through on, but two
+        # probes from different regions would otherwise record two different URLs for the
+        # same posting. `external_id` is always present (a card without one is already
+        # skipped above), so the canonical form never needs a fallback.
+        source_url = f"https://www.linkedin.com/jobs/view/{external_id}"
         link_el = card.select_one("a.base-card__full-link")
-        source_url = _clean_url(link_el.get("href")) if link_el else None
-        if source_url is None:
-            source_url = f"https://www.linkedin.com/jobs/view/{external_id}"
+        apply_url = _clean_url(link_el.get("href")) if link_el else None
+        if apply_url is None:
+            apply_url = source_url
 
         description_html, description_text, poster_name, poster_profile_url = (
             self._from_detail(details.get(external_id))
@@ -358,7 +364,7 @@ class LinkedInAdapter(HttpAdapter):
             jd_completeness="full" if description_html else "none",
             jd_source="html" if description_html else None,
             posted_at=posted_at,
-            apply_url=source_url,
+            apply_url=apply_url,
             source_url=source_url,
             poster_name=poster_name,
             poster_profile_url=poster_profile_url,
