@@ -465,3 +465,19 @@ def test_filters_carry_the_selected_adapter_ids() -> None:
 def test_filters_omit_sources_when_everything_is_selected() -> None:
     prefs = preferences.Preferences(titles=["Backend Engineer"], sources=["ats", "linkedin"])
     assert "sources" not in preferences.to_filters(prefs)["global"]
+
+
+def test_widening_the_source_selection_removes_the_restriction_from_the_document(cfg) -> None:
+    """`update` cannot remove a key, so a narrowed selection used to be permanent:
+    the fetch path resumed fetching ATS while the shortlist kept dropping it."""
+    prefs, _ = preferences.load(cfg)
+    prefs.titles = ["Backend Engineer"]
+    prefs.sources = ["linkedin"]
+    preferences.save(cfg, prefs)
+    _, narrowed = preferences.load(cfg)
+    assert narrowed["global"]["sources"] == ["linkedin"]
+
+    prefs.sources = ["ats", "linkedin"]
+    preferences.save(cfg, prefs)
+    _, widened = preferences.load(cfg)
+    assert "sources" not in widened["global"]

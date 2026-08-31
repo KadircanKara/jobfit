@@ -485,7 +485,13 @@ def save(config: Config, prefs: Preferences) -> pathlib.Path:
     for market in generated["profiles"]:
         document["profiles"].setdefault(market, {})
 
-    document.setdefault("global", {}).update(generated["global"])
+    # `update` can add a key but never remove one, and `to_filters` signals "no
+    # source restriction" by omitting `sources` entirely. Without the pop, a
+    # narrowed selection could never be widened again: the fetch path reads
+    # preferences and resumes fetching ATS while the shortlist reads the stale
+    # document and drops all of it as source_excluded.
+    document.setdefault("global", {}).pop("sources", None)
+    document["global"].update(generated["global"])
     document.setdefault("digest", {}).update(generated["digest"])
     document[MANAGED_KEY] = prefs.as_dict()
 
