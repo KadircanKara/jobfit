@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MarkApplied } from "./MarkApplied";
-import { api, type RevisableJob, type ReviseSession, type ReviseTurn } from "./api";
+import {
+  api,
+  type OutreachBudget,
+  type OutreachStates,
+  type RevisableJob,
+  type ReviseSession,
+  type ReviseTurn,
+} from "./api";
+import { OutreachDrawer } from "./Outreach";
+import { hostOf } from "./Run";
 
 /** How often the thread is pulled while the agent is working. An edit plus a
  *  LaTeX build is slow enough that anything tighter is wasted. */
@@ -11,11 +20,15 @@ export function ReviseStudio({
   focus,
   applied,
   onApplied,
+  outreachStates,
+  onBudget,
 }: {
   jobs: RevisableJob[];
   focus?: number | null;
   applied: Set<number>;
   onApplied: (jobId: number, applied: boolean) => void;
+  outreachStates?: OutreachStates;
+  onBudget?: (budget: OutreachBudget) => void;
 }) {
   const [at, setAt] = useState(0);
   const [session, setSession] = useState<ReviseSession | null>(null);
@@ -24,6 +37,12 @@ export function ReviseStudio({
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  // Collapsed by default - the studio is a focused writing view, and a
+  // permanently expanded drawer would crowd it. `key={jobId}` on the mounted
+  // drawer below (not a reset here) is what keeps it from ever showing the
+  // previous job's contacts after a prev/next switch: it forces a fresh
+  // mount, so it fetches for the new job instead of reusing stale state.
+  const [openOutreach, setOpenOutreach] = useState(false);
 
   const job = jobs[at];
   const jobId = job?.job_id;
@@ -117,6 +136,23 @@ export function ReviseStudio({
             ? `${jobs.filter((row) => row.ready).length} of ${jobs.length} ready`
             : "optional · the folder already has a finished CV"}
         </div>
+        {job?.url && (
+          <a className="posting-link" href={job.url} target="_blank" rel="noreferrer" title={job.url}>
+            {hostOf(job.url)} ↗
+          </a>
+        )}
+        {jobId != null && (
+          <button
+            type="button"
+            className="outbtn"
+            aria-expanded={openOutreach}
+            onClick={() => setOpenOutreach((was) => !was)}
+          >
+            <span className="dot" data-state={outreachStates?.[jobId]} />
+            <span>Outreach</span>
+            <span className="caret">{openOutreach ? "▾" : "▸"}</span>
+          </button>
+        )}
         {jobId != null && (
           <MarkApplied
             jobId={jobId}
@@ -125,6 +161,14 @@ export function ReviseStudio({
           />
         )}
       </div>
+
+      {openOutreach && jobId != null && (
+        <div className="studio-outreach">
+          {/* Keyed by jobId so switching CVs with prev/next remounts the
+              drawer instead of reusing one wired to the job just left. */}
+          <OutreachDrawer key={jobId} jobId={jobId} onBudget={onBudget} />
+        </div>
+      )}
 
       <div className="stepper">
         <Picker

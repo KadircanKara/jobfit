@@ -1971,15 +1971,23 @@ td.sent {
   border-color: var(--accent);
 }
 
-.job .posting-link {
+.job .posting-link,
+.panel-head .posting-link {
   font-family: var(--data);
   font-size: var(--small);
   color: var(--accent);
   text-decoration: none;
   white-space: nowrap;
 }
-.job .posting-link:hover {
+.job .posting-link:hover,
+.panel-head .posting-link:hover {
   text-decoration: underline;
+}
+
+/* Outreach mounted in the studio header, not a shortlist row - no table cell
+   to indent it under, so it gets its own block instead of tr.drawer's rules. */
+.studio-outreach {
+  margin-bottom: 14px;
 }
 
 

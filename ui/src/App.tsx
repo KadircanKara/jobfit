@@ -520,6 +520,8 @@ export default function App() {
                     return next;
                   })
                 }
+                outreachStates={outreachStates}
+                onBudget={refreshOutreach}
               />
             </div>
           </div>
