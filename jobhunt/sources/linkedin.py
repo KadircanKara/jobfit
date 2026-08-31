@@ -20,8 +20,11 @@ is watching for exactly this kind of traffic, so ids already in the corpus
 re-fetched just to refresh a description that has not changed.
 
 `CrawlGuard` governs both passes: pagination stops the moment it refuses, and
-a 429 or 403 during a detail fetch stops that loop too rather than working
-through the rest of the ids on borrowed time.
+a 429 or 403 during either pass stops that pass too rather than working
+through what is left on borrowed time. The detail loop paces itself with the
+same `guard.delay()` sleep the search loop uses, including before its first
+request, so a burst of detail fetches never lands back-to-back with each other
+or with the search page that preceded them.
 """
 from __future__ import annotations
 
@@ -32,6 +35,7 @@ from typing import Any
 import httpx
 from bs4 import BeautifulSoup
 
+from jobhunt import preferences as preferences_module
 from jobhunt.config import Config
 from jobhunt.pipeline import normalize as norm
 from jobhunt.preferences import Preferences
@@ -57,13 +61,17 @@ def _job_ids(cards_html: list[str]) -> list[str]:
     return list(seen)
 
 
-def _card_ids(html: str) -> list[str]:
+def _cards(html: str) -> list[Any]:
     try:
         soup = BeautifulSoup(html, "html.parser")
     except Exception:
         return []
+    return soup.select("div.base-card")
+
+
+def _card_ids(html: str) -> list[str]:
     ids = []
-    for card in soup.select("div.base-card"):
+    for card in _cards(html):
         urn = card.get("data-entity-urn") or ""
         job_id = urn.rsplit(":", 1)[-1]
         if job_id:
@@ -83,9 +91,15 @@ def _retry_after(response: httpx.Response) -> float | None:
     if raw is None:
         return None
     try:
-        return float(raw)
+        seconds = float(raw)
     except ValueError:
         return None
+    # A NaN reaches `dt.timedelta(seconds=...)` inside the guard and raises
+    # there instead of here; an inf or negative value is not a real wait.
+    # Either way this header is malformed, not a real instruction to honour.
+    if seconds != seconds or seconds in (float("inf"), float("-inf")) or seconds < 0:
+        return None
+    return seconds
 
 
 class LinkedInAdapter(HttpAdapter):
@@ -130,12 +144,12 @@ class LinkedInAdapter(HttpAdapter):
         if self.guard is None:
             return empty
 
-        # Imported here rather than at module scope: preferences.py reaches back
-        # into this package's registry, and a top-level import would close that
-        # circle for no benefit, since fetch is the only place this is needed.
-        from jobhunt import preferences as preferences_module
-
-        prefs, _ = preferences_module.load(self.config)
+        try:
+            prefs, _ = preferences_module.load(self.config)
+        except Exception:
+            # A malformed filters.yaml is a config problem, not a fetch problem.
+            # This source is never allowed to fail a run over it.
+            return empty
         title, _, location = ref.token.partition("|")
 
         cards: list[str] = []
@@ -159,15 +173,21 @@ class LinkedInAdapter(HttpAdapter):
             self.guard.record_ok()
             html = response.text
             cards.append(html)
-            page_count = len(_card_ids(html))
+            page_count = len(_cards(html))
             page += 1
             if self.guard.allow() and page_count == self.PAGE_SIZE and page < self.MAX_PAGES:
                 time.sleep(self.guard.delay())
 
         details: dict[str, str] = {}
         for job_id in _job_ids(cards):
-            if job_id in self.known_ids or not self.guard.allow():
+            if not self.guard.allow():
+                break
+            if job_id in self.known_ids:
                 continue
+            # Paced like the search pages, including before this first detail
+            # request: it follows the last search page and is otherwise the
+            # one request in this adapter with no gap before it.
+            time.sleep(self.guard.delay())
             self.guard.spend()
             try:
                 response = client.get(query.DETAIL_URL.format(job_id=job_id), headers=_HEADERS)
@@ -184,6 +204,11 @@ class LinkedInAdapter(HttpAdapter):
             self.guard.record_ok()
             details[job_id] = response.text
 
+        # Reserved for a future pass: LinkedIn's hiring-team block is already
+        # carried through via the detail HTML in `details`, so nothing needs
+        # to be attached separately here yet. Kept in the envelope shape so
+        # `normalize` and any later caller don't have to special-case its
+        # absence.
         return {"cards": cards, "details": details, "posters": {}}
 
     # --- normalize ----------------------------------------------------------
@@ -200,11 +225,7 @@ class LinkedInAdapter(HttpAdapter):
             return
         details = raw.get("details") or {}
         for html in raw.get("cards") or []:
-            try:
-                soup = BeautifulSoup(html, "html.parser")
-            except Exception:
-                continue
-            for card in soup.select("div.base-card"):
+            for card in _cards(html):
                 try:
                     posting = self._normalize_card(card, ref, details)
                 except Exception:

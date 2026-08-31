@@ -11,6 +11,7 @@ from __future__ import annotations
 import pathlib
 
 import httpx
+import pytest
 
 from jobhunt.preferences import Preferences
 from jobhunt.sources.base import BoardRef
@@ -101,3 +102,123 @@ def test_a_429_is_recorded_and_does_not_raise(cfg) -> None:
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         adapter.fetch(_ref(), client)
     assert adapter.guard.allow() is False
+
+
+def _card_html(job_id: str) -> str:
+    return (
+        f'<li><div class="base-card" data-entity-urn="urn:li:jobPosting:{job_id}">'
+        '<h3 class="base-search-card__title">Backend Engineer</h3>'
+        '<h4 class="base-search-card__subtitle"><a href="https://www.linkedin.com/company/acme">Acme'
+        "</a></h4>"
+        '<span class="job-search-card__location">Remote</span>'
+        f'<a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/{job_id}/"></a>'
+        "</div></li>"
+    )
+
+
+def _page_html(ids: list[str]) -> str:
+    return "<ul>" + "".join(_card_html(job_id) for job_id in ids) + "</ul>"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleeping(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The guard's real delay is a few seconds; tests only need it invoked."""
+    calls: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        calls.append(seconds)
+
+    monkeypatch.setattr("jobhunt.sources.linkedin.time.sleep", fake_sleep)
+    return calls
+
+
+def test_pagination_stops_at_max_pages(cfg) -> None:
+    """A source that never runs out of full pages must still be bounded by MAX_PAGES,
+    not by its own claim to have more."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        return httpx.Response(200, text=_page_html([f"id{i}" for i in range(10)]))
+
+    adapter = LinkedInAdapter(config=cfg, known_ids={f"id{i}" for i in range(10)})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        adapter.fetch(_ref(), client)
+    assert len(calls) == LinkedInAdapter.MAX_PAGES
+
+
+def test_a_short_page_ends_pagination(cfg) -> None:
+    pages = [_page_html([f"p1-{i}" for i in range(10)]), _page_html(["p2-0", "p2-1"])]
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        return httpx.Response(200, text=pages[len(calls) - 1])
+
+    known = {f"p1-{i}" for i in range(10)} | {"p2-0", "p2-1"}
+    adapter = LinkedInAdapter(config=cfg, known_ids=known)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        adapter.fetch(_ref(), client)
+    assert len(calls) == 2
+
+
+def test_known_ids_are_never_fetched_for_detail(cfg) -> None:
+    search_calls = []
+    detail_calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "seeMoreJobPostings" in str(request.url):
+            search_calls.append(request.url)
+            return httpx.Response(200, text=_page_html(["known1", "fresh1"]))
+        detail_calls.append(request.url)
+        return httpx.Response(200, text="<div class='description__text'>hi</div>")
+
+    adapter = LinkedInAdapter(config=cfg, known_ids={"known1"})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        raw = adapter.fetch(_ref(), client)
+    assert len(detail_calls) == 1
+    assert "fresh1" in str(detail_calls[0])
+    assert "known1" not in raw["details"]
+    assert "fresh1" in raw["details"]
+
+
+def test_a_403_trips_the_breaker_and_stops(cfg) -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        return httpx.Response(403)
+
+    adapter = LinkedInAdapter(config=cfg)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        adapter.fetch(_ref(), client)
+    assert len(calls) == 1
+    assert adapter.guard.tripped is True
+    assert adapter.guard.allow() is False
+
+
+def test_a_malformed_retry_after_does_not_raise(cfg) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"Retry-After": "nan"})
+
+    adapter = LinkedInAdapter(config=cfg)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        adapter.fetch(_ref(), client)  # must not raise
+    assert adapter.guard.allow() is False
+
+
+def test_the_detail_loop_paces_itself(cfg, _no_real_sleeping: list[float]) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "seeMoreJobPostings" in str(request.url):
+            return httpx.Response(200, text=_page_html(["a1", "a2"]))
+        return httpx.Response(200, text="<div class='description__text'>hi</div>")
+
+    adapter = LinkedInAdapter(config=cfg)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        raw = adapter.fetch(_ref(), client)
+    assert len(raw["details"]) == 2
+    # One search page short of a full page never sleeps between pages, so every
+    # recorded sleep here belongs to the detail loop - one per detail fetch,
+    # including the one that follows the search page.
+    assert len(_no_real_sleeping) == 2
+
