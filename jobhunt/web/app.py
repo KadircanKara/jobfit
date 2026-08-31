@@ -24,7 +24,7 @@ from jobhunt.db.models import Board, utcnow
 from jobhunt.db.session import session_scope
 from jobhunt.discovery import categories as categories_module
 from jobhunt.outreach import poller as outreach_poller
-from jobhunt.outreach import stub as outreach_stub
+from jobhunt.outreach import unipile as outreach_unipile
 from jobhunt.web import agent as agent_module
 from jobhunt.web import applied as applied_module
 from jobhunt.web import filters as webfilters
@@ -349,9 +349,10 @@ def create_app(*, config: Config | None = None) -> FastAPI:
 
     # --- outreach -------------------------------------------------------
 
-    # Routes plus the queue that releases a DM once its invite lands. The
-    # provider is a stub, so nothing here reaches LinkedIn.
-    outreach_sender = outreach_stub.StubProvider(cfg)
+    # Routes plus the queue that releases a DM once its invite lands.
+    # `build_sender` defaults to the stub; only outreach.provider: unipile in
+    # config, plus its environment variables, makes this reach LinkedIn for real.
+    outreach_sender = outreach_unipile.build_sender(cfg)
     app.state.outreach_sender = outreach_sender
     outreach_routes.register(app, cfg, outreach_sender)
     # The event is kept so the thread can be stopped: a `create_app` per test, or
