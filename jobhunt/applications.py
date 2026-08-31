@@ -150,7 +150,14 @@ def apply(
     # the corpus reach here with no quality score at all. Score it now rather
     # than treating the missing value as a failure: a job the source handed over
     # complete must not need a manual paste to get through.
-    if job.jd_quality_score is None:
+    #
+    # A cached score below the gate is never trusted as final: it may predate a
+    # normalize.py change (e.g. the html_to_text paragraph-break fix) that would
+    # score the same description_text higher today, and there is no version tag
+    # on the cache to tell a stale failing verdict from a fresh one. A passing
+    # score needs no such defense, so only the failing case pays for the
+    # recompute.
+    if job.jd_quality_score is None or job.jd_quality_score < MIN_QUALITY:
         job.jd_quality_score = quality.assess(job.description_text or job.description_md).score
     if job.jd_quality_score < MIN_QUALITY:
         raise ApplyBlocked(

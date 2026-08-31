@@ -152,8 +152,11 @@ def test_apply_refuses_a_snippet_jd(cfg, tmp_path) -> None:
 
 
 def test_apply_refuses_low_quality_even_when_marked_full(cfg, tmp_path) -> None:
+    """A cached score below the gate is never trusted outright (it may be stale -
+    see the recompute in `applications.apply`), so this uses a description that
+    genuinely re-scores low rather than relying on the stale 0.3 alone."""
     apply_root(cfg, tmp_path)
-    job_id = make_job(cfg)
+    job_id = make_job(cfg, description_text="Two lines.", description_md="Two lines.")
     with session_scope(cfg.db_path) as session:
         session.get(Job, job_id).jd_quality_score = 0.3
     with session_scope(cfg.db_path) as session, pytest.raises(applications.ApplyBlocked) as exc:
@@ -378,6 +381,22 @@ def test_a_thin_unscored_jd_is_still_refused(cfg, tmp_path) -> None:
     with session_scope(cfg.db_path) as session, pytest.raises(applications.ApplyBlocked) as exc:
         applications.apply(cfg, session, job_id)
     assert "quality" in str(exc.value)
+
+
+def test_a_stale_failing_score_is_recomputed_not_trusted(cfg, tmp_path) -> None:
+    """A helper change to how description_text is built (e.g. the html_to_text
+    paragraph-break fix) can make a JD that used to score below the gate score
+    above it today. A cached failing score must not permanently refuse it -
+    only a passing score is left alone."""
+    apply_root(cfg, tmp_path)
+    job_id = make_job(cfg)  # GOOD_JD: genuinely scores above the gate
+    with session_scope(cfg.db_path) as session:
+        session.get(Job, job_id).jd_quality_score = 0.1  # stale, pre-fix verdict
+    with session_scope(cfg.db_path) as session:
+        result = applications.apply(cfg, session, job_id)
+    assert result.jd_quality is not None and result.jd_quality >= 0.5
+    with session_scope(cfg.db_path) as session:
+        assert session.get(Job, job_id).jd_quality_score >= 0.5
 
 
 def test_response_rate_counts_only_progressed_applications(cfg, tmp_path) -> None:
