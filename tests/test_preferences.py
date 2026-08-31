@@ -46,6 +46,10 @@ def test_job_types_go_through_the_same_normalizer_as_the_adapters(cfg) -> None:
     ]
 
 
+def test_sources_go_through_apply_updates(cfg) -> None:
+    assert set_prefs(cfg, sources="linkedin, upwork").sources == ["linkedin", "upwork"]
+
+
 def test_clearing_a_setting(cfg) -> None:
     set_prefs(cfg, titles="backend", min_salary="80k")
     prefs = set_prefs(cfg, titles="any", min_salary="none")
@@ -79,6 +83,8 @@ def test_unknown_work_model_and_job_type_are_refused(cfg) -> None:
         set_prefs(cfg, work_model="telepathic")
     with pytest.raises(PreferenceError):
         set_prefs(cfg, job_types="volunteering")
+    with pytest.raises(PreferenceError):
+        set_prefs(cfg, sources="carrier_pigeon")
 
 
 # --- translation --------------------------------------------------------------
