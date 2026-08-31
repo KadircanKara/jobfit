@@ -1,9 +1,8 @@
 """Where contacts come from, once anything can find them.
 
-Phase 1 finds nothing: the LinkedIn source that would carry a job poster does not
-exist yet (PLAN.md phase 6). The interface exists now so that landing it later is
-one file, not a change to the API and the drawer as well. Until then, contacts
-arrive by hand.
+The stated source (the posting itself naming a hiring contact) lands here first.
+An inferred source (searching for people at the company) is a separate later
+addition; the two are additive, never mutually exclusive.
 """
 from __future__ import annotations
 
@@ -21,5 +20,13 @@ class ContactCandidate:
 
 
 def find_contacts(job: Job | None) -> list[ContactCandidate]:
-    """People named by the posting itself. Empty until LinkedIn ingestion lands."""
-    return []
+    """People the posting itself names. Inferred contacts come from the drawer."""
+    if job is None or not job.poster_name:
+        return []
+    return [
+        ContactCandidate(
+            full_name=job.poster_name,
+            profile_url=job.poster_profile_url,
+            origin="job_poster",
+        )
+    ]

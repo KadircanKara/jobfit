@@ -138,6 +138,11 @@ class Job(Base):
     apply_url: Mapped[str | None] = mapped_column(Text)
     source_url: Mapped[str | None] = mapped_column(Text)
 
+    # Named by the posting itself. Worth more than any inferred contact when
+    # writing the message, and absent far more often than present.
+    poster_name: Mapped[str | None] = mapped_column(String(200))
+    poster_profile_url: Mapped[str | None] = mapped_column(Text)
+
     canonical_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), index=True)
     first_seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)

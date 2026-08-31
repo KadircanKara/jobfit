@@ -147,6 +147,8 @@ def _row_fields(
         "posted_at": posting.posted_at,
         "apply_url": posting.apply_url,
         "source_url": posting.source_url,
+        "poster_name": posting.poster_name,
+        "poster_profile_url": posting.poster_profile_url,
     }
 
 
