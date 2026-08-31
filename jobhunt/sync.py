@@ -256,6 +256,11 @@ def fetch_pass(
                 "board_id": ref.extra.get("board_id"),
                 "fetched_at": utcnow().isoformat(),
                 "payload": payload,
+                # From the adapter, not from `payload`: `payload` is a verbatim
+                # third-party response body on several adapters, and a bare
+                # `truncated` key there would collide with anything upstream
+                # ever happens to name the same way. See `_is_truncated`.
+                "truncated": adapter.was_truncated(),
             }
             (out_dir / f"{ref.key}.json").write_text(
                 json.dumps(envelope, ensure_ascii=False), encoding="utf-8"
@@ -331,11 +336,23 @@ def load_raw(config: Config, source: str, run_key: str) -> list[dict[str, Any]]:
 def _is_truncated(envelope: dict[str, Any]) -> bool:
     """Whether this payload's fetch ended before it saw the whole listing.
 
-    Only the LinkedIn adapter says so today; every other payload is a complete
-    listing or an error, and a missing key means complete.
+    The flag lives on the envelope, written by `fetch_pass` from the adapter's
+    `was_truncated()` - never inside `payload`, which is the verbatim
+    third-party response body on several adapters (see remotive, jobicy,
+    greenhouse, arbeitnow) and could ship its own top-level `truncated` field
+    by coincidence. Only the LinkedIn adapter has ever reported this; every
+    other fetch always sees a complete listing or an error.
+
+    A stored envelope written before the flag moved to the top level (only
+    LinkedIn ever set it, and only inside `payload`) has no top-level key at
+    all, so that shape is read as a fallback rather than misread as complete.
     """
-    payload = envelope.get("payload")
-    return bool(isinstance(payload, dict) and payload.get("truncated"))
+    if "truncated" in envelope:
+        return bool(envelope.get("truncated"))
+    if envelope.get("source") == "linkedin":
+        payload = envelope.get("payload")
+        return bool(isinstance(payload, dict) and payload.get("truncated"))
+    return False
 
 
 def normalize_pass(

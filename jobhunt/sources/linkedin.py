@@ -137,6 +137,11 @@ class LinkedInAdapter(HttpAdapter):
         self.config = config
         self.guard = CrawlGuard(config) if config is not None else None
         self.known_ids = known_ids or set()
+        # Set by `fetch`, read by `was_truncated` right after. `sync.fetch_pass`
+        # calls the latter once per ref, same shape as `still_fetching` - the
+        # flag belongs to the envelope, not to the payload it wraps, so it
+        # never travels inside the dict `fetch` returns.
+        self._truncated = False
 
     def board_refs(self, prefs: preferences_module.Preferences) -> list[BoardRef]:
         """One search per title and location. LinkedIn has no boards to seed."""
@@ -152,6 +157,17 @@ class LinkedInAdapter(HttpAdapter):
         rate-limit sleep each and return an empty envelope regardless."""
         return self.guard is None or self.guard.allow()
 
+    def was_truncated(self) -> bool:
+        """Whether the fetch just made ended before it saw the whole listing.
+
+        Read by `sync.fetch_pass` right after `fetch()` returns, the same way
+        it reads `still_fetching`, so the flag lands on the envelope rather
+        than inside `payload` - `payload` is a third-party response body on
+        several other adapters, and a bare `truncated` key there would
+        collide with anything upstream ever happens to name the same way.
+        """
+        return self._truncated
+
     # --- fetch ------------------------------------------------------------
 
     def fetch(self, ref: BoardRef, client: httpx.Client) -> dict[str, Any]:
@@ -162,15 +178,17 @@ class LinkedInAdapter(HttpAdapter):
         adapter (no guard at all) returns immediately - that shape exists for
         `normalize`-only tests and is never how a real run constructs this.
 
-        A pass that ended early sets `truncated` on the envelope. Without it an
-        empty envelope is indistinguishable from "this search genuinely returned
-        nothing", and `deactivate_missing` reads that as every job of this ref
-        having vanished: two refused runs and they all go inactive. With 20 refs
-        against a 400/day budget the tail refs are refused every single run, so
-        that is the steady state rather than an edge case.
+        A pass that ended early leaves `was_truncated()` true afterwards.
+        Without it an empty envelope is indistinguishable from "this search
+        genuinely returned nothing", and `deactivate_missing` reads that as
+        every job of this ref having vanished: two refused runs and they all
+        go inactive. With 20 refs against a 400/day budget the tail refs are
+        refused every single run, so that is the steady state rather than an
+        edge case.
         """
         empty: dict[str, Any] = {"cards": [], "details": {}, "posters": {}}
         if self.guard is None:
+            self._truncated = False
             return empty
 
         try:
@@ -180,7 +198,8 @@ class LinkedInAdapter(HttpAdapter):
             # This source is never allowed to fail a run over it - but it did not
             # learn that this ref has no jobs either, so the envelope is truncated.
             log.warning("linkedin fetch for %r skipped: preferences could not be read", ref.token)
-            return empty | {"truncated": True}
+            self._truncated = True
+            return empty
         title, _, location = ref.token.partition("|")
 
         truncated = False
@@ -207,7 +226,7 @@ class LinkedInAdapter(HttpAdapter):
         cards: list[str] = []
         page = 0
         page_count = self.PAGE_SIZE  # primes the loop for a first request
-        while not refused("search") and page_count == self.PAGE_SIZE and page < self.MAX_PAGES:
+        while page_count == self.PAGE_SIZE and page < self.MAX_PAGES and not refused("search"):
             params = query.search_params(title, location or None, prefs, start=page * self.PAGE_SIZE)
             self.guard.spend()
             try:
@@ -238,10 +257,10 @@ class LinkedInAdapter(HttpAdapter):
 
         details: dict[str, str] = {}
         for job_id in _job_ids(cards):
-            if refused("detail fetch"):
-                break
             if job_id in self.known_ids:
                 continue
+            if refused("detail fetch"):
+                break
             # Paced like the search pages, including before this first detail
             # request: it follows the last search page and is otherwise the
             # one request in this adapter with no gap before it.
@@ -269,7 +288,8 @@ class LinkedInAdapter(HttpAdapter):
         # to be attached separately here yet. Kept in the envelope shape so
         # `normalize` and any later caller don't have to special-case its
         # absence.
-        return {"cards": cards, "details": details, "posters": {}, "truncated": truncated}
+        self._truncated = truncated
+        return {"cards": cards, "details": details, "posters": {}}
 
     # --- normalize ----------------------------------------------------------
 

@@ -306,14 +306,14 @@ def test_a_card_missing_its_urn_does_not_look_like_a_short_page(cfg) -> None:
 
 
 
-def test_a_refused_fetch_says_so_on_the_envelope(cfg) -> None:
-    """An empty envelope that does not admit it was refused is read downstream as
+def test_a_refused_fetch_says_so_afterwards(cfg) -> None:
+    """A refused fetch that does not admit it was refused is read downstream as
     "this search found nothing", which retires jobs the ref still has."""
     adapter = LinkedInAdapter(config=cfg)
     adapter.guard.tripped = True
     with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200))) as client:
-        raw = adapter.fetch(_ref(), client)
-    assert raw["truncated"] is True
+        adapter.fetch(_ref(), client)
+    assert adapter.was_truncated() is True
 
 
 def test_a_complete_pass_is_not_marked_truncated(cfg) -> None:
@@ -324,16 +324,16 @@ def test_a_complete_pass_is_not_marked_truncated(cfg) -> None:
 
     adapter = LinkedInAdapter(config=cfg)
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        raw = adapter.fetch(_ref(), client)
-    assert raw["truncated"] is False
+        adapter.fetch(_ref(), client)
+    assert adapter.was_truncated() is False
 
 
 def test_a_403_truncates_and_is_logged(cfg, caplog) -> None:
     adapter = LinkedInAdapter(config=cfg)
     with caplog.at_level("WARNING", logger="jobhunt.sources.linkedin"):
         with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(403))) as client:
-            raw = adapter.fetch(_ref(), client)
-    assert raw["truncated"] is True
+            adapter.fetch(_ref(), client)
+    assert adapter.was_truncated() is True
     assert "403" in caplog.text
 
 
@@ -345,6 +345,44 @@ def test_a_403_persists_a_cooldown_so_the_next_run_does_not_hammer(cfg) -> None:
         adapter.fetch(_ref(), client)
     assert adapter.guard.cooling_until() is not None
     assert LinkedInAdapter(config=cfg).guard.allow() is False
+
+
+def test_a_short_page_that_exhausts_the_budget_is_not_truncated(cfg) -> None:
+    """A short page ends the search naturally. Checking the guard before that
+    natural-completion condition marks the pass truncated whenever the budget
+    happens to run out on the very request that produced the short page - that
+    is a pass that finished, not one that was refused."""
+    from jobhunt.sources.linkedin_guard import DAILY_BUDGET
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=_page_html(["only1"]))
+
+    adapter = LinkedInAdapter(config=cfg, known_ids={"only1"})
+    adapter.guard.spend(DAILY_BUDGET - 1)  # this page's own request exhausts it
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        adapter.fetch(_ref(), client)
+    assert adapter.was_truncated() is False
+
+
+def test_a_detail_pass_with_only_known_ids_is_not_truncated(cfg) -> None:
+    """Every id from the search is already in the corpus, so the detail loop
+    has nothing left to fetch. Checking the guard before the known-ids `continue`
+    marks it truncated anyway whenever the guard happens to be exhausted by
+    then, even though nothing was actually skipped."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "seeMoreJobPostings" in str(request.url):
+            # Exhausted the instant the search page lands, before the detail
+            # loop even starts - proves the detail loop's own ordering, not
+            # the search loop's.
+            adapter.guard.tripped = True
+            return httpx.Response(200, text=_page_html(["only1"]))
+        raise AssertionError("a known id must never be fetched for detail")
+
+    adapter = LinkedInAdapter(config=cfg, known_ids={"only1"})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        adapter.fetch(_ref(), client)
+    assert adapter.was_truncated() is False
 
 
 def test_an_exhausted_guard_stops_the_fetch_loop_pacing(cfg) -> None:

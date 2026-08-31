@@ -121,6 +121,13 @@ class SourceAdapter(Protocol):
         """Whether the fetch loop should keep pacing between refs. See HttpAdapter."""
         ...
 
+    def was_truncated(self) -> bool:
+        """Whether the fetch just made ended before it saw the whole listing.
+
+        Read once per ref, right after `fetch()` returns - see HttpAdapter.
+        """
+        ...
+
     def normalize(self, raw: Any, ref: BoardRef) -> Iterator[JobPosting]:
         """Raw payload -> canonical records. Pure function, no I/O."""
         ...
@@ -148,6 +155,14 @@ class HttpAdapter:
         it runs out of refs, so the default is simply True.
         """
         return True
+
+    def was_truncated(self) -> bool:
+        """Whether the fetch just made ended before it saw the whole listing.
+
+        Every adapter but LinkedIn always sees the whole listing it asked for,
+        so the default is simply False.
+        """
+        return False
 
     def set_refs(self, refs: list[BoardRef]) -> None:
         """Replace the refs `discover()` yields.

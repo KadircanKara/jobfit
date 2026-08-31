@@ -22,6 +22,9 @@ class StubAdapter:
     def still_fetching(self) -> bool:
         return True
 
+    def was_truncated(self) -> bool:
+        return False
+
     def fetch(self, ref, client):
         if ref.token == self.fail_token:
             raise ConnectionError("unreachable")
