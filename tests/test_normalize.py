@@ -138,6 +138,13 @@ def test_html_to_text_nested_div_p_does_not_double_break() -> None:
     assert text == "First paragraph.\n\nSecond paragraph."
 
 
+def test_html_to_text_definition_list_breaks_term_from_definition() -> None:
+    """Some ATS render requirement lists as <dl>: pre-fix, <dl><dt>/<dd> were not
+    block tags at all, so this flattened to "Term Definition" on one line."""
+    text = norm.html_to_text("<dl><dt>Term</dt><dd>Definition</dd></dl>")
+    assert text == "Term\n\nDefinition"
+
+
 @pytest.mark.parametrize(
     ("raw", "country", "remote"),
     [

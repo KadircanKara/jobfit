@@ -154,6 +154,7 @@ _BOILERPLATE_TAGS = ("script", "style", "nav", "footer", "noscript")
 _BLOCK_TAGS = (
     "p", "div", "li", "ul", "ol", "section", "article",
     "h1", "h2", "h3", "h4", "h5", "h6", "tr", "table", "blockquote", "header",
+    "main", "aside", "figure", "hr", "dl", "dt", "dd",
 )
 
 
