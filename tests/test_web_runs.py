@@ -25,7 +25,7 @@ class FakePipeline:
         unreadable_batch=None,
         gate_rounds=1,
     ):
-        self.sources = sources or ["greenhouse", "ashby"]
+        self._sources = sources or ["greenhouse", "ashby"]
         self.boards = boards
         self.failing_source = failing_source
         self.rank_raises = rank_raises
@@ -41,6 +41,9 @@ class FakePipeline:
         self.gated: list[int] = []
         self.shortlisted = False
         self.on_fetch = None
+
+    def sources(self):
+        return self._sources
 
     def boards_for(self, source):
         return list(range(self.boards))

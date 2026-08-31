@@ -43,9 +43,12 @@ class EnginePipeline:
             str(config.get("ranking", "batch_path", default=config.home / "data/rank/batch.json"))
         )
 
-    @property
     def sources(self) -> list[str]:
-        return sorted(source_registry.REGISTRY)
+        """Only what the search selected. A run that fetches thirteen corpora is
+        not a way to see what one of them is worth."""
+        prefs, _ = prefs_module.load(self.config)
+        selected = prefs_module.adapters_for(prefs.sources)
+        return [name for name in sorted(source_registry.REGISTRY) if name in set(selected)]
 
     # --- sync ------------------------------------------------------------
 

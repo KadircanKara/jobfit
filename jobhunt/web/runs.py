@@ -114,8 +114,7 @@ class GateReport:
 
 
 class Pipeline(Protocol):
-    sources: list[str]
-
+    def sources(self) -> list[str]: ...
     def boards_for(self, source: str) -> list[Any]: ...
     def fetch_board(self, source: str, board: Any) -> int: ...
     def rank(self) -> RankReport: ...
@@ -315,7 +314,7 @@ class RunSupervisor:
 
     def _sync(self) -> None:
         self.state.phase = "sync"
-        for source in list(self.pipeline.sources):
+        for source in list(self.pipeline.sources()):
             if source in self.state.done_sources:
                 continue
             self._checkpoint()

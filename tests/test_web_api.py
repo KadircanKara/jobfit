@@ -131,7 +131,8 @@ def test_a_run_cannot_start_while_the_filters_are_broken(client, monkeypatch):
 class _SlowPipeline:
     """Enough of the Protocol to start, slow enough to still be running."""
 
-    sources = ["greenhouse"]
+    def sources(self):
+        return ["greenhouse"]
 
     def boards_for(self, source):
         return list(range(50))
