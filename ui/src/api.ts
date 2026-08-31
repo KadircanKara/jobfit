@@ -495,6 +495,11 @@ export const api = {
   async outreachStates(): Promise<{ states: OutreachStates }> {
     return detailJson(await fetch("/api/outreach/states"));
   },
+  // A GET, deliberately: reads the poster the job posting already names, no
+  // network call to LinkedIn involved. Safe to fire on every drawer open.
+  async statedContacts(jobId: number): Promise<{ candidates: ContactCandidate[] }> {
+    return detailJson(await fetch(`/api/outreach/${jobId}/contacts/stated`));
+  },
   // Fires a company-scoped LinkedIn people search. Only ever call this from a
   // user action on one job's drawer - never from anything that loops over jobs.
   async findContacts(jobId: number): Promise<{ candidates: ContactCandidate[] }> {

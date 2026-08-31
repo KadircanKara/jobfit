@@ -111,6 +111,25 @@ def register(app: FastAPI, config: Config, sender: provider.LinkedInProvider) ->
     def read_job(job_id: int) -> dict[str, Any]:
         return guarded(service.for_job, config, job_id, sender)
 
+    @app.get("/api/outreach/{job_id}/contacts/stated")
+    def stated_contacts(job_id: int) -> dict[str, Any]:
+        """The poster the job posting already names, at drawer-open cost.
+
+        This handler never touches `sender`, `current_sender`, or anything
+        with a `.client` - there is no name in scope here that could reach a
+        provider, so this route physically cannot place a people-search call,
+        not merely by convention. It is a GET for the same reason: reading
+        what the database already holds is idempotent and free, unlike
+        `/find` below, which is a POST because it can spend a real request.
+        """
+        with session_scope(config.db_path) as session:
+            job = session.get(Job, job_id)
+            if job is None:
+                raise HTTPException(status_code=404, detail=f"No job {job_id}.")
+            candidates = discovery.find_contacts(job)
+            existing_urls = _existing_profile_urls(session)
+            return {"candidates": _candidate_payload(candidates, existing_urls)}
+
     @app.post("/api/outreach/{job_id}/find")
     def find(job_id: int) -> dict[str, Any]:
         """Both kinds of candidate, stated ones first.
@@ -122,6 +141,12 @@ def register(app: FastAPI, config: Config, sender: provider.LinkedInProvider) ->
         The company search fires only here, and only when the current sender
         actually exposes one - the stub, the default, does not. Nothing on the
         fetch/sync path holds a reference to this function at all.
+
+        Kept as a POST that returns both kinds, stated included: the drawer
+        already shows the stated poster from the GET above, and merges these
+        results into it by profile URL rather than replacing it, but a caller
+        hitting this endpoint directly (or a future consumer) still gets a
+        complete, self-sufficient answer without a second round trip.
         """
         current_sender = getattr(app.state, "outreach_sender", sender)
         with session_scope(config.db_path) as session:

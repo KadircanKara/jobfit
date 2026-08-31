@@ -84,8 +84,24 @@ export function OutreachDrawer({
     }
   }
 
+  /**
+   * The stated poster, if the posting named one - a free DB read, no click
+   * needed. Runs alongside `load()` on open rather than folded into it: this
+   * one is allowed to fail quietly (an empty list is a normal answer, not an
+   * error worth a banner), where `load` failing means the drawer has nothing.
+   */
+  async function loadStated() {
+    try {
+      const body = await api.statedContacts(jobId);
+      setCandidates(body.candidates);
+    } catch {
+      // No stated poster is not an error; leave the candidate list empty.
+    }
+  }
+
   useEffect(() => {
     load();
+    loadStated();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
 
@@ -111,6 +127,30 @@ export function OutreachDrawer({
   }
 
   /**
+   * A candidate's identity for de-duplication: its normalized profile URL, or
+   * its name when it has none. `/find` returns the stated poster again on
+   * every call - it does not know the drawer already loaded it on open - so
+   * merging by this key is what keeps that one poster from ever appearing
+   * twice, or from being replaced by an inferred copy of itself.
+   */
+  function candidateKey(candidate: ContactCandidate): string {
+    return candidate.profile_url
+      ? candidate.profile_url.replace(/^https?:\/\//, "").replace(/\/+$/, "").toLowerCase()
+      : `name:${candidate.full_name.trim().toLowerCase()}`;
+  }
+
+  /**
+   * Appends `fresh` below `prev` without disturbing `prev`'s order - the
+   * stated poster loaded on open must stay first and stay put, with the
+   * company search's results arriving after it, not reshuffling it in.
+   */
+  function mergeCandidates(prev: ContactCandidate[], fresh: ContactCandidate[]): ContactCandidate[] {
+    const seen = new Set(prev.map(candidateKey));
+    const additions = fresh.filter((c) => !seen.has(candidateKey(c)));
+    return [...prev, ...additions];
+  }
+
+  /**
    * A 502 from `find` still carries the stated candidate in `detail.candidates`
    * - the inferred company search failing is not a reason to throw away a
    * perfectly good named contact. `api.findContacts` goes through `detailJson`,
@@ -121,7 +161,7 @@ export function OutreachDrawer({
     setFinding(true);
     try {
       const body = await api.findContacts(jobId);
-      setCandidates(body.candidates);
+      setCandidates((prev) => mergeCandidates(prev, body.candidates));
       setFindError(null);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -132,7 +172,9 @@ export function OutreachDrawer({
         };
         if (parsed.detail && typeof parsed.detail === "object") {
           if (typeof parsed.detail.message === "string") shown = parsed.detail.message;
-          if (Array.isArray(parsed.detail.candidates)) setCandidates(parsed.detail.candidates);
+          if (Array.isArray(parsed.detail.candidates)) {
+            setCandidates((prev) => mergeCandidates(prev, parsed.detail!.candidates!));
+          }
         }
       } catch {
         // Not a JSON body - show it raw rather than swallow it.
@@ -197,10 +239,10 @@ export function OutreachDrawer({
 
       <div className="findrow">
         <button type="button" className="btn ghost sm" disabled={finding} onClick={find}>
-          {finding ? "Looking…" : "Find contacts"}
+          {finding ? "Looking…" : "Find more contacts"}
         </button>
         <span className="hint">
-          Searches for who posted this job and who works at the company on LinkedIn.
+          Searches LinkedIn for who else works at the company. Uses your account.
         </span>
       </div>
 

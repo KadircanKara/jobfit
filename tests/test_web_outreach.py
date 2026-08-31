@@ -264,6 +264,61 @@ def test_a_failed_search_still_returns_the_stated_contact_as_a_502(client, cfg) 
     assert [c["full_name"] for c in detail["candidates"]] == ["Jane Doe"]
 
 
+def test_stated_contacts_returns_the_poster_for_a_job_that_has_one(client, cfg) -> None:
+    job_id = _linkedin_job_with_poster(cfg)
+    response = client.get(f"/api/outreach/{job_id}/contacts/stated")
+    assert response.status_code == 200
+    candidates = response.json()["candidates"]
+    assert [c["origin"] for c in candidates] == ["job_poster"]
+    assert candidates[0]["full_name"] == "Jane Doe"
+    assert candidates[0]["profile_url"] == "https://www.linkedin.com/in/jane-doe"
+
+
+def test_stated_contacts_is_empty_for_a_job_without_a_poster(client, job_id) -> None:
+    response = client.get(f"/api/outreach/{job_id}/contacts/stated")
+    assert response.status_code == 200
+    assert response.json()["candidates"] == []
+
+
+def test_stated_contacts_marks_an_existing_poster(client, cfg) -> None:
+    job_id = _linkedin_job_with_poster(cfg)
+    with session_scope(cfg.db_path) as session:
+        session.add(
+            Contact(full_name="Jane Doe", profile_url="linkedin.com/in/jane-doe", origin="job_poster")
+        )
+
+    response = client.get(f"/api/outreach/{job_id}/contacts/stated")
+    candidates = response.json()["candidates"]
+    assert candidates[0]["existing"] is True
+
+
+def test_stated_contacts_on_an_unknown_job_is_a_404(client) -> None:
+    assert client.get("/api/outreach/9999/contacts/stated").status_code == 404
+
+
+def test_stated_contacts_never_calls_search_people_even_when_the_sender_has_one(
+    client, cfg
+) -> None:
+    """The stated read must be incapable of a people-search, not merely built to
+    skip one - a sender that could search is attached here and never touched."""
+    job_id = _linkedin_job_with_poster(cfg)
+    calls: list[tuple[str, list[str]]] = []
+
+    class SpySearchClient:
+        def search_people(self, company, keywords, *, limit=5):
+            calls.append((company, keywords))
+            return []
+
+    class SpySender:
+        def __init__(self):
+            self.client = SpySearchClient()
+
+    client.app.state.outreach_sender = SpySender()
+    response = client.get(f"/api/outreach/{job_id}/contacts/stated")
+    assert response.status_code == 200
+    assert calls == []
+
+
 def test_a_found_candidate_keeps_its_origin_and_headline(client, job_id):
     """The drawer sends what `find` returned. Storing it as manual erased the
     difference between the person the posting named and a name typed by hand."""
