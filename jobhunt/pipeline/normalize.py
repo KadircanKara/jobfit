@@ -147,6 +147,14 @@ def normalize_title(title: str) -> str:
 # --- descriptions -------------------------------------------------------------
 
 _BOILERPLATE_TAGS = ("script", "style", "nav", "footer", "noscript")
+# Elements whose boundary is a paragraph break, not a word break. quality._boilerplate_ratio
+# measures whole paragraphs (a blank-line-separated `\n\s*\n` split) specifically so a short
+# EEO trigger phrase does not condemn an entire multi-thousand-character JD - that only works
+# if block structure survives into description_text as blank lines, not as one run-on line.
+_BLOCK_TAGS = (
+    "p", "div", "li", "ul", "ol", "section", "article",
+    "h1", "h2", "h3", "h4", "h5", "h6", "tr", "table", "blockquote", "header",
+)
 
 
 def html_to_markdown(raw_html: str | None) -> str:
@@ -163,12 +171,31 @@ def html_to_markdown(raw_html: str | None) -> str:
 
 
 def html_to_text(raw_html: str | None) -> str:
+    """Flatten to plain text, keeping paragraph breaks as blank lines.
+
+    `<br>` becomes a line break and every block-level element (see `_BLOCK_TAGS`)
+    ends its own paragraph, so `get_text(" ")` never runs two unrelated blocks
+    of prose together onto one line - the shape `_boilerplate_ratio` and the
+    truncation-tail check in `quality.assess` both depend on.
+    """
     if not raw_html:
         return ""
     soup = BeautifulSoup(raw_html, "html.parser")
     for tag in soup(_BOILERPLATE_TAGS):
         tag.decompose()
-    return _WS.sub(" ", soup.get_text(" ")).strip()
+    for br in soup.find_all("br"):
+        br.replace_with("\n")
+    for block in soup.find_all(_BLOCK_TAGS):
+        block.append("\n\n")
+    text = soup.get_text(" ")
+    lines = [_WS.sub(" ", line).strip() for line in text.split("\n")]
+    out_lines: list[str] = []
+    for line in lines:
+        if line:
+            out_lines.append(line)
+        elif out_lines and out_lines[-1] != "":
+            out_lines.append("")
+    return "\n".join(out_lines).strip()
 
 
 def unescape_if_escaped(value: str | None) -> str:

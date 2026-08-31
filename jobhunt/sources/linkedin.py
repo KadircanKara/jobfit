@@ -379,6 +379,14 @@ class LinkedInAdapter(HttpAdapter):
             return None, None, None, None
         soup = BeautifulSoup(detail_html, "html.parser")
         desc_el = soup.select_one("div.description__text")
+        if desc_el is not None:
+            # LinkedIn renders "Show more"/"Show less" as real <button> text inside the
+            # description subtree, not CSS-hidden markup - left in place they read as the
+            # tail of the JD itself and TRUNCATION_MARKERS mistakes a complete posting for
+            # a clipped one. Decomposed, never string-replaced: a JD that legitimately says
+            # "show more" in its own prose must survive untouched.
+            for button in desc_el.select(".show-more-less-html__button"):
+                button.decompose()
         description_html = str(desc_el) if desc_el else None
         description_text = norm.html_to_text(description_html) if description_html else None
 

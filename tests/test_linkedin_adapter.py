@@ -13,6 +13,7 @@ import pathlib
 import httpx
 import pytest
 
+from jobhunt.extract import quality
 from jobhunt.preferences import Preferences
 from jobhunt.sources.base import BoardRef
 from jobhunt.sources.linkedin import LinkedInAdapter
@@ -50,6 +51,28 @@ def test_the_description_comes_from_the_detail_document() -> None:
     )
     assert "You will write Python" in (posting.description_text or "")
     assert posting.jd_completeness == "full"
+
+
+def test_show_more_show_less_buttons_do_not_survive_into_the_description() -> None:
+    """`linkedin_detail.html` carries LinkedIn's real button markup: two
+    `show-more-less-html__button` elements (`public_jobs_show-more-html-btn` and
+    `public_jobs_show-less-html-btn`) with "Show more" / "Show less" as their
+    literal text. Left in place, `TRUNCATION_MARKERS` reads a complete JD as
+    clipped, and a run-on paragraph with no newlines reads a six-word EEO
+    trigger as 100 percent boilerplate. Both must be gone, and the fix must
+    have done it by removing the button elements, not by string-replacing the
+    words - a JD that genuinely ends with "read more" would fail this test
+    for the wrong reason if it did not.
+    """
+    posting = next(
+        p for p in LinkedInAdapter().normalize(_envelope(), _ref()) if p.external_id == "3901234567"
+    )
+    text = posting.description_text or ""
+    assert "show more" not in text.lower()
+    assert "show less" not in text.lower()
+    assert "\n" in text, "paragraph breaks must survive as newlines"
+    result = quality.assess(text)
+    assert result.passed, result.reasons
 
 
 def test_a_card_without_a_detail_document_is_still_a_posting() -> None:
