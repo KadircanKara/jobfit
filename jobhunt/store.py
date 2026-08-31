@@ -100,12 +100,46 @@ def upsert_posting(
     # A job that went inactive and came back under the same external_id is a repost.
     if not existing.is_active:
         existing.repost_count += 1
+    for key in _absent_fields(posting):
+        fields.pop(key, None)
     for key, value in fields.items():
         setattr(existing, key, value)
     existing.last_seen_at = now
     existing.missed_runs = 0
     existing.is_active = True
     return existing, outcome
+
+
+# Absent has to mean "unchanged", not "gone". The LinkedIn adapter deliberately
+# skips the detail fetch for an id already in the corpus, so the second run yields
+# that job with no description and no poster at all; writing those over the stored
+# row would erase exactly what the detail fetch was paid for, leaving the ranker a
+# title-only corpus and the outreach drawer no hiring contact. Every other adapter
+# re-sends its description each run, so nothing else changes shape here.
+_DESCRIPTION_FIELDS = (
+    "description_html",
+    "description_text",
+    "description_md",
+    "description_lang",
+    "jd_completeness",
+    "jd_source",
+    "jd_extracted_at",
+    "description_hash",
+)
+_POSTER_FIELDS = ("poster_name", "poster_profile_url")
+
+
+def _absent_fields(posting: JobPosting) -> tuple[str, ...]:
+    """Field names a refresh must leave alone because the posting carries nothing.
+
+    The description group moves as a unit: pairing a stored body with a freshly
+    parsed completeness flag would describe a row that never existed.
+    """
+    absent: tuple[str, ...] = ()
+    if not (posting.description_html or posting.description_text or posting.description_md):
+        absent += _DESCRIPTION_FIELDS
+    absent += tuple(name for name in _POSTER_FIELDS if getattr(posting, name) is None)
+    return absent
 
 
 def _row_fields(

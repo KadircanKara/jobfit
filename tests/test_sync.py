@@ -408,6 +408,33 @@ def test_the_linkedin_adapter_is_built_with_config_and_refs(cfg) -> None:
     assert [ref.token for ref in adapter.discover()] == ["Backend Engineer|Germany"]
 
 
+def test_a_second_linkedin_pass_keeps_the_description_and_poster_it_paid_for(cfg) -> None:
+    """Run 2 skips the detail fetch for an id already in the corpus, so it
+    normalizes that job with no description and no poster. Writing those over the
+    stored row used to erase the only thing the detail fetch existed to obtain."""
+    from conftest import FIXTURES
+
+    cards = [(FIXTURES / "linkedin_search.html").read_text(encoding="utf-8")]
+    detail = (FIXTURES / "linkedin_detail.html").read_text(encoding="utf-8")
+
+    place_raw(cfg, "linkedin", "t1", "R1", {"cards": cards, "details": {"3901234567": detail}})
+    sync.normalize_pass(cfg, "linkedin", "R1")
+    with session_scope(cfg.db_path) as session:
+        job = session.query(Job).filter_by(source="linkedin", external_id="3901234567").one()
+        assert job.poster_name
+        stored = (job.description_text, job.poster_name, job.poster_profile_url)
+        assert job.jd_completeness == "full"
+
+    # Same envelope minus the detail document: exactly what `known_ids` produces.
+    place_raw(cfg, "linkedin", "t1", "R2", {"cards": cards, "details": {}})
+    sync.normalize_pass(cfg, "linkedin", "R2")
+    with session_scope(cfg.db_path) as session:
+        job = session.query(Job).filter_by(source="linkedin", external_id="3901234567").one()
+        assert (job.description_text, job.poster_name, job.poster_profile_url) == stored
+        assert job.jd_completeness == "full"
+        assert job.jd_extracted_at is not None
+
+
 def test_an_ats_adapter_is_built_the_old_way(cfg) -> None:
     adapter = sync.build_adapter(cfg, "greenhouse")
     assert adapter.source_id == "greenhouse"
