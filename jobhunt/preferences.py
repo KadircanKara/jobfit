@@ -163,12 +163,24 @@ def _job_types(values: list[str]) -> list[str]:
     return out
 
 
+def _sources(values: list[str]) -> list[str]:
+    out = []
+    for value in values:
+        text = value.strip().lower()
+        if text not in SOURCE_CHOICES:
+            raise PreferenceError(
+                f"unknown source {value!r}. use one of: {', '.join(SOURCE_CHOICES)}"
+            )
+        out.append(text)
+    return out
+
+
 def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
     """Apply `key=value` pairs from the CLI. Unknown keys are a loud error."""
     known = {
         "titles", "locations", "work_model", "job_types", "experience",
         "experience_max", "min_salary", "currency", "include_unstated_salary",
-        "max_age_days", "top_n",
+        "max_age_days", "top_n", "sources",
     }
     for key, raw in updates.items():
         if key not in known:
@@ -190,6 +202,8 @@ def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
             prefs.work_model = [] if blank else _work_model(_split(value))
         elif key == "job_types":
             prefs.job_types = [] if blank else _job_types(_split(value))
+        elif key == "sources":
+            prefs.sources = [] if blank else _sources(_split(value))
         elif key == "experience":
             prefs.experience_min = None if blank else _seniority(value)
         elif key == "experience_max":
