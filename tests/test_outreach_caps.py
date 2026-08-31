@@ -224,3 +224,51 @@ def test_a_failed_invite_does_not_consume_the_weekly_cap(cfg):
         session.flush()
         assert caps.budget(cfg, session, now=NOW).invites_week_used == 0
         caps.check(cfg, session, provider.INVITE_NOTE, now=NOW, rand=zero)  # does not raise
+
+
+def test_weekly_count_is_keyed_by_invited_at_not_by_state(cfg):
+    """A row can carry any state and still count, or carry `failed` and still not -
+
+    it is the timestamp column that decides, never `state`. A queued
+    invite_then_dm (mid-flight, invited_at already set) must count; a failed
+    invite (invited_at never set) must not. An implementation that filtered on
+    `state == "sent"` instead would pass the failed row for the wrong reason
+    and miss the queued one entirely - this is the test that would catch that.
+    """
+    with session_scope(cfg.db_path) as session:
+        job = Job(
+            external_id="ext-1", source="greenhouse", market="global_remote",
+            title="Backend Engineer", title_normalized="backend engineer",
+        )
+        session.add(job)
+        session.flush()
+        queued = Contact(full_name="Person 0", origin="manual")
+        failed = Contact(full_name="Person 1", origin="manual")
+        session.add_all([queued, failed])
+        session.flush()
+        session.add(
+            Outreach(
+                job_id=job.id, contact_id=queued.id, route=provider.INVITE_THEN_DM,
+                state="queued", invited_at=NOW,
+            )
+        )
+        session.add(
+            Outreach(
+                job_id=job.id, contact_id=failed.id, route=provider.INVITE_NOTE,
+                state="failed", invited_at=None, failure="boom",
+            )
+        )
+        session.flush()
+        assert caps.budget(cfg, session, now=NOW).invites_week_used == 1
+
+
+def test_an_invite_exactly_seven_days_old_still_counts(cfg):
+    seed(cfg, [(provider.INVITE_NOTE, "invited_at", NOW - dt.timedelta(days=7))])
+    with session_scope(cfg.db_path) as session:
+        assert caps.budget(cfg, session, now=NOW).invites_week_used == 1
+
+
+def test_an_invite_one_second_past_seven_days_does_not_count(cfg):
+    seed(cfg, [(provider.INVITE_NOTE, "invited_at", NOW - dt.timedelta(days=7, seconds=1))])
+    with session_scope(cfg.db_path) as session:
+        assert caps.budget(cfg, session, now=NOW).invites_week_used == 0

@@ -91,6 +91,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "outreach": {
         "max_daily_invites": 20,
         "max_daily_dms": 25,
+        "max_weekly_invites": 100,
         "invite_delay_min_seconds": 15.0,
         "invite_delay_max_seconds": 60.0,
         "inmail_credits": 12,
