@@ -9,9 +9,13 @@ response body, never the request that made the call.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
+from urllib.parse import quote, urlsplit
 
 import httpx
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_\-%.]{1,128}$")
 
 
 class UnipileError(Exception):
@@ -47,13 +51,26 @@ class UnipileClient:
         *,
         client: httpx.Client | None = None,
     ) -> None:
-        self.dsn = dsn.rstrip("/")
+        dsn = dsn.rstrip("/")
+        parsed = urlsplit(dsn)
+        if parsed.scheme != "https" or not parsed.hostname:
+            # An http:// DSN would ship the API key in cleartext; a malformed one
+            # would raise httpx.InvalidURL deep inside a request. Reject both here,
+            # at construction, rather than partway through a call.
+            raise MissingCredentials(f"UNIPILE_DSN must be an https URL with a host, got: {dsn!r}")
+        self.dsn = dsn
         self.account_id = account_id
         self._key = api_key
+        # follow_redirects stays False (httpx's default): a redirect would carry
+        # the X-API-KEY header to whatever host it names, including one Unipile
+        # itself never chose. Do not turn this on.
         self._client = client or httpx.Client(timeout=30.0)
 
     def get_user(self, identifier: str) -> dict[str, Any]:
-        return self._call("GET", f"/api/v1/users/{identifier}", params={"account_id": self.account_id})
+        if not _IDENTIFIER_RE.match(identifier):
+            raise UnipileError("get_user: identifier has an unexpected shape")
+        segment = quote(identifier, safe="")
+        return self._call("GET", f"/api/v1/users/{segment}", params={"account_id": self.account_id})
 
     def start_chat(self, provider_id: str, text: str, *, inmail: bool = False) -> dict[str, Any]:
         body: dict[str, Any] = {
@@ -81,7 +98,9 @@ class UnipileClient:
             "keywords": f"{company} {' OR '.join(keywords)}",
         }
         payload = self._call("POST", "/api/v1/linkedin/search", json=body)
-        items = payload.get("items") or []
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            raise UnipileError("search_people: response body was not the expected shape")
         return items[:limit]
 
     def _call(self, method: str, path: str, **kwargs: Any) -> Any:
@@ -92,11 +111,21 @@ class UnipileClient:
                 headers={"X-API-KEY": self._key, "accept": "application/json"},
                 **kwargs,
             )
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
             # Never str(exc) here without checking: httpx exceptions can echo the
             # request, which carries the key header. The class name alone is safe.
             raise UnipileError(f"{method} {path} failed: {exc.__class__.__name__}") from exc
         if response.status_code >= 400:
-            # Body only, never the request: the request carries the key.
-            raise UnipileError(f"{method} {path} returned {response.status_code}: {response.text[:300]}")
-        return response.json() if response.content else {}
+            # Body only, never the request: the request carries the key. Bound
+            # the raw bytes before decoding so an oversized body isn't fully
+            # materialised as text first.
+            body = response.content[:300].decode("utf-8", errors="replace")
+            raise UnipileError(f"{method} {path} returned {response.status_code}: {body}")
+        if not response.content:
+            return {}
+        try:
+            return response.json()
+        except ValueError as exc:
+            # A 2xx with a malformed body is still an httpx-independent failure;
+            # keep the single-error-type contract this module promises.
+            raise UnipileError(f"{method} {path} returned a non-JSON body") from exc

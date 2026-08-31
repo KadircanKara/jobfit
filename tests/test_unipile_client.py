@@ -95,3 +95,56 @@ def test_a_network_failure_becomes_a_unipile_error() -> None:
     with pytest.raises(uc.UnipileError) as excinfo:
         _client(handler).get_user("jane")
     assert "secret" not in str(excinfo.value)
+
+
+def test_a_malformed_json_body_on_success_raises_unipile_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not json", headers={"content-type": "application/json"})
+
+    with pytest.raises(uc.UnipileError):
+        _client(handler).get_user("jane")
+
+
+def test_a_traversal_attempt_is_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - must not be reached
+        raise AssertionError("request should never be sent for a bad identifier")
+
+    with pytest.raises(uc.UnipileError):
+        _client(handler).get_user("jane/../../../../etc")
+
+
+def test_a_plain_identifier_still_works() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"provider_id": "ACoAAA"})
+
+    _client(handler).get_user("jane-doe")
+    assert seen["url"].endswith("/api/v1/users/jane-doe?account_id=acct-1")
+
+
+def test_a_non_https_dsn_is_rejected() -> None:
+    with pytest.raises(uc.MissingCredentials):
+        uc.UnipileClient(dsn="http://api1.unipile.com", api_key="secret", account_id="acct-1")
+
+
+def test_a_malformed_dsn_is_rejected() -> None:
+    with pytest.raises(uc.MissingCredentials):
+        uc.UnipileClient(dsn="not-a-url", api_key="secret", account_id="acct-1")
+
+
+def test_search_people_rejects_a_wrong_shaped_payload() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"items": "not-a-list"})
+
+    with pytest.raises(uc.UnipileError):
+        _client(handler).search_people("Acme", ["engineer"])
+
+
+def test_search_people_rejects_a_non_dict_payload() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=["oops"])
+
+    with pytest.raises(uc.UnipileError):
+        _client(handler).search_people("Acme", ["engineer"])
