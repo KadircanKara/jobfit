@@ -59,6 +59,26 @@ def test_acceptance_releases_the_stored_dm(cfg):
     assert state_of(cfg) == "sent"
 
 
+def test_a_release_that_fails_lands_in_failed_not_sent(cfg):
+    """A queued DM the provider refuses or errors on must not be recorded as sent.
+
+    Otherwise the user believes it went out and has no way to retry it: `sent`
+    has no outgoing transition.
+    """
+    _, contact_id, sender = queued_row(cfg)
+    sender.accept(contact_id)
+
+    def broken_send_dm(contact, body):
+        return provider.SendResult(ok=False, failure="POST /api/v1/chats returned 422: nope")
+
+    sender.send_dm = broken_send_dm
+    counts = poller.tick(cfg, sender, now=NOW)
+    assert counts["released"] == 0
+    assert state_of(cfg) == "failed"
+    with session_scope(cfg.db_path) as session:
+        assert "422" in session.query(Outreach).one().failure
+
+
 def test_a_capped_release_stays_queued_for_the_next_tick(cfg):
     _, contact_id, sender = queued_row(cfg)
     sender.accept(contact_id)

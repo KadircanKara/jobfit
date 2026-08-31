@@ -182,6 +182,79 @@ def test_approving_invite_then_dm_queues_rather_than_sends(cfg):
     assert body["sent_at"] is None
 
 
+def test_a_refused_send_lands_in_failed_with_the_failure_text(cfg):
+    """A refused send (e.g. no resolvable LinkedIn identifier) must not commit `sent`.
+
+    `sent` has no outgoing transition, so a send the provider never actually made
+    would otherwise be terminal and unretriable.
+    """
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+
+    class RefusingSender(stub.StubProvider):
+        def send_dm(self, contact, body):
+            return provider.SendResult(ok=False, failure="Jane Doe has no LinkedIn identifier to send to.")
+
+    body = service.approve(cfg, job_id, contact_id, RefusingSender(cfg))
+    assert body["state"] == "failed"
+    assert "no LinkedIn identifier" in body["failure"]
+    with session_scope(cfg.db_path) as session:
+        row = session.query(Outreach).one()
+        assert row.state == "failed"
+        assert row.sent_at is None
+
+
+def test_a_provider_error_lands_in_failed_with_the_failure_text(cfg):
+    """A provider error (e.g. a 422 from Unipile) must land in `failed`, not `sent`."""
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+
+    class ErroringSender(stub.StubProvider):
+        def send_dm(self, contact, body):
+            return provider.SendResult(ok=False, failure="POST /api/v1/chats returned 422: nope")
+
+    body = service.approve(cfg, job_id, contact_id, ErroringSender(cfg))
+    assert body["state"] == "failed"
+    assert "422" in body["failure"]
+
+
+def test_a_refused_invite_lands_in_failed_not_queued(cfg):
+    """The `queued` target of invite-then-dm is just as provisional as `sent`."""
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=False, can_send_inmail=False)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_THEN_DM)
+
+    class RefusingInvite(stub.StubProvider):
+        def send_invite(self, contact, note):
+            return provider.SendResult(ok=False, failure="invite blocked")
+
+    body = service.approve(
+        cfg, job_id, contact_id, RefusingInvite(cfg), route=provider.INVITE_THEN_DM
+    )
+    assert body["state"] == "failed"
+    assert body["failure"] == "invite blocked"
+    assert body["invited_at"] is None
+
+
+def test_a_successful_send_still_reaches_sent_after_the_failure_branch_exists(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+    body = service.approve(cfg, job_id, contact_id, sender(cfg))
+    assert body["state"] == "sent"
+    assert body["failure"] is None
+
+
 def test_a_sent_row_cannot_be_approved_again(cfg):
     job_id = make_job(cfg)
     contact_id = connected_contact(cfg, is_connection=True)

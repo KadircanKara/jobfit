@@ -71,6 +71,18 @@ def test_a_contact_without_a_provider_id_is_resolved_from_the_profile_url(cfg) -
     assert contact.provider_id == "ACoAAA"
 
 
+def test_a_profile_url_with_a_trailing_path_still_reduces_to_the_slug(cfg) -> None:
+    client = FakeClient()
+    contact = Contact(
+        full_name="Jane Doe",
+        provider_id=None,
+        profile_url="https://www.linkedin.com/in/jane-doe/recent-activity/all/",
+    )
+    UnipileProvider(cfg, client).send_dm(contact, "hello")
+    assert ("get_user", "jane-doe") in client.calls
+    assert contact.provider_id == "ACoAAA"
+
+
 def test_an_unresolvable_contact_refuses_the_send(cfg) -> None:
     contact = Contact(full_name="Jane Doe", provider_id=None, profile_url=None)
     result = UnipileProvider(cfg, FakeClient()).send_dm(contact, "hello")
@@ -88,6 +100,27 @@ def test_a_failed_send_reports_rather_than_raising(cfg) -> None:
     result = UnipileProvider(cfg, Broken()).send_dm(_contact(), "hello")
     assert result.ok is False
     assert "422" in (result.failure or "")
+
+
+def test_a_non_dict_send_response_reports_rather_than_raising(cfg) -> None:
+    class Weird(FakeClient):
+        def start_chat(self, provider_id, text, *, inmail=False):
+            self.calls.append(("start_chat", provider_id, text, inmail))
+            return ["not", "a", "dict"]
+
+    result = UnipileProvider(cfg, Weird()).send_dm(_contact(), "hello")
+    assert result.ok is False
+    assert result.failure
+
+
+def test_a_non_dict_status_response_degrades_to_unknown_rather_than_raising(cfg) -> None:
+    class Weird(FakeClient):
+        def get_user(self, identifier):
+            self.calls.append(("get_user", identifier))
+            return ["not", "a", "dict"]
+
+    status = UnipileProvider(cfg, Weird()).status(_contact())
+    assert status.is_connection is None
 
 
 def test_the_default_config_resolves_to_the_stub(cfg) -> None:

@@ -15,7 +15,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9-]{1,128}$")
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 class UnipileError(Exception):

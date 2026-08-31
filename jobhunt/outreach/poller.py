@@ -105,6 +105,15 @@ def _release(
             return False
         result = sender.send_dm(contact, row.body or "")
         row.accepted_at = row.accepted_at or utcnow()
+        if not result.ok:
+            # The claim above is provisional until this transaction commits, so
+            # correcting it to `failed` here is safe: nobody else can have read
+            # this row as `sent` yet, and a refused/erroring send must not be
+            # recorded as one that reached the person.
+            row.state = "failed"
+            row.last_state_change = utcnow()
+            row.failure = result.failure
+            return False
         row.provider_ref = result.ref
         row.sent_at = utcnow()
         return True

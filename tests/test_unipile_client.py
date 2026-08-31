@@ -172,3 +172,39 @@ def test_a_non_string_identifier_raises_unipile_error() -> None:
 
     with pytest.raises(uc.UnipileError):
         _client(handler).get_user(None)
+
+
+def test_an_underscore_identifier_is_accepted() -> None:
+    """LinkedIn member URNs are base64url and routinely contain underscores."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"provider_id": "ACoAAA"})
+
+    _client(handler).get_user("AbC_123-xyZ")
+    assert "AbC_123-xyZ" in seen["url"]
+
+
+def test_a_dot_segment_identifier_is_still_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("request should never be sent for a bad identifier")
+
+    with pytest.raises(uc.UnipileError):
+        _client(handler).get_user("jane.doe")
+
+
+def test_a_slash_identifier_is_still_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("request should never be sent for a bad identifier")
+
+    with pytest.raises(uc.UnipileError):
+        _client(handler).get_user("jane/doe")
+
+
+def test_a_percent_identifier_is_still_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("request should never be sent for a bad identifier")
+
+    with pytest.raises(uc.UnipileError):
+        _client(handler).get_user("jane%2e%2e")

@@ -360,15 +360,24 @@ def approve(
         row.route = chosen
         row.approved_at = utcnow()
         # Claimed before the provider is told anything: whoever wins this UPDATE
-        # is the only one who sends.
+        # is the only one who sends. The claim is provisional - nobody else can
+        # observe it before this transaction commits, so a refusal below is free
+        # to correct it to `failed` rather than leave a message nobody sent
+        # recorded as sent.
         _claim(session, row, target)
         if chosen == provider.INVITE_THEN_DM:
             result = sender.send_invite(contact, None)
-            row.invited_at = utcnow()
-            row.provider_ref = result.ref
         else:
             result = _send(sender, contact, chosen, body)
-            row.provider_ref = result.ref
+        if not result.ok:
+            row.state = "failed"
+            row.last_state_change = utcnow()
+            row.failure = result.failure
+            return _payload(row, contact, status)
+        row.provider_ref = result.ref
+        if chosen == provider.INVITE_THEN_DM:
+            row.invited_at = utcnow()
+        else:
             if chosen in (provider.INVITE_NOTE,):
                 row.invited_at = utcnow()
             row.sent_at = utcnow()
