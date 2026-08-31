@@ -123,6 +123,24 @@ def test_a_non_dict_status_response_degrades_to_unknown_rather_than_raising(cfg)
     assert status.is_connection is None
 
 
+def test_resolving_a_non_dict_user_during_a_send_refuses_rather_than_raising(cfg) -> None:
+    """`_provider_id` also calls `get_user`, and must guard the same way `status` does."""
+
+    class Weird(FakeClient):
+        def get_user(self, identifier):
+            self.calls.append(("get_user", identifier))
+            return ["not", "a", "dict"]
+
+    contact = Contact(
+        full_name="Jane Doe",
+        provider_id=None,
+        profile_url="https://www.linkedin.com/in/jane-doe-1234",
+    )
+    result = UnipileProvider(cfg, Weird()).send_dm(contact, "hello")
+    assert result.ok is False
+    assert contact.provider_id is None
+
+
 def test_the_default_config_resolves_to_the_stub(cfg) -> None:
     assert isinstance(build_sender(cfg), stub_module.StubProvider)
 

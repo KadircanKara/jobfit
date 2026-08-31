@@ -288,6 +288,10 @@ def draft(
         row.route = chosen
         row.body = drafts.template(job, contact, chosen)
         row.drafted_at = utcnow()
+        # A redraft from `failed` must not carry the old failure forward - the
+        # retried row has not failed yet, and a stale message next to a
+        # successful send would misreport what happened.
+        row.failure = None
         _move(row, "drafted")
         return _payload(row, contact, status)
 

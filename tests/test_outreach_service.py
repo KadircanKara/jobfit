@@ -182,6 +182,32 @@ def test_approving_invite_then_dm_queues_rather_than_sends(cfg):
     assert body["sent_at"] is None
 
 
+def test_redrafting_a_failed_row_clears_the_stale_failure(cfg):
+    """A retried row has not failed yet - the old failure text must not ride along
+    onto a row that goes on to send successfully."""
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+
+    class RefusingSender(stub.StubProvider):
+        def send_dm(self, contact, body):
+            return provider.SendResult(ok=False, failure="POST /api/v1/chats returned 422: nope")
+
+    body = service.approve(cfg, job_id, contact_id, RefusingSender(cfg))
+    assert body["state"] == "failed"
+    assert body["failure"]
+
+    redrafted = service.draft(cfg, job_id, contact_id, sender(cfg))
+    assert redrafted["state"] == "drafted"
+    assert redrafted["failure"] is None
+
+    sent = service.approve(cfg, job_id, contact_id, sender(cfg))
+    assert sent["state"] == "sent"
+    assert sent["failure"] is None
+
+
 def test_a_refused_send_lands_in_failed_with_the_failure_text(cfg):
     """A refused send (e.g. no resolvable LinkedIn identifier) must not commit `sent`.
 

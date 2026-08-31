@@ -121,6 +121,11 @@ class UnipileProvider:
             user = self.client.get_user(identifier)
         except UnipileError:
             return None
+        if not isinstance(user, dict):
+            # Same defect as the other two call sites, smaller blast radius: this
+            # runs before anything is sent, so a bad shape here costs a refusal,
+            # not a double-send - but it must still not raise.
+            return None
         self._remember(contact, user)
         return contact.provider_id
 
