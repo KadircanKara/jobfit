@@ -19,6 +19,14 @@ const JOB_TYPES: [string, string][] = [
   ["temporary", "temporary"],
 ];
 
+// Mirrors SOURCE_CHOICES in jobhunt/preferences.py. Upwork is listed and
+// disabled rather than omitted, so the plan is visible before it ships.
+const SOURCES: { id: string; label: string; hint: string; enabled: boolean }[] = [
+  { id: "ats", label: "ATS", hint: "Greenhouse, Ashby, Lever and nine more", enabled: true },
+  { id: "linkedin", label: "LinkedIn", hint: "Public job search", enabled: true },
+  { id: "upwork", label: "Upwork", hint: "Not yet — arrives with the GitHub MCP phase", enabled: false },
+];
+
 // Sample rates until the server reports the snapshot it fetched for the run.
 // Shown with their timestamp so nobody reads a stale number as live.
 const RATES: Record<string, number> = { USD: 1, EUR: 0.918, GBP: 0.784, TRY: 48.02 };
@@ -35,6 +43,7 @@ type Draft = {
   locations: string[];
   work_model: string[];
   job_types: string[];
+  sources: string[];
   experience_min: string;
   experience_max: string;
   min_salary: string;
@@ -50,6 +59,7 @@ function draftFrom(filters: Filters): Draft {
     locations: filters.locations,
     work_model: filters.work_model.length ? filters.work_model : ["remote", "hybrid", "onsite"],
     job_types: filters.job_types ?? [],
+    sources: filters.sources?.length ? filters.sources : ["ats", "linkedin"],
     experience_min: filters.experience_min ?? "junior",
     experience_max: filters.experience_max ?? "none",
     min_salary: filters.min_salary ? String(filters.min_salary) : "",
@@ -90,6 +100,7 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
         locations: draft.locations,
         work_model: draft.work_model,
         job_types: draft.job_types,
+        sources: draft.sources,
         experience_min: draft.experience_min,
         experience_max: draft.experience_max === "none" ? null : draft.experience_max,
         min_salary: draft.min_salary || null,
@@ -339,12 +350,46 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
           </div>
         </div>
 
-        <button className="btn ghost" onClick={save} disabled={!valid}>
+        <SourcePicker value={draft.sources} onChange={(next) => set("sources", next)} />
+
+        <button className="btn ghost" onClick={save} disabled={!valid || draft.sources.length === 0}>
           {saved ? "Saved" : "Save filters"}
         </button>
       </div>
       <FeedsPanel reloadToken={feedsReload} />
     </>
+  );
+}
+
+function SourcePicker({
+  value,
+  onChange,
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+}) {
+  return (
+    <div className="sources">
+      <span className="lbl">Sources</span>
+      {SOURCES.map((source) => (
+        <label key={source.id} className={source.enabled ? "src" : "src off"} title={source.hint}>
+          <input
+            type="checkbox"
+            disabled={!source.enabled}
+            checked={value.includes(source.id)}
+            onChange={(e) =>
+              onChange(
+                e.target.checked ? [...value, source.id] : value.filter((id) => id !== source.id),
+              )
+            }
+          />
+          {source.label}
+        </label>
+      ))}
+      {value.length === 0 && (
+        <span className="why warn">Pick at least one source — nothing can be found otherwise.</span>
+      )}
+    </div>
   );
 }
 

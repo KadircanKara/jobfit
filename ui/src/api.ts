@@ -3,6 +3,7 @@ export type Filters = {
   locations: string[];
   work_model: string[];
   job_types: string[];
+  sources: string[];
   experience_min: string | null;
   experience_max: string | null;
   min_salary: number | null;

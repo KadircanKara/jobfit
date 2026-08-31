@@ -2378,6 +2378,43 @@ tr.drawer > td {
   cursor: not-allowed;
 }
 
+/* ---------------- sources ---------------- */
+
+/* Which corpora a run fetches and shortlists from. Upwork sits in the row,
+   disabled, so the plan is visible before it ships rather than absent. */
+.sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin: 14px 0;
+}
+.sources .lbl {
+  margin-right: 3px;
+  font-size: 11px;
+  letter-spacing: var(--label-sp);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.src {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--small);
+  color: var(--ink-dim);
+  cursor: pointer;
+}
+.src.off {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.sources .why {
+  font-size: var(--small);
+}
+.sources .why.warn {
+  color: var(--warn);
+}
+
 .presetacts {
   display: flex;
   gap: 7px;
