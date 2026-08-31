@@ -43,3 +43,27 @@ def test_the_keyword_is_the_title() -> None:
 
 def test_pagination_is_by_start() -> None:
     assert query.search_params("X", None, Preferences(), start=20)["start"] == "20"
+
+def test_min_alone_means_that_level_and_up() -> None:
+    prefs = Preferences(experience_min="staff")
+    assert query.search_params("Backend Engineer", None, prefs)["f_E"] == "4,5"
+
+
+def test_max_alone_means_up_to_that_level() -> None:
+    prefs = Preferences(experience_max="junior")
+    assert query.search_params("Backend Engineer", None, prefs)["f_E"] == "1,2"
+
+
+def test_a_band_spanning_a_shared_rung_does_not_repeat_the_code() -> None:
+    prefs = Preferences(experience_min="senior", experience_max="staff")
+    assert query.search_params("Backend Engineer", None, prefs)["f_E"] == "4"
+
+
+def test_a_band_spanning_the_other_shared_rung_does_not_repeat_the_code() -> None:
+    prefs = Preferences(experience_min="lead", experience_max="principal")
+    assert query.search_params("Backend Engineer", None, prefs)["f_E"] == "5"
+
+
+def test_job_type_maps_to_the_job_type_filter() -> None:
+    prefs = Preferences(job_types=["contract"])
+    assert query.search_params("Backend Engineer", None, prefs)["f_JT"] == "C"
