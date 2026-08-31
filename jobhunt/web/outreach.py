@@ -28,6 +28,11 @@ _STATE_RANK = {
     "sent": 4,
 }
 
+# What `discovery` can produce, plus the box in the drawer. Anything else is a
+# typo or a caller inventing provenance, and stored provenance the ranker and
+# the drawer both read is not a field to take on trust.
+CONTACT_ORIGINS = ("job_poster", "company_search", "manual")
+
 
 def _existing_profile_urls(session) -> set[str]:
     # Normalized on read, not trusted from storage: `add_contact` normalizes
@@ -148,6 +153,16 @@ def register(app: FastAPI, config: Config, sender: provider.LinkedInProvider) ->
         name = (payload.get("full_name") or "").strip()
         if not name:
             raise HTTPException(status_code=422, detail="A contact needs a name.")
+        # Where a contact came from is the whole point of `find`: a person the
+        # posting itself named is worth more than one a company search inferred,
+        # and both are worth more than a name typed into the box. Adding a found
+        # candidate used to record it as manual, erasing that difference.
+        origin = payload.get("origin") or "manual"
+        if origin not in CONTACT_ORIGINS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown origin {origin!r}. Use one of: {', '.join(CONTACT_ORIGINS)}.",
+            )
         return guarded(
             service.add_contact,
             config,
@@ -155,6 +170,7 @@ def register(app: FastAPI, config: Config, sender: provider.LinkedInProvider) ->
             full_name=name,
             profile_url=(payload.get("profile_url") or None),
             headline=(payload.get("headline") or None),
+            origin=origin,
         )
 
     @app.delete("/api/outreach/contacts/{contact_id}")

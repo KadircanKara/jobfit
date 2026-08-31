@@ -262,3 +262,34 @@ def test_a_failed_search_still_returns_the_stated_contact_as_a_502(client, cfg) 
     detail = response.json()["detail"]
     assert "not the expected shape" in detail["message"]
     assert [c["full_name"] for c in detail["candidates"]] == ["Jane Doe"]
+
+
+def test_a_found_candidate_keeps_its_origin_and_headline(client, job_id):
+    """The drawer sends what `find` returned. Storing it as manual erased the
+    difference between the person the posting named and a name typed by hand."""
+    response = client.post(
+        f"/api/outreach/{job_id}/contacts",
+        json={
+            "full_name": "Deniz Aksoy",
+            "profile_url": "linkedin.com/in/deniz",
+            "headline": "Engineering Manager at Acme",
+            "origin": "company_search",
+        },
+    )
+    assert response.status_code == 200
+    contact = client.get(f"/api/outreach/{job_id}").json()["contacts"][0]
+    assert contact["origin"] == "company_search"
+    assert contact["headline"] == "Engineering Manager at Acme"
+
+
+def test_a_contact_added_without_an_origin_is_still_manual(client, job_id):
+    assert add(client, job_id).status_code == 200
+    assert client.get(f"/api/outreach/{job_id}").json()["contacts"][0]["origin"] == "manual"
+
+
+def test_an_invented_origin_is_refused(client, job_id):
+    response = client.post(
+        f"/api/outreach/{job_id}/contacts",
+        json={"full_name": "Deniz Aksoy", "origin": "referred_by_a_friend"},
+    )
+    assert response.status_code == 422

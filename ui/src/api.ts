@@ -419,7 +419,12 @@ export const api = {
   },
   async addContact(
     jobId: number,
-    body: { full_name: string; profile_url?: string | null },
+    body: {
+      full_name: string;
+      profile_url?: string | null;
+      headline?: string | null;
+      origin?: string;
+    },
   ): Promise<OutreachContact> {
     return detailJson(
       await fetch(`/api/outreach/${jobId}/contacts`, {

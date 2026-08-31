@@ -143,12 +143,25 @@ export function OutreachDrawer({
     }
   }
 
-  async function addCandidate(candidate: ContactCandidate) {
+  /**
+   * `origin` and `headline` travel with the candidate: a person the posting
+   * itself named is not the same as a name typed into the box below, and
+   * dropping them here stored every found contact as "added by hand".
+   *
+   * Marked by index rather than by object identity - `act` reloads the drawer
+   * in between, so the object in `prev` need not be the one clicked.
+   */
+  async function addCandidate(candidate: ContactCandidate, index: number) {
     const ok = await act(() =>
-      api.addContact(jobId, { full_name: candidate.full_name, profile_url: candidate.profile_url }),
+      api.addContact(jobId, {
+        full_name: candidate.full_name,
+        profile_url: candidate.profile_url,
+        headline: candidate.headline,
+        origin: candidate.origin,
+      }),
     );
     if (ok) {
-      setCandidates((prev) => prev.map((c) => (c === candidate ? { ...c, existing: true } : c)));
+      setCandidates((prev) => prev.map((c, i) => (i === index ? { ...c, existing: true } : c)));
     }
   }
 
@@ -222,7 +235,7 @@ export function OutreachDrawer({
                   type="button"
                   className="btn ghost sm"
                   disabled={busy}
-                  onClick={() => addCandidate(candidate)}
+                  onClick={() => addCandidate(candidate, i)}
                 >
                   Add
                 </button>
@@ -502,13 +515,22 @@ function ContactCard({
   );
 }
 
+// How this person was found. Worth showing plainly: a contact the posting named
+// carries more weight than one a company search turned up, and both more than a
+// name typed in by hand.
+const ORIGIN_LABEL: Record<string, string> = {
+  job_poster: "job poster",
+  company_search: "found at the company",
+  manual: "added by hand",
+};
+
 function Who({ contact }: { contact: OutreachContact }) {
   return (
     <div>
       <div className="name">{contact.full_name}</div>
       {contact.headline && <div className="headline">{contact.headline}</div>}
       <div className="src">
-        <span className="srctag">{contact.origin === "job_poster" ? "job poster" : "added by hand"}</span>
+        <span className="srctag">{ORIGIN_LABEL[contact.origin] ?? "added by hand"}</span>
         {contact.profile_url && (
           <a href={`https://${contact.profile_url.replace(/^https?:\/\//, "")}`} target="_blank" rel="noreferrer">
             {contact.profile_url} ↗
