@@ -2469,7 +2469,9 @@ tr.drawer > td {
   text-transform: uppercase;
   color: var(--ink-faint);
 }
-.src {
+/* Scoped: the sync progress rail's per-source row is also `.src` and is a
+   three-column grid, so an unscoped rule here collapsed it mid-run. */
+.sources .src {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2477,7 +2479,7 @@ tr.drawer > td {
   color: var(--ink-dim);
   cursor: pointer;
 }
-.src.off {
+.sources .src.off {
   opacity: 0.5;
   cursor: not-allowed;
 }
