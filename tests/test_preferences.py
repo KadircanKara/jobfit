@@ -495,7 +495,26 @@ def test_upwork_expands_to_the_upwork_adapter() -> None:
 
 
 def test_ats_still_excludes_upwork() -> None:
+    """Forward-looking guard: passes trivially today since REGISTRY has no
+    upwork entry yet, but will start meaning something the moment Task 6
+    registers it. The test below is the one that actually bites now."""
     assert "upwork" not in preferences.adapters_for(["ats"])
+
+
+def test_ats_group_excludes_upwork_even_when_registered(monkeypatch) -> None:
+    """REGISTRY has no `upwork` entry until Task 6, so a bare `"upwork" not in
+    adapters_for(["ats"])` assertion can never fail today regardless of whether
+    the exclusion exists. Fake a registered upwork adapter so the exclusion in
+    `_ats_sources` is actually exercised now, not just after Task 6 lands."""
+    from jobhunt import sources as source_registry
+
+    fake_registry = dict(source_registry.REGISTRY)
+    fake_registry["upwork"] = object
+    monkeypatch.setattr(source_registry, "REGISTRY", fake_registry)
+
+    expanded = preferences._ats_sources()
+    assert "upwork" not in expanded
+    assert "greenhouse" in expanded and "workable" in expanded
 
 
 def test_filters_carry_the_selected_adapter_ids() -> None:
