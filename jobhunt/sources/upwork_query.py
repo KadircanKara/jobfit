@@ -22,6 +22,8 @@ documentation:
 """
 from __future__ import annotations
 
+from typing import Any
+
 from jobhunt.preferences import UpworkPreferences
 
 ORG_UID_ENV = "UPWORK_ORG_UID"
@@ -44,9 +46,9 @@ def _budget_min(job_type: str, prefs: UpworkPreferences) -> float | None:
     return floor if floor else None
 
 
-def search_params(query: str, job_type: str, prefs: UpworkPreferences) -> dict[str, object]:
+def search_params(query: str, job_type: str, prefs: UpworkPreferences) -> dict[str, Any]:
     """Build the find_jobs params for one (query, job_type) ref."""
-    params: dict[str, object] = {
+    params: dict[str, Any] = {
         "query": query,
         "job_type": job_type,
         "sort": SORT,

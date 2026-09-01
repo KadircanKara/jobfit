@@ -17,6 +17,11 @@ def test_a_missing_floor_is_omitted_rather_than_sent_as_zero() -> None:
     assert "budget_min" not in params
 
 
+def test_a_zero_floor_is_also_omitted_rather_than_sent_as_zero() -> None:
+    params = query.search_params("rag", "hourly", UpworkPreferences(min_hourly=0))
+    assert "budget_min" not in params
+
+
 def test_the_query_and_type_always_travel() -> None:
     params = query.search_params("rag pipeline", "hourly", UpworkPreferences())
     assert params["query"] == "rag pipeline"
@@ -43,6 +48,26 @@ def test_experience_levels_are_passed_through_when_a_single_one_is_chosen() -> N
 def test_several_experience_levels_are_omitted_because_the_api_takes_one() -> None:
     prefs = UpworkPreferences(experience_level=["intermediate", "expert"])
     assert "experience_level" not in query.search_params("x", "hourly", prefs)
+
+
+def test_workload_is_passed_through_when_a_single_one_is_chosen() -> None:
+    prefs = UpworkPreferences(workload=["part_time"])
+    assert query.search_params("x", "hourly", prefs)["workload"] == "part_time"
+
+
+def test_several_workloads_are_omitted_because_the_api_takes_one() -> None:
+    prefs = UpworkPreferences(workload=["part_time", "full_time"])
+    assert "workload" not in query.search_params("x", "hourly", prefs)
+
+
+def test_proposals_max_is_passed_through() -> None:
+    prefs = UpworkPreferences(proposals_max=5)
+    assert query.search_params("x", "hourly", prefs)["proposals_max"] == 5
+
+
+def test_client_hires_min_is_passed_through_under_the_wire_name() -> None:
+    prefs = UpworkPreferences(client_min_hires=10)
+    assert query.search_params("x", "hourly", prefs)["client_hires_min"] == 10
 
 
 def test_one_ref_per_query_and_job_type() -> None:
