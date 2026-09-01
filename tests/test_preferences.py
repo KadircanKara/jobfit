@@ -490,8 +490,12 @@ def test_linkedin_only_expands_to_linkedin_alone() -> None:
     assert preferences.adapters_for(["linkedin"]) == ["linkedin"]
 
 
-def test_upwork_expands_to_nothing_until_it_is_built() -> None:
-    assert preferences.adapters_for(["upwork"]) == []
+def test_upwork_expands_to_the_upwork_adapter() -> None:
+    assert preferences.adapters_for(["upwork"]) == ["upwork"]
+
+
+def test_ats_still_excludes_upwork() -> None:
+    assert "upwork" not in preferences.adapters_for(["ats"])
 
 
 def test_filters_carry_the_selected_adapter_ids() -> None:
@@ -525,6 +529,56 @@ def test_clearing_every_source_is_rejected(cfg) -> None:
         set_prefs(cfg, sources="none")
 
 
-def test_a_selection_that_expands_to_no_adapter_is_rejected(cfg) -> None:
+def test_upwork_alone_is_now_a_valid_selection(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    updated = preferences.apply_updates(prefs, {"sources": "upwork"})
+    assert updated.sources == ["upwork"]
+
+
+# --- upwork: its own query settings --------------------------------------------
+
+
+def test_upwork_preferences_default_to_both_job_types() -> None:
+    assert preferences.Preferences().upwork.job_types == ["hourly", "fixed"]
+
+
+def test_a_dotted_upwork_key_is_applied(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    updated = preferences.apply_updates(
+        prefs, {"upwork.min_hourly": "35", "upwork.queries": "rag, fastapi"}
+    )
+    assert updated.upwork.min_hourly == 35.0
+    assert updated.upwork.queries == ["rag", "fastapi"]
+
+
+def test_an_unknown_upwork_key_is_a_loud_error(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
     with pytest.raises(preferences.PreferenceError):
-        set_prefs(cfg, sources="upwork")
+        preferences.apply_updates(prefs, {"upwork.nonsense": "1"})
+
+
+def test_an_unknown_experience_level_is_refused(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    with pytest.raises(preferences.PreferenceError):
+        preferences.apply_updates(prefs, {"upwork.experience_level": "advanced"})
+
+
+def test_upwork_settings_survive_a_save_and_load(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    prefs.upwork.min_hourly = 40.0
+    prefs.upwork.queries = ["llm"]
+    preferences.save(cfg, prefs)
+    loaded, _ = preferences.load(cfg)
+    assert isinstance(loaded.upwork, preferences.UpworkPreferences)
+    assert loaded.upwork.min_hourly == 40.0 and loaded.upwork.queries == ["llm"]
+
+
+def test_upwork_preferences_round_trip_through_from_filters() -> None:
+    """Task 1's `_coerce` threads the resolved type hint through automatically -
+    nothing in this module needs to special-case the nested dataclass."""
+    prefs = preferences.Preferences(upwork=preferences.UpworkPreferences(min_hourly=50.0))
+    filters = preferences.to_filters(prefs)
+    filters[preferences.MANAGED_KEY] = dataclasses.asdict(prefs)
+    restored = preferences.from_filters(filters)
+    assert isinstance(restored.upwork, preferences.UpworkPreferences)
+    assert restored.upwork.min_hourly == 50.0

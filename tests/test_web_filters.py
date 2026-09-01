@@ -90,7 +90,7 @@ def test_unticking_every_source_is_rejected_rather_than_stored():
     assert "ats" in str(exc.value)
 
 
-def test_a_selection_of_only_upwork_is_rejected():
-    """`upwork` is a plan, not an adapter: it expands to nothing."""
-    with pytest.raises(webfilters.FieldError):
-        webfilters.apply(Preferences(), {"sources": ["upwork"]})
+def test_a_selection_of_only_upwork_is_accepted():
+    """`upwork` is its own adapter now, not a plan that expands to nothing."""
+    prefs = webfilters.apply(Preferences(), {"sources": ["upwork"]})
+    assert prefs.sources == ["upwork"]

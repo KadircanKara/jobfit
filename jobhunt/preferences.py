@@ -31,10 +31,13 @@ EMPLOYMENT_TYPES = norm.EMPLOYMENT_TYPES
 DEFAULT_MARKETS = ("global_remote", "yc", "tr_local")
 
 # `ats` is a group, not an adapter: ticking twelve boxes is not the feature the
-# user asked for. `upwork` is known but expands to nothing until the source exists,
-# so a stored selection naming it can never silently widen a run.
+# user asked for. `upwork` is its own adapter with its own query settings below.
 SOURCE_CHOICES: tuple[str, ...] = ("ats", "linkedin", "upwork")
 LINKEDIN_SOURCE = "linkedin"
+UPWORK_SOURCE = "upwork"
+UPWORK_JOB_TYPES = ("hourly", "fixed")
+UPWORK_EXPERIENCE = ("entry_level", "intermediate", "expert")
+UPWORK_WORKLOAD = ("full_time", "part_time", "as_needed")
 
 
 def _ats_sources() -> tuple[str, ...]:
@@ -42,7 +45,11 @@ def _ats_sources() -> tuple[str, ...]:
     # this module, and a top-level import would close that circle.
     from jobhunt import sources as source_registry
 
-    return tuple(sorted(name for name in source_registry.REGISTRY if name != LINKEDIN_SOURCE))
+    # Upwork answers to its own explicit group, not the "everything else" one:
+    # once it is in REGISTRY, ticking ATS in the browser must not silently start
+    # an Upwork agent subprocess nobody asked for.
+    excluded = {LINKEDIN_SOURCE, UPWORK_SOURCE}
+    return tuple(sorted(name for name in source_registry.REGISTRY if name not in excluded))
 
 
 def adapters_for(selection: list[str]) -> list[str]:
@@ -53,12 +60,35 @@ def adapters_for(selection: list[str]) -> list[str]:
             names.extend(_ats_sources())
         elif group == LINKEDIN_SOURCE:
             names.append(LINKEDIN_SOURCE)
-        # `upwork` deliberately expands to nothing.
+        elif group == UPWORK_SOURCE:
+            names.append(UPWORK_SOURCE)
     return sorted(set(names))
 
 
 class PreferenceError(ValueError):
     """A preference the user can fix, phrased for them rather than for a log."""
+
+
+@dataclasses.dataclass
+class UpworkPreferences:
+    """What to ask Upwork for. Not an override of the salaried settings.
+
+    Upwork is a different market with a different vocabulary: there is no
+    location (every gig is remote), no seniority ladder, and a rate rather than
+    a salary. Mirroring the shared fields here would give two places to answer
+    one question.
+    """
+
+    queries: list[str] = dataclasses.field(default_factory=list)
+    job_types: list[str] = dataclasses.field(default_factory=lambda: list(UPWORK_JOB_TYPES))
+    min_hourly: float | None = None
+    min_fixed: float | None = None
+    experience_level: list[str] = dataclasses.field(default_factory=list)
+    verified_payment_only: bool = True
+    workload: list[str] = dataclasses.field(default_factory=list)
+    proposals_max: int | None = None
+    client_min_hires: int | None = None
+    max_pages: int = 3
 
 
 @dataclasses.dataclass
@@ -82,6 +112,9 @@ class Preferences:
     # a run that fetches only LinkedIn but shortlists everything cannot show what
     # LinkedIn alone is worth.
     sources: list[str] = dataclasses.field(default_factory=lambda: ["ats", "linkedin"])
+    # Upwork's own query. Nested rather than flattened because none of these
+    # keys mean anything to the other twelve sources.
+    upwork: UpworkPreferences = dataclasses.field(default_factory=UpworkPreferences)
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -167,12 +200,12 @@ def _job_types(values: list[str]) -> list[str]:
 def _sources(values: list[str]) -> list[str]:
     """Validate a source selection, here and only here.
 
-    A selection that expands to no adapter at all - nothing ticked, or `upwork`
-    alone, which is a plan rather than a source - is rejected rather than stored:
-    the run would fetch nothing while the shortlist restricted nothing, so the
-    two would silently disagree about what the corpus is. The browser disables
-    Save on an empty pick, but `jobhunt config set` and PUT /api/filters reach
-    the same state and the backend has to answer for itself.
+    A selection that expands to no adapter at all - nothing ticked - is rejected
+    rather than stored: the run would fetch nothing while the shortlist
+    restricted nothing, so the two would silently disagree about what the
+    corpus is. The browser disables Save on an empty pick, but
+    `jobhunt config set` and PUT /api/filters reach the same state and the
+    backend has to answer for itself.
     """
     out = []
     for value in values:
@@ -190,6 +223,55 @@ def _sources(values: list[str]) -> list[str]:
     return out
 
 
+def _restricted(values: list[str], allowed: tuple[str, ...], label: str) -> list[str]:
+    out = []
+    for value in values:
+        text = value.strip().lower()
+        if text not in allowed:
+            raise PreferenceError(f"unknown {label} {value!r}. use one of: {', '.join(allowed)}")
+        out.append(text)
+    return out
+
+
+# Derived, not a second hand-written list: a field added to `UpworkPreferences`
+# and forgotten here would otherwise round-trip silently instead of raising.
+UPWORK_KEYS = {f.name for f in dataclasses.fields(UpworkPreferences)}
+
+
+def _apply_upwork(target: UpworkPreferences, name: str, value: str) -> None:
+    if name not in UPWORK_KEYS:
+        raise PreferenceError(
+            f"unknown setting upwork.{name!r}. known: "
+            f"{', '.join(f'upwork.{k}' for k in sorted(UPWORK_KEYS))}"
+        )
+    blank = value in ("", "any", "none", "-")
+
+    if name == "queries":
+        target.queries = [] if blank else _split(value)
+    elif name == "job_types":
+        target.job_types = list(UPWORK_JOB_TYPES) if blank else _restricted(
+            _split(value), UPWORK_JOB_TYPES, "upwork job type"
+        )
+    elif name == "min_hourly":
+        target.min_hourly = None if blank else _number(value)
+    elif name == "min_fixed":
+        target.min_fixed = None if blank else _number(value)
+    elif name == "experience_level":
+        target.experience_level = [] if blank else _restricted(
+            _split(value), UPWORK_EXPERIENCE, "upwork experience level"
+        )
+    elif name == "verified_payment_only":
+        target.verified_payment_only = value.lower() not in ("false", "no", "0")
+    elif name == "workload":
+        target.workload = [] if blank else _restricted(_split(value), UPWORK_WORKLOAD, "upwork workload")
+    elif name == "proposals_max":
+        target.proposals_max = None if blank else int(_number(value))
+    elif name == "client_min_hires":
+        target.client_min_hires = None if blank else int(_number(value))
+    elif name == "max_pages":
+        target.max_pages = 3 if blank else int(_number(value))
+
+
 def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
     """Apply `key=value` pairs from the CLI. Unknown keys are a loud error."""
     known = {
@@ -198,6 +280,9 @@ def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
         "max_age_days", "top_n", "sources",
     }
     for key, raw in updates.items():
+        if key.startswith("upwork."):
+            _apply_upwork(prefs.upwork, key.removeprefix("upwork."), str(raw).strip())
+            continue
         if key not in known:
             raise PreferenceError(f"unknown setting {key!r}. known: {', '.join(sorted(known))}")
         value = str(raw).strip()
