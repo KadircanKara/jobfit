@@ -5,6 +5,8 @@ translation lives here and is tested rather than being generated per run.
 """
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 import yaml
 
@@ -17,6 +19,41 @@ def set_prefs(cfg, **updates):
     prefs = preferences.apply_updates(prefs, updates)
     preferences.save(cfg, prefs)
     return prefs
+
+
+@dataclasses.dataclass
+class _Nested:
+    number: int = 0
+    words: list[str] = dataclasses.field(default_factory=list)
+
+
+def test_a_nested_dataclass_round_trips_as_a_dataclass(cfg) -> None:
+    """A dict assigned where a dataclass belongs raises AttributeError at use."""
+    prefs = Preferences(titles=["Backend Engineer"])
+    preferences.save(cfg, prefs)
+    loaded, _ = preferences.load(cfg)
+    # Whatever nested fields exist must come back as their declared type.
+    for field in dataclasses.fields(Preferences):
+        if dataclasses.is_dataclass(field.type) or dataclasses.is_dataclass(
+            getattr(field.type, "__origin__", None)
+        ):
+            assert not isinstance(getattr(loaded, field.name), dict)
+
+
+def test_a_dict_is_coerced_into_its_declared_dataclass() -> None:
+    coerced = preferences._coerce(_Nested, {"number": 3, "words": ["a"]})
+    assert isinstance(coerced, _Nested)
+    assert coerced.number == 3 and coerced.words == ["a"]
+
+
+def test_an_already_correct_value_passes_through() -> None:
+    value = _Nested(number=1)
+    assert preferences._coerce(_Nested, value) is value
+
+
+def test_a_dict_of_dataclasses_is_coerced_by_value() -> None:
+    out = preferences._coerce(dict[str, _Nested], {"one": {"number": 2}})
+    assert isinstance(out["one"], _Nested)
 
 
 # --- parsing what a person types ----------------------------------------------

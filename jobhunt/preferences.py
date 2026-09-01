@@ -14,6 +14,7 @@ from __future__ import annotations
 import dataclasses
 import pathlib
 import re
+import typing
 from typing import Any
 
 import yaml
@@ -455,6 +456,28 @@ def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -
     }
 
 
+def _coerce(declared: Any, value: Any) -> Any:
+    """Rebuild a nested dataclass the YAML round trip flattened into a dict.
+
+    `from_filters` reads a verbatim `dataclasses.asdict` mirror, so a nested
+    field comes back as a plain dict. Left alone it would satisfy every type
+    check and then fail on first attribute access, deep inside an adapter's
+    `except Exception` - an empty corpus rather than a traceback.
+    """
+    origin = getattr(declared, "__origin__", None)
+    if origin is dict and isinstance(value, dict):
+        _, item_type = declared.__args__
+        return {key: _coerce(item_type, item) for key, item in value.items()}
+    if origin is list and isinstance(value, list):
+        (item_type,) = declared.__args__
+        return [_coerce(item_type, item) for item in value]
+    if dataclasses.is_dataclass(declared) and isinstance(value, dict):
+        fields = {f.name: f for f in dataclasses.fields(declared)}
+        known = {k: _coerce(fields[k].type, v) for k, v in value.items() if k in fields}
+        return declared(**known)
+    return value
+
+
 def from_filters(filters: dict[str, Any]) -> Preferences:
     """Read preferences back out, so the wizard can show current values.
 
@@ -464,9 +487,13 @@ def from_filters(filters: dict[str, Any]) -> Preferences:
     """
     managed = (filters or {}).get(MANAGED_KEY) or {}
     prefs = Preferences()
+    # `Preferences` uses `from __future__ import annotations`, so a bare
+    # `field.type` is a string. Resolve the hints once so `_coerce` can
+    # dispatch on real types instead of silently doing nothing on a string.
+    hints = typing.get_type_hints(Preferences)
     for field in dataclasses.fields(Preferences):
         if field.name in managed:
-            setattr(prefs, field.name, managed[field.name])
+            setattr(prefs, field.name, _coerce(hints[field.name], managed[field.name]))
     return prefs
 
 
