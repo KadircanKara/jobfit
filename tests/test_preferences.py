@@ -173,6 +173,25 @@ def test_the_turkey_market_keeps_its_own_country(cfg) -> None:
     assert filters["profiles"]["global_remote"]["hard_requires"]["country"] == ["DE"]
 
 
+def test_the_upwork_profile_overrides_the_global_title_regex() -> None:
+    prefs = Preferences(titles=["Backend Engineer"])
+    prefs.upwork.queries = ["rag pipeline", "llm"]
+    profile = preferences.to_filters(prefs)["profiles"]["upwork"]
+    assert profile["require_titles_regex"]
+    assert profile["require_titles_regex"] != preferences.title_patterns_for(prefs)
+
+
+def test_an_empty_upwork_query_list_matches_everything() -> None:
+    prefs = Preferences(titles=["Backend Engineer"])
+    profile = preferences.to_filters(prefs)["profiles"]["upwork"]
+    assert profile["require_titles_regex"] == [".*"]
+
+
+def test_the_upwork_profile_states_no_salary_floor() -> None:
+    prefs = Preferences(min_salary=120000)
+    assert "salary" not in preferences.to_filters(prefs)["profiles"]["upwork"]
+
+
 # --- the file -----------------------------------------------------------------
 
 

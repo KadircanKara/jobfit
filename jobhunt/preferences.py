@@ -28,7 +28,7 @@ MANAGED_KEY = "_managed_by_jobhunt_config"
 
 WORK_MODELS = ("remote", "hybrid", "onsite")
 EMPLOYMENT_TYPES = norm.EMPLOYMENT_TYPES
-DEFAULT_MARKETS = ("global_remote", "yc", "tr_local")
+DEFAULT_MARKETS = ("global_remote", "yc", "tr_local", "upwork")
 
 # `ats` is a group, not an adapter: ticking twelve boxes is not the feature the
 # user asked for. `upwork` is its own adapter with its own query settings below.
@@ -497,6 +497,15 @@ def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -
     profiles: dict[str, Any] = {}
     for market in markets:
         rules: dict[str, Any] = {}
+        if market == UPWORK_SOURCE:
+            # A gig has no country or employment type worth filtering on, and
+            # Upwork's entry/intermediate/expert levels rate the contract's
+            # difficulty, not a career stage: mapping them onto the salaried
+            # seniority ladder would silently filter gigs. The rate floor is a
+            # different quantity, handled where the adapter reads it.
+            rules["require_titles_regex"] = title_patterns(prefs.upwork.queries) or [".*"]
+            profiles[market] = rules
+            continue
         hard_requires: dict[str, Any] = {}
         if prefs.work_model:
             hard_requires["remote_type"] = list(prefs.work_model)
@@ -607,7 +616,12 @@ def save(config: Config, prefs: Preferences) -> pathlib.Path:
         profile = document["profiles"].setdefault(market, {})
         # Replace only the keys this module owns. A gate prompt path, a surface
         # threshold, or a hand-written hard_excludes list stays untouched.
-        for key in ("hard_requires", "seniority_min", "seniority_max", "salary", "allow_worldwide"):
+        owned = ["hard_requires", "seniority_min", "seniority_max", "salary", "allow_worldwide"]
+        if market == UPWORK_SOURCE:
+            # Upwork only ever owns its title pattern: a regenerated profile
+            # must replace the old one rather than merge into it.
+            owned = ["require_titles_regex"]
+        for key in owned:
             profile.pop(key, None)
         profile.update(rules)
     for market in generated["profiles"]:

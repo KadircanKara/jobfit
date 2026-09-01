@@ -495,6 +495,17 @@ def test_a_profile_can_override_the_required_titles(cfg) -> None:
     assert not verdict_for(cfg, make_job(cfg, external_id="x2", title="Engineer"), filters).passed
 
 
+def test_an_upwork_gig_survives_the_salaried_title_rule(cfg) -> None:
+    """The global pattern is built from job titles; a gig is written in prose."""
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="u1",
+                       title="Need a Django dev to fix my scraper")
+    filters = {
+        "profiles": {"upwork": {"require_titles_regex": [".*"]}},
+        "global": {"require_titles_regex": ["(?<!\\w)(Backend Engineer)"], "max_age_days": 30},
+    }
+    assert "title_unmatched" not in verdict_for(cfg, job_id, filters).codes
+
+
 def test_the_packaged_filters_keep_engineering_titles_and_drop_the_rest(cfg) -> None:
     """A guard on the shipped defaults, not on the mechanism."""
     filters = deterministic.load_filters(cfg)

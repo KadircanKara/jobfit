@@ -45,6 +45,13 @@ profiles:
     llm_gate_prompt: prompts/tr_fit.md
     min_score_to_surface: 0.6
 
+  upwork:
+    # No hard_requires, no seniority: a gig has no country or employment type
+    # worth filtering on, and Upwork's entry/intermediate/expert levels rate
+    # the contract's difficulty, not a career stage.
+    llm_gate_prompt: prompts/gate_upwork.md
+    min_score_to_surface: 0.6
+
 global:
   # At least one of these must match the title. Without it, stage 1 hands the
   # gate telehealth doctors and construction estimators, and each one costs a
