@@ -88,6 +88,13 @@ def _positive_float(value: Any) -> float | None:
     return number if number > 0 else None
 
 
+def _as_str(value: Any) -> str:
+    """`value` if it is a string, else "". Same discipline as `_as_dict`/`_as_list`:
+    a source that sends the wrong type for a field degrades to absent, never
+    a crash that drops the whole posting via the caller's try/except."""
+    return value if isinstance(value, str) else ""
+
+
 def _detail_node(detail: dict) -> dict[str, Any]:
     """The detail document's actual job fields, unwrapped from its envelope.
 
@@ -206,18 +213,32 @@ class UpworkAdapter(HttpAdapter):
         job_type = str(item.get("job_type") or "").lower()
 
         raw_description = _as_dict(detail_node.get("content")).get("description")
-        if raw_description:
-            description_text = _strip_untrusted_wrapper(str(raw_description))
+        detail_text = _strip_untrusted_wrapper(_as_str(raw_description)) if raw_description else ""
+        if detail_text:
+            # A detail was fetched and it actually held prose after stripping -
+            # `norm.completeness` is not used here on purpose: that helper's
+            # length threshold is for judging text of *unknown* wholeness
+            # (as on greenhouse.py, where the source always sends the whole
+            # body). Here wholeness is a known fact from where the text came
+            # from, not something to re-derive from how long it happens to be.
+            description_text = detail_text
             jd_completeness = "full"
             jd_source = "api"
         else:
-            description_text = (item.get("description_snippet") or "").strip()
-            # No detail was fetched, so this is at best a truncated snippet -
-            # and at worst nothing at all. `norm.completeness` already draws
-            # the full/snippet line on length; an empty snippet must fall to
-            # "none" rather than claim a truncated body the gate never sees.
-            jd_completeness = norm.completeness(description_text) if description_text else "none"
-            jd_source = "api" if description_text else None
+            # Either no detail was fetched, or it was fetched and its
+            # description was only the wrapper tags / whitespace - either way
+            # there is no whole body, so this falls to the snippet path
+            # rather than a bare truthiness check on `raw_description`.
+            snippet_text = _as_str(item.get("description_snippet")).strip()
+            description_text = snippet_text
+            # A snippet is truncated by definition, never "full" - regardless
+            # of how long it happens to be. `jd_completeness` is load-bearing
+            # downstream (applications.py gates on "full"; store.py stamps
+            # jd_extracted_at on it), so a long snippet mislabelled "full"
+            # would be recorded as an extracted, complete JD and never
+            # re-fetched.
+            jd_completeness = "snippet" if snippet_text else "none"
+            jd_source = "api" if snippet_text else None
 
         client_company = _client_company(detail_node)
         trailer = _trailer(item, client_company)

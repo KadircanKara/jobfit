@@ -103,6 +103,55 @@ def test_a_posting_with_neither_a_detail_nor_a_snippet_is_none_not_snippet() -> 
         assert posting.jd_completeness == "none"
 
 
+def test_a_long_snippet_is_still_labelled_snippet_not_full() -> None:
+    """A snippet is truncated by definition, regardless of how long it is -
+    `norm.completeness`'s length threshold must never promote it to "full"."""
+    payload = _payload() | {"details": {}}
+    long_snippet = "Backend engineer needed for a long-running project. " * 20
+    assert len(long_snippet) >= 400
+    for item in payload["pages"][0]["results"]:
+        item["description_snippet"] = long_snippet
+    for posting in UpworkAdapter().normalize(payload, _ref()):
+        assert posting.jd_completeness == "snippet"
+
+
+def test_a_wrapper_only_detail_description_falls_back_to_the_snippet() -> None:
+    """A detail whose description is only the wrapper tags (or whitespace) is
+    truthy as a string but holds no prose - it must not be reported as "full"
+    with no text, the exact defect the snippet path was already fixed for."""
+    payload = _payload()
+    node = payload["details"]["2094821655490856773"]["data"]["marketplaceJobPosting"]
+    node["content"]["description"] = "<untrusted_participant_content></untrusted_participant_content>"
+    postings = {p.external_id: p for p in UpworkAdapter().normalize(payload, _ref())}
+    hourly = postings["2094821655490856773"]
+    snippet = next(
+        item for item in payload["pages"][0]["results"] if item["id"] == "2094821655490856773"
+    )["description_snippet"]
+    assert hourly.description_text == snippet.strip()
+    assert hourly.jd_completeness == "snippet"
+
+
+def test_jd_completeness_is_full_on_the_detail_path() -> None:
+    postings = {p.external_id: p for p in UpworkAdapter().normalize(_payload(), _ref())}
+    hourly = postings["2094821655490856773"]
+    assert hourly.jd_completeness == "full"
+    assert hourly.jd_source == "api"
+
+
+def test_an_hourly_budget_min_of_zero_beside_a_real_max_is_dropped() -> None:
+    """`hourlyBudgetMin: 0` is not a real floor - it must not report salary_min
+    == 0 just because a real max sits beside it."""
+    payload = _payload()
+    node = payload["details"]["2094821655490856773"]["data"]["marketplaceJobPosting"]
+    node["contractTerms"]["hourlyContractTerms"]["hourlyBudgetMin"] = 0
+    postings = {p.external_id: p for p in UpworkAdapter().normalize(payload, _ref())}
+    hourly = postings["2094821655490856773"]
+    assert hourly.salary_min is None
+    assert hourly.salary_max == 30
+    assert hourly.salary_period == "hourly"
+    assert hourly.salary_is_stated is True
+
+
 def test_the_skills_and_client_reach_the_description_trailer() -> None:
     posting = next(p for p in UpworkAdapter().normalize(_payload(), _ref()) if p.description_md)
     assert "Skills:" in posting.description_md
