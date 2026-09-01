@@ -80,11 +80,27 @@ def test_upworks_experience_level_never_reaches_the_seniority_signal() -> None:
     assert "EXPERT" in hourly.description_md
 
 
-def test_a_posting_without_a_detail_is_still_yielded_as_a_snippet() -> None:
+def test_a_posting_without_a_detail_falls_back_to_the_search_snippet() -> None:
+    """`description_snippet` must actually reach `description_text` - not just
+    the "snippet" label reading correctly regardless of what text is there."""
     payload = _payload() | {"details": {}}
-    postings = list(UpworkAdapter().normalize(payload, _ref()))
+    postings = {p.external_id: p for p in UpworkAdapter().normalize(payload, _ref())}
     assert postings
-    assert all(p.jd_completeness == "snippet" for p in postings)
+    for item in payload["pages"][0]["results"]:
+        posting = postings[item["id"]]
+        assert posting.description_text == item["description_snippet"].strip()
+        assert posting.jd_completeness == "snippet"
+
+
+def test_a_posting_with_neither_a_detail_nor_a_snippet_is_none_not_snippet() -> None:
+    """A gate that only ever sees the trailer must not be told the body was
+    merely truncated - `linkedin.py` sets "none" in exactly this case."""
+    payload = _payload() | {"details": {}}
+    for item in payload["pages"][0]["results"]:
+        item.pop("description_snippet", None)
+    for posting in UpworkAdapter().normalize(payload, _ref()):
+        assert posting.description_text is None
+        assert posting.jd_completeness == "none"
 
 
 def test_the_skills_and_client_reach_the_description_trailer() -> None:
@@ -95,6 +111,14 @@ def test_the_skills_and_client_reach_the_description_trailer() -> None:
 
 def test_malformed_results_yield_nothing_rather_than_raising() -> None:
     assert list(UpworkAdapter().normalize({"pages": [{"results": ["nonsense"]}]}, _ref())) == []
+
+
+def test_a_non_list_pages_yields_nothing_rather_than_raising() -> None:
+    assert list(UpworkAdapter().normalize({"pages": 5}, _ref())) == []
+
+
+def test_a_non_list_results_yields_nothing_rather_than_raising() -> None:
+    assert list(UpworkAdapter().normalize({"pages": [{"results": 5}]}, _ref())) == []
 
 
 def test_an_empty_envelope_yields_nothing() -> None:

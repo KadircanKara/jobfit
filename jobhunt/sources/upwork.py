@@ -5,20 +5,21 @@ This is the pure half only: `normalize` turns a stored fetch envelope into
 `find_jobs` on the tool allow-list - no adapter here ever spends a Connect.
 
 Facts below were verified live against the Upwork MCP, not re-derived from
-documentation. A `find_jobs action=search` result carries no description at
-all - the fields are metadata (`job_type`, `budget`, `experience_level`,
-`duration`, `engagement`, `proposal_count`, `skills`, `client`, ...), all
-top-level and snake_case. The prose only exists in the per-job `get` document,
-nested under `data.marketplaceJobPosting`:
+documentation. A `find_jobs action=search` result carries a *truncated*
+`description_snippet` alongside its metadata (`job_type`, `budget`,
+`experience_level`, `duration`, `engagement`, `proposal_count`, `skills`,
+`client`, ...), all top-level and snake_case, with `job_type` lowercase
+(`"hourly"`/`"fixed"`). The full description lives only in the per-job `get`
+document, nested under `data.marketplaceJobPosting`:
 
 - `data.marketplaceJobPosting.content.description` is the full description,
   wrapped in `<untrusted_participant_content>` tags.
 - `data.marketplaceJobPosting.contractTerms.hourlyContractTerms.hourlyBudgetMin`/
-  `hourlyBudgetMax` is an hourly row's real rate. The search-level `budget` is
-  the string `"0.0"` on every hourly row regardless of the real rate - zero is
-  never a real budget for either contract type, so it is treated as absent
-  rather than free work. A fixed row's real number is the search-level
-  `budget` directly; no detail is needed for it.
+  `hourlyBudgetMax` (plain numbers) is an hourly row's real rate. The
+  search-level `budget` is the string `"0.0"` on every hourly row regardless
+  of the real rate - zero is never a real budget for either contract type, so
+  it is treated as absent rather than free work. A fixed row's real number is
+  the search-level `budget` directly; no detail is needed for it.
 - `data.marketplaceJobPosting.clientCompanyPublic` carries `country`, `state`
   and `timezone` - and no company name. That is why `company_name` falls back
   to a constant here; Task 8 extracts a real identity from the description
@@ -68,6 +69,25 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _positive_float(value: Any) -> float | None:
+    """`value` as a float, or None if it is missing, unparseable, or <= 0.
+
+    Both the hourly detail's `hourlyBudgetMin`/`Max` and the search-level
+    `budget` string need this same guard: a stated 0 is never a real rate on
+    either path, and a `hourlyBudgetMin: 0` beside a real max must not report
+    a $0 floor.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 def _detail_node(detail: dict) -> dict[str, Any]:
     """The detail document's actual job fields, unwrapped from its envelope.
 
@@ -93,17 +113,17 @@ def _salary(
     rows carry the real number in `budget` directly, with no detail needed.
     """
     hourly_terms = _as_dict(_as_dict(detail_node.get("contractTerms")).get("hourlyContractTerms"))
-    low = hourly_terms.get("hourlyBudgetMin")
-    high = hourly_terms.get("hourlyBudgetMax")
-    if low or high:
+    low = _positive_float(hourly_terms.get("hourlyBudgetMin"))
+    high = _positive_float(hourly_terms.get("hourlyBudgetMax"))
+    if low is not None or high is not None:
         return low, high, "hourly", True
 
-    try:
-        budget = float(item.get("budget") or 0)
-    except (TypeError, ValueError):
-        budget = 0.0
-    if budget > 0:
-        return budget, None, job_type or "fixed", True
+    budget = _positive_float(item.get("budget"))
+    if budget is not None:
+        # Only "hourly"/"fixed" are meaningful downstream - an unexpected or
+        # missing API string must not leak into the stored period.
+        period = "hourly" if job_type.startswith("hourly") else "fixed"
+        return budget, None, period, True
     return None, None, None, False
 
 
@@ -155,15 +175,18 @@ class UpworkAdapter(HttpAdapter):
 
         A shape a real fetch never actually produced is exactly what a
         hand-written fixture cannot rule out, so every result is isolated in
-        its own try/except rather than trusted to be well-formed.
+        its own try/except rather than trusted to be well-formed - and the
+        page/result containers themselves are guarded before iterating, since
+        a non-list `pages` or `results` would otherwise raise a `TypeError`
+        straight out of this generator and kill the whole run.
         """
         if not isinstance(raw, dict):
             return
         details = _as_dict(raw.get("details"))
-        for page in raw.get("pages") or []:
+        for page in _as_list(raw.get("pages")):
             if not isinstance(page, dict):
                 continue
-            for item in page.get("results") or []:
+            for item in _as_list(page.get("results")):
                 try:
                     posting = self._normalize_one(item, ref, details)
                 except Exception:
@@ -188,11 +211,13 @@ class UpworkAdapter(HttpAdapter):
             jd_completeness = "full"
             jd_source = "api"
         else:
-            # A search result carries no description of its own - only a
-            # per-job `get` does. Without one, the trailer alone is the body.
-            description_text = ""
-            jd_completeness = "snippet"
-            jd_source = None
+            description_text = (item.get("description_snippet") or "").strip()
+            # No detail was fetched, so this is at best a truncated snippet -
+            # and at worst nothing at all. `norm.completeness` already draws
+            # the full/snippet line on length; an empty snippet must fall to
+            # "none" rather than claim a truncated body the gate never sees.
+            jd_completeness = norm.completeness(description_text) if description_text else "none"
+            jd_source = "api" if description_text else None
 
         client_company = _client_company(detail_node)
         trailer = _trailer(item, client_company)
@@ -224,6 +249,11 @@ class UpworkAdapter(HttpAdapter):
             description_md=description_md,
             jd_completeness=jd_completeness,
             jd_source=jd_source,
+            # `created_date`, not `published_date`: the API's own cutoff logic
+            # (there is no date filter, only client-side pagination against
+            # this field - see `upwork_query.py`) keys off `created_date`, so
+            # a stored `posted_at` that disagreed with it would make a job
+            # look older or newer than the cutoff that actually admitted it.
             posted_at=norm.parse_datetime(item.get("created_date")),
             apply_url=item.get("url"),
             source_url=item.get("url"),
