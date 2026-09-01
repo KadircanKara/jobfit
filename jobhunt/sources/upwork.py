@@ -5,24 +5,30 @@ This is the pure half only: `normalize` turns a stored fetch envelope into
 `find_jobs` on the tool allow-list - no adapter here ever spends a Connect.
 
 Facts below were verified live against the Upwork MCP, not re-derived from
-documentation:
+documentation. A `find_jobs action=search` result carries no description at
+all - the fields are metadata (`job_type`, `budget`, `experience_level`,
+`duration`, `engagement`, `proposal_count`, `skills`, `client`, ...), all
+top-level and snake_case. The prose only exists in the per-job `get` document,
+nested under `data.marketplaceJobPosting`:
 
-- A search result carries a *truncated* `description_snippet`. The full
-  description exists only in `details[id]`, populated by a per-job `get`.
-- `budget` is the string `"0.0"` on hourly rows regardless of the real rate -
-  the actual range lives in `contractTerms.hourlyContractTerms.hourlyBudgetMin`/
-  `hourlyBudgetMax`, inside the detail document only. Zero is never a real
-  budget for either contract type, so it is treated as absent rather than
-  free work.
-- `clientCompanyPublic` carries `country`, `state` and `timezone` - and no
-  company name. That is why `company_name` falls back to a constant here;
-  Task 8 extracts a real identity from the description text.
+- `data.marketplaceJobPosting.content.description` is the full description,
+  wrapped in `<untrusted_participant_content>` tags.
+- `data.marketplaceJobPosting.contractTerms.hourlyContractTerms.hourlyBudgetMin`/
+  `hourlyBudgetMax` is an hourly row's real rate. The search-level `budget` is
+  the string `"0.0"` on every hourly row regardless of the real rate - zero is
+  never a real budget for either contract type, so it is treated as absent
+  rather than free work. A fixed row's real number is the search-level
+  `budget` directly; no detail is needed for it.
+- `data.marketplaceJobPosting.clientCompanyPublic` carries `country`, `state`
+  and `timezone` - and no company name. That is why `company_name` falls back
+  to a constant here; Task 8 extracts a real identity from the description
+  text. It appears only in the detail document, never on a search result.
 
 Upwork's `experience_level` (`ENTRY_LEVEL`/`INTERMEDIATE`/`EXPERT`) rates the
-*contract's* difficulty, not the freelancer's career stage. `JobPosting.seniority`
-is deliberately left unset - mapping it onto `SENIORITY_ORDER` would let a
-salaried seniority band silently filter gigs, exactly the class of bug this
-project keeps re-finding elsewhere.
+*contract's* difficulty, not the freelancer's career stage, so it is never
+mapped onto our seniority ladder - it only ever reaches the description
+trailer, as plain text for a human or the gate to read, never a structured
+field this codebase could accidentally filter on.
 """
 from __future__ import annotations
 
@@ -62,23 +68,31 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _client_company(item: dict, detail: dict) -> dict[str, Any]:
-    """The client's location block. Detail wins when both are present."""
-    return _as_dict(detail.get("clientCompanyPublic")) or _as_dict(item.get("clientCompanyPublic"))
+def _detail_node(detail: dict) -> dict[str, Any]:
+    """The detail document's actual job fields, unwrapped from its envelope.
+
+    A per-job `get` returns `{"data": {"marketplaceJobPosting": {...}}}` -
+    everything this module reads from a detail (description, contract terms,
+    client company) lives inside that inner object, never at the top level.
+    """
+    return _as_dict(_as_dict(detail.get("data")).get("marketplaceJobPosting"))
 
 
-def _client_stats(item: dict, detail: dict) -> dict[str, Any]:
-    return _as_dict(detail.get("client")) or _as_dict(item.get("client"))
+def _client_company(detail_node: dict) -> dict[str, Any]:
+    """The client's location block. Only present on the detail document."""
+    return _as_dict(detail_node.get("clientCompanyPublic"))
 
 
-def _salary(item: dict, detail: dict, job_type: str) -> tuple[float | None, float | None, str | None, bool]:
+def _salary(
+    item: dict, detail_node: dict, job_type: str
+) -> tuple[float | None, float | None, str | None, bool]:
     """(min, max, period, is_stated).
 
     Hourly rows carry their real range only in the detail's `contractTerms`;
     the search-level `budget` field is a placeholder `"0.0"` for them. Fixed
     rows carry the real number in `budget` directly, with no detail needed.
     """
-    hourly_terms = _as_dict(_as_dict(detail.get("contractTerms")).get("hourlyContractTerms"))
+    hourly_terms = _as_dict(_as_dict(detail_node.get("contractTerms")).get("hourlyContractTerms"))
     low = hourly_terms.get("hourlyBudgetMin")
     high = hourly_terms.get("hourlyBudgetMax")
     if low or high:
@@ -93,33 +107,30 @@ def _salary(item: dict, detail: dict, job_type: str) -> tuple[float | None, floa
     return None, None, None, False
 
 
-def _trailer(item: dict, detail: dict) -> str:
+def _trailer(item: dict, client_company: dict) -> str:
     """Skills, experience level, proposal count, and a `Client:` summary line.
 
-    Prefers the detail document's fields when a detail was fetched; falls back
-    to whatever the search result itself carried, so a snippet-only posting
-    still gets a trailer rather than a bare "Skills:"/"Client:" with nothing
-    after it.
+    Every field here is search-result metadata (snake_case, top-level, or the
+    nested `client` block) - none of it depends on a detail having been
+    fetched, so a snippet-only posting still gets a real trailer.
     """
-    source = detail or item
-    skills = source.get("skills") or item.get("skills") or []
-    experience_level = source.get("experienceLevel") or item.get("experienceLevel")
-    proposals = source.get("numberOfProposals") or source.get("proposalsTier")
+    skills = item.get("skills") or []
+    experience_level = item.get("experience_level")
+    proposals = item.get("proposal_count")
+    stats = _as_dict(item.get("client"))
 
-    company = _client_company(item, detail)
-    stats = _client_stats(item, detail)
     client_bits = [
-        company.get("country") or "unknown country",
-        f"{stats.get('totalHires')} hires" if stats.get("totalHires") is not None else "hires unknown",
-        f"${stats.get('totalSpent')} spent" if stats.get("totalSpent") is not None else "spend unknown",
-        f"{stats.get('feedback')} rating" if stats.get("feedback") is not None else "rating unknown",
-        stats.get("paymentVerificationStatus") or "verification unknown",
+        client_company.get("country") or stats.get("country") or "unknown country",
+        f"{stats.get('total_hires')} hires" if stats.get("total_hires") is not None else "hires unknown",
+        f"{stats.get('total_spent')} spent" if stats.get("total_spent") is not None else "spend unknown",
+        f"{stats.get('rating')} rating" if stats.get("rating") is not None else "rating unknown",
+        stats.get("verification_status") or "verification unknown",
     ]
 
     lines = [
         f"Skills: {', '.join(skills) if skills else 'none listed'}",
         f"Experience level: {experience_level or 'unstated'}",
-        f"Proposals: {proposals or 'unstated'}",
+        f"Proposals: {proposals if proposals is not None else 'unstated'}",
         f"Client: {', '.join(str(bit) for bit in client_bits)}",
     ]
     return "\n".join(lines)
@@ -168,28 +179,31 @@ class UpworkAdapter(HttpAdapter):
         if not external_id or not title:
             return None
 
-        detail = _as_dict(details.get(external_id))
+        detail_node = _detail_node(_as_dict(details.get(external_id)))
         job_type = str(item.get("job_type") or "").lower()
 
-        raw_description = detail.get("description")
+        raw_description = _as_dict(detail_node.get("content")).get("description")
         if raw_description:
             description_text = _strip_untrusted_wrapper(str(raw_description))
             jd_completeness = "full"
             jd_source = "api"
         else:
-            description_text = (item.get("description_snippet") or "").strip()
-            jd_completeness = norm.completeness(description_text) if description_text else "snippet"
-            jd_source = "api" if description_text else None
+            # A search result carries no description of its own - only a
+            # per-job `get` does. Without one, the trailer alone is the body.
+            description_text = ""
+            jd_completeness = "snippet"
+            jd_source = None
 
-        trailer = _trailer(item, detail)
+        client_company = _client_company(detail_node)
+        trailer = _trailer(item, client_company)
         description_md = f"{description_text}\n\n{trailer}" if description_text else trailer
 
-        salary_min, salary_max, salary_period, salary_is_stated = _salary(item, detail, job_type)
+        salary_min, salary_max, salary_period, salary_is_stated = _salary(item, detail_node, job_type)
 
-        client_company = _client_company(item, detail)
         # The client's country, not a work location - every Upwork gig is remote,
         # so this answers "where is the client based", never "where must I be".
-        country = norm.country_code(client_company.get("country"))
+        country_name = client_company.get("country") or _as_dict(item.get("client")).get("country")
+        country = norm.country_code(country_name)
 
         return JobPosting(
             source=self.source_id,

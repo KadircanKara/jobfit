@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import pathlib
 
@@ -55,10 +56,28 @@ def test_a_zero_budget_is_absent_rather_than_free_work() -> None:
         assert posting.salary_min is None
 
 
-def test_seniority_is_never_inferred_from_upworks_experience_level() -> None:
-    """entry/intermediate/expert rate the contract, not the person."""
+def test_upworks_experience_level_never_reaches_the_seniority_signal() -> None:
+    """Entry/intermediate/expert rate the contract, not the person.
+
+    `store.upsert_posting` derives the Job row's seniority from
+    `norm.detect_seniority(posting.title, posting.description_text)` - so the
+    bar is that Upwork's EXPERT/ENTRY_LEVEL/INTERMEDIATE value never appears in
+    any field that feeds that (or any other) seniority-shaped signal. It is
+    allowed - and expected - to show up in `description_md`'s human-facing
+    trailer, which nothing seniority-related reads.
+    """
     for posting in UpworkAdapter().normalize(_payload(), _ref()):
-        assert posting.seniority in (None, "")
+        fields = dataclasses.asdict(posting)
+        fields.pop("description_md")
+        haystack = " ".join(str(v) for v in fields.values() if v is not None).upper()
+        assert "EXPERT" not in haystack
+        assert "ENTRY_LEVEL" not in haystack
+
+    hourly = next(
+        p for p in UpworkAdapter().normalize(_payload(), _ref())
+        if p.external_id == "2094821655490856773"
+    )
+    assert "EXPERT" in hourly.description_md
 
 
 def test_a_posting_without_a_detail_is_still_yielded_as_a_snippet() -> None:
