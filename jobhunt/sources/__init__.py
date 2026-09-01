@@ -13,6 +13,7 @@ from jobhunt.sources.recruitee import RecruiteeAdapter
 from jobhunt.sources.remoteok import RemoteOkAdapter
 from jobhunt.sources.remotive import RemotiveAdapter
 from jobhunt.sources.smartrecruiters import SmartRecruitersAdapter
+from jobhunt.sources.upwork import UpworkAdapter
 from jobhunt.sources.workable import WorkableAdapter
 from jobhunt.sources.wwr import WeWorkRemotelyAdapter
 
@@ -30,6 +31,7 @@ REGISTRY: dict[str, type] = {
     WeWorkRemotelyAdapter.source_id: WeWorkRemotelyAdapter,
     WorkableAdapter.source_id: WorkableAdapter,
     LinkedInAdapter.source_id: LinkedInAdapter,
+    UpworkAdapter.source_id: UpworkAdapter,
 }
 
 __all__ = [
@@ -49,6 +51,7 @@ __all__ = [
     "SmartRecruitersAdapter",
     "RateLimit",
     "SourceAdapter",
+    "UpworkAdapter",
     "WeWorkRemotelyAdapter",
     "WorkableAdapter",
 ]

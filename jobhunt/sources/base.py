@@ -93,6 +93,15 @@ class JobPosting:
     poster_name: str | None = None
     poster_profile_url: str | None = None
 
+    # Unset by every adapter today. `store.upsert_posting` derives the Job row's
+    # seniority from title/description via `norm.detect_seniority`, not from this
+    # field - it exists so an adapter with a real, source-stated seniority signal
+    # has somewhere honest to put it instead of overloading a text heuristic.
+    # Upwork's `experience_level` rates the contract's difficulty, not the
+    # freelancer's career stage, so its adapter deliberately leaves this None
+    # rather than mapping ENTRY_LEVEL/INTERMEDIATE/EXPERT onto SENIORITY_ORDER.
+    seniority: str | None = None
+
 
 @runtime_checkable
 class SourceAdapter(Protocol):

@@ -1,0 +1,87 @@
+{
+  "query": {"query": "rag", "job_type": "hourly"},
+  "pages": [
+    {
+      "cursor": "eyJvZmZzZXQiOjEwfQ==",
+      "results": [
+        {
+          "id": "2094821655490856773",
+          "title": "RAG pipeline engineer for internal knowledge base",
+          "description_snippet": "We need an experienced backend engineer to build a retrieval-augmented generation pipeline over our internal docs...",
+          "job_type": "hourly",
+          "budget": "0.0",
+          "created_date": "2026-08-28T14:05:00Z",
+          "duration": "3 to 6 months",
+          "engagement": "Less than 30 hrs/week",
+          "experienceLevel": "INTERMEDIATE",
+          "skills": ["Python", "LangChain", "Vector Databases"],
+          "url": "https://www.upwork.com/jobs/~2094821655490856773",
+          "client": {
+            "totalHires": 6,
+            "totalSpent": 18500,
+            "feedback": 4.9,
+            "paymentVerificationStatus": "VERIFIED"
+          },
+          "clientCompanyPublic": {
+            "country": "United States",
+            "state": "California",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        {
+          "id": "1988477612340991234",
+          "title": "Fix scraper and add a small Django admin view",
+          "description_snippet": "Need a Django dev to fix my scraper and add a small admin page. Should take a few days...",
+          "job_type": "fixed",
+          "budget": "450.0",
+          "created_date": "2026-08-27T09:30:00Z",
+          "engagement": "",
+          "experienceLevel": "ENTRY_LEVEL",
+          "skills": ["Python", "Django", "Web Scraping"],
+          "url": "https://www.upwork.com/jobs/~1988477612340991234",
+          "client": {
+            "totalHires": 1,
+            "totalSpent": 900,
+            "feedback": 5.0,
+            "paymentVerificationStatus": "VERIFIED"
+          },
+          "clientCompanyPublic": {
+            "country": "United Kingdom",
+            "state": "",
+            "timezone": "Europe/London"
+          }
+        }
+      ]
+    }
+  ],
+  "details": {
+    "2094821655490856773": {
+      "id": "2094821655490856773",
+      "title": "RAG pipeline engineer for internal knowledge base",
+      "description": "<untrusted_participant_content>We are Northquill, a small team building an AI research assistant at northquill.ai. We need an experienced backend engineer to design and build a retrieval-augmented generation pipeline over our internal knowledge base, wired into our existing FastAPI service. You will work directly with our two founders and ship weekly. Strong Python and vector-database experience required.</untrusted_participant_content>",
+      "contractTerms": {
+        "hourlyContractTerms": {
+          "hourlyBudgetMin": 20,
+          "hourlyBudgetMax": 30
+        }
+      },
+      "skills": ["Python", "LangChain", "Vector Databases", "FastAPI"],
+      "experienceLevel": "INTERMEDIATE",
+      "numberOfProposals": "5 to 10",
+      "client": {
+        "totalHires": 6,
+        "totalSpent": 18500,
+        "feedback": 4.9,
+        "paymentVerificationStatus": "VERIFIED"
+      },
+      "clientCompanyPublic": {
+        "country": "United States",
+        "state": "California",
+        "timezone": "America/Los_Angeles"
+      }
+    }
+  },
+  "pages_fetched": 1,
+  "stopped_because": "no_cursor",
+  "error": null
+}
