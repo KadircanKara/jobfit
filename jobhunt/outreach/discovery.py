@@ -26,12 +26,42 @@ from jobhunt.db.session import session_scope
 # The roles that answer a job posting. Kept short: a wider net returns people who
 # work at the company but have no say in this role, which is worse than nothing
 # because it looks like a lead.
+#
+# The first five assume a company large enough to have a hiring function. An
+# Upwork client usually is not: the person who wrote the posting is the founder
+# or the owner, and there is no recruiter to find. Live, searching Karma and
+# Luck for only the first five returned four store and operations managers and
+# missed "Founder & CEO of Karma and Luck" entirely - who is whose "CEO Command
+# Center" the posting was about.
 ROLE_KEYWORDS: tuple[str, ...] = (
     "recruiter",
     "talent acquisition",
     "technical recruiter",
     "engineering manager",
     "head of engineering",
+    "founder",
+    "co-founder",
+    "ceo",
+    "cto",
+    "owner",
+    "head of product",
+    "head of data",
+)
+
+# What the search itself may ask for, as opposed to what ranking may reward.
+# The two differ because the query has a length limit that fails silently:
+# OR-joining all twelve roles above (183 characters) returned *zero* results,
+# where six of them returned ten. A short list is therefore not a preference
+# here, it is the difference between a search that works and one that looks
+# like the company has no employees. Ranking still reads the full list, so a
+# role left out of the query is not left out of the ordering.
+QUERY_ROLES: tuple[str, ...] = (
+    "founder",
+    "CEO",
+    "CTO",
+    "owner",
+    "recruiter",
+    "engineering manager",
 )
 
 CACHE_HOURS = 24
@@ -157,7 +187,7 @@ def search_company(
     if cached is not None:
         return cached
     items = client.search_people(
-        company_name, list(ROLE_KEYWORDS), limit=limit, location=location
+        company_name, list(QUERY_ROLES), limit=limit, location=location
     )
     candidates = []
     for item in items:

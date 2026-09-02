@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -345,3 +347,46 @@ def test_the_company_name_is_the_query_and_roles_do_not_dilute_it() -> None:
     _client(handler).search_people("Nexora", ["founder", "recruiter", "CTO"])
     assert '"keywords": "Nexora"' in seen["body"] or '"keywords":"Nexora"' in seen["body"]
     assert "OR" not in seen["body"]
+
+
+def test_a_resolvable_company_is_filtered_on_rather_than_searched_for() -> None:
+    """A company id is an exact filter; a name is a guess at free text. Live,
+    the name "Karma and Luck" returned therapists, estheticians and a high
+    school student, while the company id returned its actual employees."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/parameters" in str(request.url):
+            assert "type=COMPANY" in str(request.url)
+            return httpx.Response(200, json={"items": [{"id": "10561735"}]})
+        seen["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"items": []})
+
+    _client(handler).search_people("Karma and Luck", ["founder", "CEO"])
+    assert seen["body"]["company"] == ["10561735"]
+    # Inside a company filter the role words rank within that company rather
+    # than competing with the name, so they travel here and only here.
+    assert "founder OR CEO" in seen["body"]["keywords"]
+
+
+def test_an_unresolvable_company_falls_back_to_the_bare_name() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/parameters" in str(request.url):
+            return httpx.Response(200, json={"items": []})
+        seen["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"items": []})
+
+    _client(handler).search_people("Nexora", ["founder", "CEO"])
+    assert "company" not in seen["body"]
+    assert seen["body"]["keywords"] == "Nexora"
+
+
+def test_a_failing_company_lookup_still_searches() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/parameters" in str(request.url):
+            return httpx.Response(500, text="boom")
+        return httpx.Response(200, json={"items": [{"name": "Jane"}]})
+
+    assert _client(handler).search_people("Acme", ["founder"]) == [{"name": "Jane"}]

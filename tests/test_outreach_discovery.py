@@ -164,3 +164,28 @@ def test_ranking_never_drops_anyone(cfg) -> None:
             return [{"name": "A", "headline": None}, {"name": "B", "headline": "CTO at Nexora"}]
 
     assert len(discovery.search_company(Client(), "Nexora", config=cfg)) == 2
+
+
+def test_the_query_asks_for_fewer_roles_than_ranking_rewards(cfg) -> None:
+    """OR-joining all twelve ranking roles (183 chars) returned zero results
+    live, where six returned ten - the length limit fails silently, as an
+    empty result set rather than an error."""
+    seen = {}
+
+    class Client:
+        def search_people(self, company, keywords, *, limit=5, location=None):
+            seen["keywords"] = keywords
+            return []
+
+    discovery.search_company(Client(), "Acme", config=cfg)
+    assert seen["keywords"] == list(discovery.QUERY_ROLES)
+    assert len(seen["keywords"]) < len(discovery.ROLE_KEYWORDS)
+
+
+def test_a_founder_headline_ranks_even_though_it_is_not_in_the_query(cfg) -> None:
+    class Client:
+        def search_people(self, company, keywords, *, limit=5, location=None):
+            return [{"name": "A", "headline": "Retail Guru"},
+                    {"name": "B", "headline": "Head of Data at Acme"}]
+
+    assert discovery.search_company(Client(), "Acme", config=cfg)[0].full_name == "B"

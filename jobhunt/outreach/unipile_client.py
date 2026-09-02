@@ -115,19 +115,19 @@ class UnipileClient:
             body["message"] = note
         return self._call("POST", "/api/v1/users/invite", json=body)
 
-    def resolve_location(self, name: str) -> str | None:
-        """LinkedIn's own id for a place name, or None if it cannot be placed.
+    def _resolve_parameter(self, kind: str, name: str) -> str | None:
+        """LinkedIn's own id for a name of the given kind, or None.
 
-        The search takes ids, not names. Never raises: a location that cannot
-        be resolved must cost the filter, not the search - an unfiltered result
-        set is still useful, an exception here is not.
+        Never raises: an id that cannot be looked up must cost a filter, not
+        the search - an unfiltered result set is still useful, an exception is
+        not.
         """
         if not name.strip():
             return None
         try:
             payload = self._call(
                 "GET", "/api/v1/linkedin/search/parameters",
-                params={"account_id": self.account_id, "type": "LOCATION", "keywords": name},
+                params={"account_id": self.account_id, "type": kind, "keywords": name},
             )
         except UnipileError:
             return None
@@ -137,6 +137,19 @@ class UnipileClient:
         first = items[0]
         identifier = first.get("id") if isinstance(first, dict) else None
         return str(identifier) if identifier else None
+
+    def resolve_company(self, name: str) -> str | None:
+        """LinkedIn's id for a company page, or None if the name matches none."""
+        return self._resolve_parameter("COMPANY", name)
+
+    def resolve_location(self, name: str) -> str | None:
+        """LinkedIn's own id for a place name, or None if it cannot be placed.
+
+        The search takes ids, not names. Never raises: a location that cannot
+        be resolved must cost the filter, not the search - an unfiltered result
+        set is still useful, an exception here is not.
+        """
+        return self._resolve_parameter("LOCATION", name)
 
     def search_people(
         self,
@@ -161,18 +174,25 @@ class UnipileClient:
         genuine match, because it keys off how LinkedIn classifies a person's
         employer and small companies are classified thinly or not at all.
         """
-        # The company name is the whole query. Appending the role words
-        # ("Nexora founder OR CTO OR recruiter") does not narrow the search, it
-        # dilutes it: measured live, that form returned six co-founders of six
-        # unrelated companies and nobody at Nexora, because LinkedIn matched the
-        # common role words and lost the rare name. The name alone returned the
-        # CFO of Nexora Solutions and the founder of Nexora AI. `keywords` is
-        # still taken, and still used - to rank what comes back, below.
-        body: dict[str, Any] = {
-            "api": "classic",
-            "category": "people",
-            "keywords": company.strip(),
-        }
+        # A company id is an exact filter; a company name is a guess at free
+        # text. Measured live, the difference is not marginal: searching the
+        # name "Karma and Luck" returned a therapist, an esthetician and a high
+        # school student, while its company id returned the founder and CEO,
+        # the ecommerce operations manager, and the store managers.
+        #
+        # The role words travel only inside a company filter, where they rank
+        # within that company's people. Without one they compete with the
+        # company name and win: "Nexora founder OR CTO OR recruiter" returned
+        # six co-founders of six unrelated companies and nobody at Nexora,
+        # because LinkedIn matched the common words and lost the rare name.
+        body: dict[str, Any] = {"api": "classic", "category": "people"}
+        company_id = self.resolve_company(company)
+        if company_id:
+            body["company"] = [company_id]
+            if keywords:
+                body["keywords"] = " OR ".join(keywords)
+        else:
+            body["keywords"] = company.strip()
         if location:
             location_id = self.resolve_location(location)
             if location_id:
