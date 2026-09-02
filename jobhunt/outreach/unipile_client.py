@@ -31,6 +31,13 @@ import httpx
 #                            carrying either.
 _IDENTIFIER_RE = re.compile(r"^[\w-]{1,128}$")
 
+# `apiNN.unipile.com:15169` - a dotted hostname, optionally with a port, and
+# nothing else. The dot is what separates a real DSN from a typo: a bare word
+# like "not-a-url" is a syntactically valid single-label host, so without it a
+# mistyped DSN would be silently promoted to a request target. Unipile is never
+# a single-label host, so requiring the dot costs nothing real.
+_BARE_HOST = re.compile(r"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:\d+)?$")
+
 
 class UnipileError(Exception):
     """A call Unipile refused, or one that never reached it. Never carries the API key."""
@@ -66,6 +73,12 @@ class UnipileClient:
         client: httpx.Client | None = None,
     ) -> None:
         dsn = dsn.rstrip("/")
+        # Unipile's dashboard shows the DSN as a bare `apiNN.unipile.com:PORT`,
+        # so a scheme-less value is what a correct setup actually produces.
+        # Assume https rather than refusing it: this can only ever upgrade the
+        # connection, and an explicit `http://` is still rejected below.
+        if "://" not in dsn and _BARE_HOST.match(dsn):
+            dsn = f"https://{dsn}"
         parsed = urlsplit(dsn)
         if parsed.scheme != "https" or not parsed.hostname:
             # An http:// DSN would ship the API key in cleartext; a malformed one

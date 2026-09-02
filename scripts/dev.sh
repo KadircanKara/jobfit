@@ -8,6 +8,17 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 logs="$root/data/logs"
 mkdir -p "$logs"
 
+# Secrets live in .env (gitignored) and nothing else reads it: config.py says so
+# in its docstring but never loads it, and the servers start detached, so they
+# inherit nothing from the shell that ran this script. Without this the app
+# refuses to boot whenever outreach.provider is 'unipile'.
+if [ -f "$root/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$root/.env"
+  set +a
+fi
+
 idle="${JOBHUNT_IDLE_TIMEOUT:-3600}"
 api_port="${JOBHUNT_PORT:-8765}"
 
