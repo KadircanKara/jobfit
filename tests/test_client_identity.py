@@ -1,4 +1,4 @@
-from jobhunt.pipeline.client_identity import detect
+from jobhunt.pipeline.client_identity import detect, name_from_domain
 
 
 def test_a_named_product_with_a_domain_is_found() -> None:
@@ -73,3 +73,38 @@ def test_an_integration_target_named_in_passing_is_not_the_client() -> None:
 def test_a_title_naming_the_product_is_read() -> None:
     found = detect("Northquill.ai saas repair", "I need help fixing a bug in my app.")
     assert found.domain == "northquill.ai"
+
+
+def test_a_brand_plus_qualifier_word_is_still_rejected() -> None:
+    assert detect("x", "our company, Zoom Inc, and we are hiring a dev").company_name is None
+
+
+def test_a_brand_named_with_a_leading_article_is_still_rejected() -> None:
+    assert detect("x", "The Zoom team is looking for a contractor").company_name is None
+
+
+def test_a_noise_brand_in_the_title_is_rejected() -> None:
+    found = detect("Slack app is looking for a developer", "we need a backend build")
+    assert found.company_name is None
+
+
+def test_multi_word_names_with_no_noise_word_still_survive() -> None:
+    text = "Karma and Luck is looking for an experienced Senior Data & AI Engineer."
+    assert detect("x", text).company_name == "Karma and Luck"
+
+
+def test_a_three_word_name_with_no_noise_word_still_survives() -> None:
+    text = "Booz Allen Hamilton is looking for a cleared engineer."
+    assert detect("x", text).company_name == "Booz Allen Hamilton"
+
+
+def test_a_person_affiliated_with_a_noise_company_is_dropped_too() -> None:
+    text = "this is Alex from Zoom, and we want a Zoom plugin built for internal use."
+    found = detect("x", text)
+    assert found.person_name is None
+    assert found.company_name is None
+
+
+def test_name_from_domain_strips_the_tld_and_title_cases() -> None:
+    assert name_from_domain("northquill.ai") == "Northquill"
+    assert name_from_domain("acme-labs.io") == "Acme Labs"

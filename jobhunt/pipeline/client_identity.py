@@ -223,9 +223,27 @@ def _brand(domain: str) -> str:
 _NOISE_BRANDS = frozenset(_brand(host) for host in _NOISE_DOMAINS)
 
 
+def _normalize_word(word: str) -> str:
+    """Lowercase, drop punctuation, and collapse a domain-shaped word to its
+    brand label - "zoom.us," and "Zoom" both become "zoom" - so the same
+    comparison recognises the brand whether it shows up bare, capitalised, or
+    written as its own domain inside a captured name.
+    """
+    lowered = re.sub(r"[^a-z0-9.]", "", word.lower())
+    return lowered.split(".")[0]
+
+
 def _is_noise_name(name: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]", "", name.lower())
-    return normalized in _NOISE_BRANDS
+    """True if ANY word in the name is a noise brand, not just the whole name.
+
+    A naive whole-string check lets "Zoom Inc", "The Zoom team" and "Slack
+    app" straight through, because none of those strings equals "zoom" or
+    "slack" exactly - but each of them is still naming the noise entity plus
+    one qualifier word. Checking word-by-word closes that gap without
+    rejecting real multi-word names: "Karma and Luck" and "Booz Allen
+    Hamilton" contain no word that is itself a noise brand.
+    """
+    return any(_normalize_word(word) in _NOISE_BRANDS for word in name.split())
 
 
 def _plausible_name(name: str) -> bool:
@@ -258,6 +276,12 @@ def _find_person(window: str) -> tuple[str | None, str | None]:
         for match in pattern.finditer(window):
             person = match.group(1).strip()
             company_raw = _clean_name(match.group(2))
+            if company_raw and _is_noise_name(company_raw):
+                # The sentence itself says this person is "from Zoom" - they
+                # are affiliated with the noise entity, not the client. Drop
+                # the whole match (person included) rather than keep a name
+                # now known to point at the wrong company, and keep looking.
+                continue
             company = company_raw if company_raw and _valid_company_name(company_raw) else None
             return person, company
     return None, None
@@ -266,3 +290,23 @@ def _find_person(window: str) -> tuple[str | None, str | None]:
 def _clean_name(raw: str) -> str | None:
     name = raw.strip().strip(".,")
     return name or None
+
+
+# The same TLDs `_BARE_HOST_RE` recognises as domain-shaped - stripping one
+# off the end when deriving a name is the mirror image of requiring one to
+# recognise a domain in the first place.
+_KNOWN_TLDS = frozenset({"ai", "io", "com", "co", "dev", "app", "net", "org", "xyz", "so"})
+
+
+def name_from_domain(domain: str) -> str:
+    """Turn a bare domain into a plain, searchable company name.
+
+    The domain is the safest signal this module produces - unlike a pattern
+    match, it is nearly unfakeable - so it is worth cleaning up before it
+    reaches `discovery.search_company`: "northquill.ai" searches better as
+    "Northquill" than as the raw hostname, and "acme-labs.io" as "Acme Labs".
+    """
+    labels = domain.split(".")
+    core = labels[-2] if len(labels) >= 2 and labels[-1] in _KNOWN_TLDS else labels[0]
+    words = re.split(r"[-_]+", core)
+    return " ".join(word.capitalize() for word in words if word) or domain

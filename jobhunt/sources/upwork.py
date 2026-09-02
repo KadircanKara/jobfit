@@ -58,6 +58,7 @@ from jobhunt.config import Config
 from jobhunt.db.models import utcnow
 from jobhunt.pipeline import normalize as norm
 from jobhunt.pipeline.client_identity import detect as detect_client_identity
+from jobhunt.pipeline.client_identity import name_from_domain
 from jobhunt.sources import upwork_query as query
 from jobhunt.sources.base import BoardRef, HttpAdapter, JobPosting
 from jobhunt.sources.upwork_guard import FetchBudget
@@ -573,7 +574,8 @@ class UpworkAdapter(HttpAdapter):
         # so the weaker signal must never be what actually drives the search.
         # A domain alone is still a fine, searchable name on its own.
         identity = detect_client_identity(title, description_text)
-        company_name = identity.domain or identity.company_name or COMPANY_NAME_PLACEHOLDER
+        domain_name = name_from_domain(identity.domain) if identity.domain else None
+        company_name = domain_name or identity.company_name or COMPANY_NAME_PLACEHOLDER
 
         return JobPosting(
             source=self.source_id,
