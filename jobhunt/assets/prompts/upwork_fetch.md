@@ -10,7 +10,7 @@ this task needs or permits.
 Call `find_jobs` with exactly this call object, unchanged:
 
 ```json
-{params}
+{call}
 ```
 
 `action`, `org_uid`, and `params` are the three top-level keys `find_jobs`

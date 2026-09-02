@@ -284,12 +284,41 @@ def test_org_uid_sits_beside_params_not_inside_it(cfg, monkeypatch) -> None:
 
 
 def test_a_response_missing_pages_is_treated_as_a_failure(cfg, monkeypatch) -> None:
-    """`{}` and `{"error": "..."}` are valid JSON but not a real result."""
-    monkeypatch.setattr(
-        "jobhunt.sources.upwork.agent.run", lambda *a, **k: '{"error": "no results"}'
-    )
+    """`{}` is valid JSON but not a real result, and has no `error` to carry."""
+    monkeypatch.setattr("jobhunt.sources.upwork.agent.run", lambda *a, **k: "{}")
     adapter = UpworkAdapter(config=cfg)
     assert adapter.fetch(_ref(), None) == {"pages": [], "details": {}}
+
+
+def test_a_reported_error_is_a_failure_not_a_success(cfg, monkeypatch) -> None:
+    """A model that reports an MCP failure exactly as told must not look like
+
+    a genuinely empty search: it must trip the failure streak, not
+    `record_ok()`, and the reason must survive into the stored envelope.
+    """
+    calls = []
+    monkeypatch.setattr(
+        "jobhunt.sources.upwork.agent.run",
+        lambda *a, **k: calls.append(1)
+        or '{"pages": [], "details": {}, "error": "find_jobs timed out"}',
+    )
+    adapter = UpworkAdapter(config=cfg)
+    result = adapter.fetch(_ref(), None)
+    assert result == {"pages": [], "details": {}, "error": "find_jobs timed out"}
+    assert len(calls) == 1  # not retried - the model already explained itself
+    assert adapter.budget._streak == 1
+
+
+def test_a_null_error_does_not_trip_the_breaker(cfg, monkeypatch) -> None:
+    """`"error": null` is what a clean run looks like - falsy, not a failure."""
+    monkeypatch.setattr(
+        "jobhunt.sources.upwork.agent.run",
+        lambda *a, **k: '{"pages": [], "details": {}, "error": null}',
+    )
+    adapter = UpworkAdapter(config=cfg)
+    result = adapter.fetch(_ref(), None)
+    assert "error" not in result
+    assert adapter.budget._streak == 0
 
 
 def test_a_wrongly_typed_pages_is_treated_as_a_failure(cfg, monkeypatch) -> None:

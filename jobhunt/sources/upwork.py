@@ -86,17 +86,23 @@ _DEFAULT_ORG_UID = "1808166514497822721"
 DETAIL_BUDGET = 10
 
 # Well under agent.DEFAULT_TIMEOUT (1800s): a hung MCP call must not block a
-# nightly run for half an hour, twice over (this fetch retries once).
+# nightly run for half an hour, twice over. Worst case per ref is now two
+# attempts at this timeout each - 600s total - since a hang on the first
+# attempt still pays for a retry rather than escaping the loop early.
 FETCH_TIMEOUT_SECONDS = 300.0
 
 _PROMPT_RELATIVE = pathlib.Path("prompts/upwork_fetch.md")
 _PACKAGED_PROMPT = pathlib.Path(__file__).resolve().parent.parent / "assets" / _PROMPT_RELATIVE
 
 # The five placeholders `upwork_fetch.md` declares, matched in one pass so
-# that a value being substituted in - a preference string, a rendered params
+# that a value being substituted in - a preference string, a rendered call
 # blob - can never itself contain a literal "{cutoff}" or "{known_ids}" that
-# a later, separate .replace() call would then corrupt.
-_PLACEHOLDER = re.compile(r"\{params\}|\{cutoff\}|\{max_pages\}|\{known_ids\}|\{detail_budget\}")
+# a later, separate .replace() call would then corrupt. Named "{call}", not
+# "{params}": it renders the *whole* find_jobs call object (action, org_uid,
+# and params together) - the name "{params}" is what let org_uid get nested
+# one level too deep in the first place, and a future editor re-adding a
+# top-level key belongs less to a name that already implies "just the filters".
+_PLACEHOLDER = re.compile(r"\{call\}|\{cutoff\}|\{max_pages\}|\{known_ids\}|\{detail_budget\}")
 
 # Mirrors gate.ARRAY: a fenced or bare object is read the same way a fenced or
 # bare array is, because a model asked for "one JSON object" reliably wraps it
@@ -247,7 +253,7 @@ def _render_prompt(
     loader (`_prompt_text`) makes the same existence check before reading.
 
     Substitution is one regex pass (`_PLACEHOLDER`) over the *original* text,
-    not five chained `.replace()` calls: `{params}` renders as a JSON object
+    not five chained `.replace()` calls: `{call}` renders as a JSON object
     that could itself contain a literal "{cutoff}" or "{known_ids}" inside a
     user's own query string, and a later `.replace()` call would then corrupt
     that already-substituted text. One pass never re-scans a substitution.
@@ -263,7 +269,7 @@ def _render_prompt(
 
     known = ", ".join(sorted(known_ids)) if known_ids else "(none yet - fetch every detail)"
     mapping = {
-        "{params}": json.dumps(call, indent=2),
+        "{call}": json.dumps(call, indent=2),
         "{cutoff}": cutoff,
         "{max_pages}": str(max_pages),
         "{known_ids}": known,
@@ -388,11 +394,6 @@ class UpworkAdapter(HttpAdapter):
         if self.config is None or self.budget is None:
             return empty
 
-        refusal = self.budget.refusal()
-        if refusal is not None:
-            log.warning("upwork fetch for %r skipped: %s", ref.token, refusal)
-            return empty
-
         try:
             prefs, _ = preferences_module.load(self.config)
         except Exception:
@@ -427,12 +428,15 @@ class UpworkAdapter(HttpAdapter):
 
         envelope: dict[str, Any] | None = None
         # One retry, for an unparseable or wrongly-shaped response only - a
-        # subprocess failure or timeout is not retried, since the CLI already
-        # ran the whole turn to produce it and a repeat is no more likely to
-        # succeed. The budget is spent, and the refusal checked, on *each*
-        # attempt - a free second agent turn (and a free second live search)
-        # for one budget unit would make DAILY_REFS mean up to twice as many
-        # real turns as its name promises.
+        # subprocess failure, a timeout, or a reported `error` is not retried,
+        # since the CLI already ran the whole turn (or told us plainly it
+        # could not) and a repeat is no more likely to succeed. The budget is
+        # spent, and the refusal checked, on *each* attempt - a free second
+        # agent turn (and a free second live search) for one budget unit would
+        # make DAILY_REFS mean up to twice as many real turns as its name
+        # promises. The one check this replaces (before the loop, against the
+        # same `self.budget.refusal()`) was redundant with attempt 1's own
+        # check below.
         for attempt in (1, 2):
             refusal = self.budget.refusal()
             if refusal is not None:
@@ -451,8 +455,29 @@ class UpworkAdapter(HttpAdapter):
                 log.warning("upwork fetch for %r failed: %s", ref.token, error)
                 self.budget.record_failure()
                 return empty
+
             parsed = _parse(raw)
-            envelope = _coerce_envelope(parsed) if parsed is not None else None
+            if parsed is None:
+                continue
+
+            # A model that follows the prompt's own "if a call fails" section
+            # reports the problem correctly - as a well-typed `pages: []` plus
+            # a truthy `error`. That shape would otherwise sail straight
+            # through `_coerce_envelope` and reach `record_ok()`: the exact
+            # "indistinguishable from a genuinely empty search" state the
+            # coercion exists to prevent, arriving through the door the
+            # coercion itself doesn't watch. A reported error is therefore a
+            # failure regardless of how well-typed the rest of the envelope
+            # is, and it is not retried - the model already told us why.
+            reported_error = parsed.get("error")
+            coerced = _coerce_envelope(parsed)
+            if reported_error:
+                log.warning("upwork fetch for %r reported an error: %s", ref.token, reported_error)
+                self.budget.record_failure()
+                partial = coerced or empty
+                return {**partial, "error": str(reported_error)}
+
+            envelope = coerced
             if envelope is not None:
                 break
 
