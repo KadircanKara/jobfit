@@ -187,23 +187,13 @@ def build_adapter(config: Config, source: str):
     error - a working-looking source that never fetches a job.
     """
     cls = source_registry.get(source)
-    if source == "linkedin":
-        prefs, _ = prefs_module.load(config)
-        adapter = cls(config=config, known_ids=_known_linkedin_ids(config))
-        adapter.set_refs(adapter.board_refs(prefs))
-        return adapter
-    if source == "upwork":
-        prefs, _ = prefs_module.load(config)
-        adapter = cls(config=config, known_ids=_known_ids_for(config, "upwork"))
-        adapter.set_refs(adapter.board_refs(prefs.upwork))
-        return adapter
-    return cls()
-
-
-def _known_linkedin_ids(config: Config) -> set[str]:
-    """External ids already in the corpus, so `fetch` never re-fetches a detail
-    page it has already paid for just to refresh an unchanged description."""
-    return _known_ids_for(config, "linkedin")
+    if source not in ("linkedin", "upwork"):
+        return cls()
+    prefs, _ = prefs_module.load(config)
+    board_prefs = prefs.upwork if source == "upwork" else prefs
+    adapter = cls(config=config, known_ids=_known_ids_for(config, source))
+    adapter.set_refs(adapter.board_refs(board_prefs))
+    return adapter
 
 
 def _known_ids_for(config: Config, source: str) -> set[str]:

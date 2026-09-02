@@ -46,6 +46,7 @@ import logging
 import os
 import pathlib
 import re
+import subprocess
 from collections.abc import Iterator
 from typing import Any
 
@@ -84,8 +85,18 @@ _DEFAULT_ORG_UID = "1808166514497822721"
 # upwork_query.py, not to protect anything scarce on Upwork's side.
 DETAIL_BUDGET = 10
 
+# Well under agent.DEFAULT_TIMEOUT (1800s): a hung MCP call must not block a
+# nightly run for half an hour, twice over (this fetch retries once).
+FETCH_TIMEOUT_SECONDS = 300.0
+
 _PROMPT_RELATIVE = pathlib.Path("prompts/upwork_fetch.md")
 _PACKAGED_PROMPT = pathlib.Path(__file__).resolve().parent.parent / "assets" / _PROMPT_RELATIVE
+
+# The five placeholders `upwork_fetch.md` declares, matched in one pass so
+# that a value being substituted in - a preference string, a rendered params
+# blob - can never itself contain a literal "{cutoff}" or "{known_ids}" that
+# a later, separate .replace() call would then corrupt.
+_PLACEHOLDER = re.compile(r"\{params\}|\{cutoff\}|\{max_pages\}|\{known_ids\}|\{detail_budget\}")
 
 # Mirrors gate.ARRAY: a fenced or bare object is read the same way a fenced or
 # bare array is, because a model asked for "one JSON object" reliably wraps it
@@ -223,29 +234,42 @@ def _cutoff(max_age_days: int) -> str:
 def _render_prompt(
     config: Config,
     *,
-    params: dict[str, Any],
+    call: dict[str, Any],
     cutoff: str,
     max_pages: int,
     known_ids: set[str],
     detail_budget: int,
-) -> str:
-    """Fill `upwork_fetch.md`'s placeholders. `.replace`, not `str.format`:
+) -> str | None:
+    """Fill `upwork_fetch.md`'s placeholders, or None if no template is readable.
 
-    `params` renders as a JSON object full of its own literal braces, and
-    `str.format` would need every one of those escaped to survive - the same
-    reason `rank/runner.py`'s prompt loader uses `.replace` for `{profile}`.
+    A missing packaged asset or an unreadable user copy must degrade `fetch`
+    to the empty envelope, not raise out of it - `rank/runner.py`'s prompt
+    loader (`_prompt_text`) makes the same existence check before reading.
+
+    Substitution is one regex pass (`_PLACEHOLDER`) over the *original* text,
+    not five chained `.replace()` calls: `{params}` renders as a JSON object
+    that could itself contain a literal "{cutoff}" or "{known_ids}" inside a
+    user's own query string, and a later `.replace()` call would then corrupt
+    that already-substituted text. One pass never re-scans a substitution.
     """
     user_path = config.home / _PROMPT_RELATIVE
     source = user_path if user_path.exists() else _PACKAGED_PROMPT
-    text = source.read_text(encoding="utf-8")
+    if not source.exists():
+        return None
+    try:
+        text = source.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
     known = ", ".join(sorted(known_ids)) if known_ids else "(none yet - fetch every detail)"
-    return (
-        text.replace("{params}", json.dumps(params, indent=2))
-        .replace("{cutoff}", cutoff)
-        .replace("{max_pages}", str(max_pages))
-        .replace("{known_ids}", known)
-        .replace("{detail_budget}", str(detail_budget))
-    )
+    mapping = {
+        "{params}": json.dumps(call, indent=2),
+        "{cutoff}": cutoff,
+        "{max_pages}": str(max_pages),
+        "{known_ids}": known,
+        "{detail_budget}": str(detail_budget),
+    }
+    return _PLACEHOLDER.sub(lambda m: mapping[m.group(0)], text)
 
 
 def _parse(raw: str) -> dict[str, Any] | None:
@@ -277,6 +301,25 @@ def _parse(raw: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _coerce_envelope(parsed: dict[str, Any]) -> dict[str, Any] | None:
+    """The exact two-key shape `normalize` expects, or None if `parsed` isn't one.
+
+    A model can hand back valid JSON that is not a real result: `{}`, an
+    `{"error": "..."}` with no `pages` at all, or a `pages` that came back the
+    wrong type. Writing any of those to disk as the envelope reports success
+    with zero jobs - indistinguishable from a search that genuinely found
+    nothing. Only a well-typed `pages` list counts as an actual result;
+    anything else is treated as a failure to report upstream, not data to
+    normalize. `details` is coerced rather than gating on, since a missing or
+    malformed `details` still leaves the search results themselves usable.
+    """
+    pages = parsed.get("pages")
+    if not isinstance(pages, list):
+        return None
+    details = parsed.get("details")
+    return {"pages": pages, "details": details if isinstance(details, dict) else {}}
 
 
 class UpworkAdapter(HttpAdapter):
@@ -335,10 +378,11 @@ class UpworkAdapter(HttpAdapter):
     def fetch(self, ref: BoardRef, client: httpx.Client | None) -> dict[str, Any]:
         """One search-and-detail pass through the Upwork MCP, via `claude -p`.
 
-        Never raises. No config, a tripped or exhausted budget, a subprocess
-        failure, or a response this module cannot parse all degrade to the
-        same empty envelope - the contract `linkedin.py` established, because
-        a caller iterating many refs cannot afford one bad ref to end the run.
+        Never raises. No config, a tripped or exhausted budget, an unreadable
+        prompt template, a subprocess failure or timeout, or a response this
+        module cannot parse into the expected shape all degrade to the same
+        empty envelope - the contract `linkedin.py` established, because a
+        caller iterating many refs cannot afford one bad ref to end the run.
         """
         empty: dict[str, Any] = {"pages": [], "details": {}}
         if self.config is None or self.budget is None:
@@ -357,36 +401,63 @@ class UpworkAdapter(HttpAdapter):
             return empty
 
         job_query, _, job_type = ref.token.partition("|")
-        params = query.search_params(job_query, job_type, prefs.upwork)
-        params["org_uid"] = os.environ.get(query.ORG_UID_ENV) or _DEFAULT_ORG_UID
+        # `org_uid` is a sibling of `params` on every `find_jobs` call, never a
+        # filter inside it - confirmed live against the MCP, not inferred.
+        # `search_params` stays a pure filter-dict mapper; the account id is
+        # env/deployment concern, so it is layered on here instead.
+        org_uid = os.environ.get(query.ORG_UID_ENV) or _DEFAULT_ORG_UID
+        search_call = {
+            "action": "search",
+            "org_uid": org_uid,
+            "params": query.search_params(job_query, job_type, prefs.upwork),
+        }
 
         prompt = _render_prompt(
             self.config,
-            params=params,
+            call=search_call,
             cutoff=_cutoff(prefs.max_age_days),
             max_pages=max(1, prefs.upwork.max_pages),
             known_ids=self.known_ids,
             detail_budget=DETAIL_BUDGET,
         )
+        if prompt is None:
+            log.warning("upwork fetch for %r skipped: prompt template unreadable", ref.token)
+            self.budget.record_failure()
+            return empty
 
-        self.budget.spend()
         envelope: dict[str, Any] | None = None
-        # One retry, for an unparseable response only - a subprocess failure
-        # (AgentError) is not retried, since the CLI already ran the whole
-        # turn to produce it and a repeat is no more likely to succeed.
-        for _attempt in (1, 2):
+        # One retry, for an unparseable or wrongly-shaped response only - a
+        # subprocess failure or timeout is not retried, since the CLI already
+        # ran the whole turn to produce it and a repeat is no more likely to
+        # succeed. The budget is spent, and the refusal checked, on *each*
+        # attempt - a free second agent turn (and a free second live search)
+        # for one budget unit would make DAILY_REFS mean up to twice as many
+        # real turns as its name promises.
+        for attempt in (1, 2):
+            refusal = self.budget.refusal()
+            if refusal is not None:
+                log.warning(
+                    "upwork fetch for %r stopped before %s: %s",
+                    ref.token, "the search" if attempt == 1 else "a retry", refusal,
+                )
+                return empty
+            self.budget.spend()
             try:
-                raw = agent.run(self.config, "upwork", prompt, tools=ALLOWED_TOOLS)
-            except agent.AgentError as error:
+                raw = agent.run(
+                    self.config, "upwork", prompt, tools=ALLOWED_TOOLS,
+                    timeout=FETCH_TIMEOUT_SECONDS,
+                )
+            except (agent.AgentError, subprocess.TimeoutExpired) as error:
                 log.warning("upwork fetch for %r failed: %s", ref.token, error)
                 self.budget.record_failure()
                 return empty
-            envelope = _parse(raw)
+            parsed = _parse(raw)
+            envelope = _coerce_envelope(parsed) if parsed is not None else None
             if envelope is not None:
                 break
 
         if envelope is None:
-            log.warning("upwork fetch for %r returned an unreadable response", ref.token)
+            log.warning("upwork fetch for %r returned an unreadable or malformed response", ref.token)
             self.budget.record_failure()
             return empty
 

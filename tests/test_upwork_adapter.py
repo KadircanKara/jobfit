@@ -1,6 +1,7 @@
 import dataclasses
 import json
 import pathlib
+import subprocess
 
 from jobhunt.preferences import UpworkPreferences
 from jobhunt.sources.base import BoardRef
@@ -264,3 +265,66 @@ def test_a_config_less_adapter_does_not_call_out(cfg, monkeypatch) -> None:
     )
     assert UpworkAdapter().fetch(_ref(), None)["pages"] == []
     assert called == []
+
+
+def test_org_uid_sits_beside_params_not_inside_it(cfg, monkeypatch) -> None:
+    """The MCP schema is {action, org_uid, params} - org_uid is not a filter."""
+    seen = {}
+
+    def fake_run(config, phase, prompt, *, tools, timeout=0):
+        seen["prompt"] = prompt
+        return "{}"
+
+    monkeypatch.setattr("jobhunt.sources.upwork.agent.run", fake_run)
+    UpworkAdapter(config=cfg).fetch(_ref(), None)
+    payload = json.loads(seen["prompt"].split("```json\n", 1)[1].split("\n```", 1)[0])
+    assert "org_uid" in payload
+    assert "org_uid" not in payload["params"]
+    assert payload["action"] == "search"
+
+
+def test_a_response_missing_pages_is_treated_as_a_failure(cfg, monkeypatch) -> None:
+    """`{}` and `{"error": "..."}` are valid JSON but not a real result."""
+    monkeypatch.setattr(
+        "jobhunt.sources.upwork.agent.run", lambda *a, **k: '{"error": "no results"}'
+    )
+    adapter = UpworkAdapter(config=cfg)
+    assert adapter.fetch(_ref(), None) == {"pages": [], "details": {}}
+
+
+def test_a_wrongly_typed_pages_is_treated_as_a_failure(cfg, monkeypatch) -> None:
+    monkeypatch.setattr("jobhunt.sources.upwork.agent.run", lambda *a, **k: '{"pages": "oops"}')
+    adapter = UpworkAdapter(config=cfg)
+    assert adapter.fetch(_ref(), None) == {"pages": [], "details": {}}
+
+
+def test_a_timeout_degrades_rather_than_raising(cfg, monkeypatch) -> None:
+    def boom(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=1)
+
+    monkeypatch.setattr("jobhunt.sources.upwork.agent.run", boom)
+    adapter = UpworkAdapter(config=cfg)
+    assert adapter.fetch(_ref(), None) == {"pages": [], "details": {}}
+
+
+def test_a_missing_prompt_template_degrades_rather_than_raising(cfg, monkeypatch) -> None:
+    monkeypatch.setattr("jobhunt.sources.upwork.agent.run", lambda *a, **k: "{}")
+    monkeypatch.setattr("jobhunt.sources.upwork._PACKAGED_PROMPT", pathlib.Path("/no/such/file.md"))
+    adapter = UpworkAdapter(config=cfg)
+    assert adapter.fetch(_ref(), None) == {"pages": [], "details": {}}
+
+
+def test_an_unparseable_response_spends_the_budget_on_each_retry(cfg, monkeypatch) -> None:
+    """The retry must cost as much as the first attempt - no free second turn."""
+    from jobhunt.db.models import utcnow
+
+    calls = []
+    monkeypatch.setattr(
+        "jobhunt.sources.upwork.agent.run",
+        lambda *a, **k: calls.append(1) or "sorry, I could not do that",
+    )
+    adapter = UpworkAdapter(config=cfg)
+    adapter.fetch(_ref(), None)
+    assert len(calls) == 2
+    assert adapter.budget._spent(utcnow()) == 2
+
