@@ -49,6 +49,8 @@ _FIELD_OF_KEY = {
     "upwork.experience_level": "upwork.experience_level",
     "upwork experience level": "upwork.experience_level",
     "upwork.verified_payment_only": "upwork.verified_payment_only",
+    "upwork.sort": "upwork.sort",
+    "upwork sort": "upwork.sort",
     "upwork.require_verified_client": "upwork.require_verified_client",
     "upwork.require_client_spend": "upwork.require_client_spend",
     "upwork.workload": "upwork.workload",
@@ -136,6 +138,9 @@ def _upwork_updates(payload: dict[str, Any]) -> dict[str, str]:
         if amount <= 0:
             raise FieldError(f"upwork.{field}", "a rate floor has to be above zero")
         updates[f"upwork.{field}"] = f"{amount:g}"
+
+    if "sort" in payload:
+        updates["upwork.sort"] = str(payload["sort"] or "").strip().lower() or "none"
 
     for field in _UPWORK_FLAG_FIELDS:
         if field in payload:

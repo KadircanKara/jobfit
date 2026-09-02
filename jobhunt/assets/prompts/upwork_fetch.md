@@ -24,11 +24,13 @@ Read the `cursor` in the response and call `find_jobs` again with the same
 (the first call above counts as one of them). Stop paginating early, before
 reaching {max_pages}, the moment either of these happens:
 
-- a response comes back with no `cursor` - there is no next page, or
-- a page's oldest result's `created_date` is earlier than `{cutoff}`. The API
-  has no date filter of its own, so this cutoff on `created_date` is the only
-  thing keeping the search to recent postings, and it only works if you stop
-  as soon as a page crosses it rather than reading on past it.
+- a response comes back with no `cursor` - there is no next page.
+
+Do not stop early on a result's age, and do not leave a result out because of
+its `created_date`. The results are not ordered by date, so an old posting on
+page one says nothing about page two, and postings past the age limit are
+dropped later by a rule that reads the stored date. Return every result the
+search gave you.
 
 ## Details
 

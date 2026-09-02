@@ -11,10 +11,14 @@ That is why a query becomes two refs rather than one.
 Facts below were verified live against the Upwork MCP, not re-derived from
 documentation:
 - `limit` maxes at 10. Sending more is silently ignored.
-- There is no date filter of any kind on the signed-in search. `sort` set to
-  "recency" plus a client-side cutoff on each result's `created_date` is the
-  only substitute - which is why SORT is a constant here rather than a
-  preference the user could turn off.
+- There is no date filter of any kind on the signed-in search. That once
+  justified pinning `sort` to "recency" and stopping pagination at an age
+  cutoff, but `_check_age` drops old postings at rank time regardless, so the
+  pin bought a marginally cheaper fetch and cost the whole relevance signal.
+  `sort` is a preference now, defaulting to "relevance" - the website's own
+  "Best match".
+- `rate_min` (hourly) and `budget_min` (fixed) are different parameters, not
+  synonyms.
 - `experience_level` and `workload` each take a single string, not a list.
   When the user has selected more than one, the parameter is omitted entirely
   and the local filter handles the rest - a comma-joined list would be
@@ -29,21 +33,27 @@ from jobhunt.preferences import UpworkPreferences
 ORG_UID_ENV = "UPWORK_ORG_UID"
 
 PAGE_SIZE = 10  # the API's hard maximum; anything higher is silently ignored
-SORT = "recency"  # there is no date filter; this plus a client-side cutoff on
-# created_date is the substitute
 
 
-def _budget_min(job_type: str, prefs: UpworkPreferences) -> float | None:
-    """The one floor that applies to this ref's contract type.
+def _floor(job_type: str, prefs: UpworkPreferences) -> tuple[str, float] | None:
+    """(parameter name, value) for this ref's contract type, or None.
 
-    `budget_min`/`budget_max` is a single pair on the API, not one per
-    contract type - which is why an hourly ref and a fixed ref are separate
-    refs rather than one query carrying both floors.
+    `rate_min` and `budget_min` are different parameters, not two names for
+    one: `rate_min` is the hourly rate floor and `budget_min` is the
+    fixed-price budget floor. Both were being sent as `budget_min`, which
+    filtered hourly searches on the wrong field - confirmed live, the two
+    return different result sets for the same query.
+
+    Each is still its own ref, because the API takes one of each per call and
+    a single search cannot carry both an hourly and a fixed floor.
     """
-    floor = prefs.min_hourly if job_type == "hourly" else prefs.min_fixed
-    # A floor of None or zero must be omitted rather than sent as
-    # budget_min=0, which would be a meaningful and wrong filter.
-    return floor if floor else None
+    if job_type == "hourly":
+        name, floor = "rate_min", prefs.min_hourly
+    else:
+        name, floor = "budget_min", prefs.min_fixed
+    # A floor of None or zero must be omitted rather than sent as zero, which
+    # would be a meaningful and wrong filter.
+    return (name, floor) if floor else None
 
 
 def search_params(query: str, job_type: str, prefs: UpworkPreferences) -> dict[str, Any]:
@@ -51,14 +61,14 @@ def search_params(query: str, job_type: str, prefs: UpworkPreferences) -> dict[s
     params: dict[str, Any] = {
         "query": query,
         "job_type": job_type,
-        "sort": SORT,
+        "sort": prefs.sort,
         "limit": PAGE_SIZE,
         "verified_payment_only": prefs.verified_payment_only,
     }
 
-    budget_min = _budget_min(job_type, prefs)
-    if budget_min is not None:
-        params["budget_min"] = budget_min
+    floor = _floor(job_type, prefs)
+    if floor is not None:
+        params[floor[0]] = floor[1]
 
     if len(prefs.experience_level) == 1:
         params["experience_level"] = prefs.experience_level[0]

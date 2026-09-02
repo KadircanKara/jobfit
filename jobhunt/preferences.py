@@ -39,6 +39,7 @@ UPWORK_SOURCE = "upwork"
 UPWORK_JOB_TYPES = ("hourly", "fixed")
 UPWORK_EXPERIENCE = ("entry_level", "intermediate", "expert")
 UPWORK_WORKLOAD = ("full_time", "part_time", "as_needed")
+UPWORK_SORTS = ("relevance", "recency", "client_total_charge", "client_rating")
 
 
 def _ats_sources() -> tuple[str, ...]:
@@ -92,6 +93,12 @@ class UpworkPreferences:
     # this one is a rule over what did. Both are wanted - the pushdown keeps the
     # page from filling with dead weight, and the rule still holds if Upwork
     # ignores the parameter or a row was stored before it was set.
+    # How Upwork orders the results. "relevance" is the website's own "Best
+    # match" and what makes a query mean anything: measured live on the same
+    # query with the same filters, relevance and recency returned ten results
+    # each with *zero* titles in common - recency gave virtual-assistant
+    # postings that merely mention AI, relevance gave the engineering roles.
+    sort: str = "relevance"
     require_verified_client: bool = False
     # Drop postings whose client has never spent anything. Not the same signal
     # as verification: every client in the first real run was VERIFIED, yet 14
@@ -279,6 +286,10 @@ def _apply_upwork(target: UpworkPreferences, name: str, value: str) -> None:
         )
     elif name == "verified_payment_only":
         target.verified_payment_only = value.lower() not in ("false", "no", "0")
+    elif name == "sort":
+        target.sort = "relevance" if blank else _restricted(
+            [value.strip().lower()], UPWORK_SORTS, "upwork sort"
+        )[0]
     elif name == "require_verified_client":
         target.require_verified_client = value.lower() in ("true", "yes", "1", "on")
     elif name == "require_client_spend":

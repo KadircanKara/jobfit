@@ -4,7 +4,7 @@ from jobhunt.sources import upwork_query as query
 
 def test_the_hourly_ref_carries_the_hourly_floor() -> None:
     prefs = UpworkPreferences(min_hourly=40, min_fixed=1500)
-    assert query.search_params("rag", "hourly", prefs)["budget_min"] == 40
+    assert query.search_params("rag", "hourly", prefs)["rate_min"] == 40
 
 
 def test_the_fixed_ref_carries_the_fixed_floor() -> None:
@@ -14,12 +14,12 @@ def test_the_fixed_ref_carries_the_fixed_floor() -> None:
 
 def test_a_missing_floor_is_omitted_rather_than_sent_as_zero() -> None:
     params = query.search_params("rag", "hourly", UpworkPreferences())
-    assert "budget_min" not in params
+    assert "rate_min" not in params and "budget_min" not in params
 
 
 def test_a_zero_floor_is_also_omitted_rather_than_sent_as_zero() -> None:
     params = query.search_params("rag", "hourly", UpworkPreferences(min_hourly=0))
-    assert "budget_min" not in params
+    assert "rate_min" not in params and "budget_min" not in params
 
 
 def test_the_query_and_type_always_travel() -> None:
@@ -28,8 +28,11 @@ def test_the_query_and_type_always_travel() -> None:
     assert params["job_type"] == "hourly"
 
 
-def test_recency_is_the_sort_because_there_is_no_date_filter() -> None:
-    assert query.search_params("x", "hourly", UpworkPreferences())["sort"] == "recency"
+def test_the_age_limit_is_enforced_at_rank_not_by_the_sort() -> None:
+    """This used to pin `sort` to recency so pagination could stop at an age
+    cutoff. `_check_age` drops old postings anyway, so recency bought a slightly
+    cheaper fetch and cost the entire relevance signal."""
+    assert query.search_params("x", "hourly", UpworkPreferences())["sort"] != "recency"
 
 
 def test_the_page_size_is_the_api_maximum() -> None:
@@ -79,3 +82,42 @@ def test_one_ref_per_query_and_job_type() -> None:
 
 def test_no_queries_means_no_refs() -> None:
     assert query.refs_for(UpworkPreferences()) == []
+
+
+# --- sort, and which parameter carries an hourly floor ------------------------
+
+
+def test_the_search_sorts_by_relevance_by_default() -> None:
+    """Live comparison, same query and same filters, ten results each: recency
+    and relevance had *zero* titles in common. Recency returned virtual-assistant
+    postings that merely mention AI; relevance returned the engineering roles.
+    The website's own default is Best match, which is why the app's results did
+    not resemble the site's."""
+    params = query.search_params("AI Agent", "hourly", UpworkPreferences())
+    assert params["sort"] == "relevance"
+
+
+def test_the_sort_can_be_changed() -> None:
+    prefs = UpworkPreferences(sort="client_total_charge")
+    assert query.search_params("x", "hourly", prefs)["sort"] == "client_total_charge"
+
+
+def test_an_hourly_floor_goes_to_rate_min_not_budget_min() -> None:
+    """`rate_min` and `budget_min` are separate parameters: `budget_min` is the
+    fixed-price budget. Sending an hourly floor as `budget_min` filtered on the
+    wrong field - verified live, the two return different result sets."""
+    params = query.search_params("x", "hourly", UpworkPreferences(min_hourly=50))
+    assert params["rate_min"] == 50
+    assert "budget_min" not in params
+
+
+def test_a_fixed_floor_still_goes_to_budget_min() -> None:
+    params = query.search_params("x", "fixed", UpworkPreferences(min_fixed=1500))
+    assert params["budget_min"] == 1500
+    assert "rate_min" not in params
+
+
+def test_an_hourly_ref_ignores_the_fixed_floor_and_the_reverse() -> None:
+    prefs = UpworkPreferences(min_hourly=50, min_fixed=1500)
+    assert "budget_min" not in query.search_params("x", "hourly", prefs)
+    assert "rate_min" not in query.search_params("x", "fixed", prefs)

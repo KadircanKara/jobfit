@@ -63,6 +63,7 @@ type Draft = {
     min_hourly: string;
     min_fixed: string;
     experience_level: string[];
+    sort: string;
     verified_payment_only: boolean;
     require_verified_client: boolean;
     require_client_spend: boolean;
@@ -89,6 +90,7 @@ function draftFrom(filters: Filters): Draft {
       min_hourly: filters.upwork?.min_hourly ? String(filters.upwork.min_hourly) : "",
       min_fixed: filters.upwork?.min_fixed ? String(filters.upwork.min_fixed) : "",
       experience_level: filters.upwork?.experience_level ?? [],
+      sort: filters.upwork?.sort ?? "relevance",
       verified_payment_only: filters.upwork?.verified_payment_only ?? true,
       require_verified_client: filters.upwork?.require_verified_client ?? false,
       require_client_spend: filters.upwork?.require_client_spend ?? false,
@@ -142,6 +144,7 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
           min_hourly: draft.upwork.min_hourly || null,
           min_fixed: draft.upwork.min_fixed || null,
           experience_level: draft.upwork.experience_level,
+          sort: draft.upwork.sort,
           verified_payment_only: draft.upwork.verified_payment_only,
           require_verified_client: draft.upwork.require_verified_client,
           require_client_spend: draft.upwork.require_client_spend,
@@ -491,6 +494,21 @@ function UpworkPanel({
           ))}
         </div>
         <div className="hint">{value.experience_level.length ? "" : "no restriction"}</div>
+      </div>
+
+      <div className="field">
+        <label>Sort</label>
+        <select value={value.sort} onChange={(e) => onChange("sort", e.target.value)}>
+          <option value="relevance">Best match</option>
+          <option value="recency">Newest first</option>
+          <option value="client_total_charge">Client spend</option>
+          <option value="client_rating">Client rating</option>
+        </select>
+        <div className="hint">
+          Best match is what the Upwork website itself shows. Newest first returns a
+          different set entirely — on the same query it shared no results at all with
+          Best match, and most of them were assistant work that merely mentions AI.
+        </div>
       </div>
 
       <div className="field">

@@ -41,7 +41,6 @@ field this codebase could accidentally filter on.
 """
 from __future__ import annotations
 
-import datetime as dt
 import json
 import logging
 import os
@@ -55,7 +54,6 @@ import httpx
 
 from jobhunt import preferences as preferences_module
 from jobhunt.config import Config
-from jobhunt.db.models import utcnow
 from jobhunt.pipeline import normalize as norm
 from jobhunt.pipeline.client_identity import COMPANY_NAME_PLACEHOLDER, name_from_domain
 from jobhunt.pipeline.client_identity import detect as detect_client_identity
@@ -130,13 +128,13 @@ _PACKAGED_PROMPT = pathlib.Path(__file__).resolve().parent.parent / "assets" / _
 
 # The five placeholders `upwork_fetch.md` declares, matched in one pass so
 # that a value being substituted in - a preference string, a rendered call
-# blob - can never itself contain a literal "{cutoff}" or "{known_ids}" that
+# blob - can never itself contain a literal "{max_pages}" or "{known_ids}" that
 # a later, separate .replace() call would then corrupt. Named "{call}", not
 # "{params}": it renders the *whole* find_jobs call object (action, org_uid,
 # and params together) - the name "{params}" is what let org_uid get nested
 # one level too deep in the first place, and a future editor re-adding a
 # top-level key belongs less to a name that already implies "just the filters".
-_PLACEHOLDER = re.compile(r"\{call\}|\{cutoff\}|\{max_pages\}|\{known_ids\}|\{detail_budget\}")
+_PLACEHOLDER = re.compile(r"\{call\}|\{max_pages\}|\{known_ids\}|\{detail_budget\}")
 
 # Mirrors gate.ARRAY: a fenced or bare object is read the same way a fenced or
 # bare array is, because a model asked for "one JSON object" reliably wraps it
@@ -323,22 +321,10 @@ def _trailer(item: dict, client_company: dict) -> str:
     return "\n".join(lines)
 
 
-def _cutoff(max_age_days: int) -> str:
-    """The oldest `created_date` worth paginating into, as an ISO date.
-
-    The API has no date filter of its own (see upwork_query.py) - this and
-    `sort="recency"` are what stand in for one. Reusing the user's own
-    `max_age_days` rather than a second, Upwork-only constant means one knob
-    controls "how old is too old" everywhere a source can answer it.
-    """
-    return (utcnow() - dt.timedelta(days=max(1, max_age_days))).date().isoformat()
-
-
 def _render_prompt(
     config: Config,
     *,
     call: dict[str, Any],
-    cutoff: str,
     max_pages: int,
     known_ids: set[str],
     detail_budget: int,
@@ -351,7 +337,7 @@ def _render_prompt(
 
     Substitution is one regex pass (`_PLACEHOLDER`) over the *original* text,
     not five chained `.replace()` calls: `{call}` renders as a JSON object
-    that could itself contain a literal "{cutoff}" or "{known_ids}" inside a
+    that could itself contain a literal "{max_pages}" or "{known_ids}" inside a
     user's own query string, and a later `.replace()` call would then corrupt
     that already-substituted text. One pass never re-scans a substitution.
     """
@@ -367,7 +353,6 @@ def _render_prompt(
     known = ", ".join(sorted(known_ids)) if known_ids else "(none yet - fetch every detail)"
     mapping = {
         "{call}": json.dumps(call, indent=2),
-        "{cutoff}": cutoff,
         "{max_pages}": str(max_pages),
         "{known_ids}": known,
         "{detail_budget}": str(detail_budget),
@@ -547,7 +532,6 @@ class UpworkAdapter(HttpAdapter):
         prompt = _render_prompt(
             self.config,
             call=search_call,
-            cutoff=_cutoff(prefs.max_age_days),
             max_pages=max(1, prefs.upwork.max_pages),
             known_ids=self.known_ids,
             detail_budget=DETAIL_BUDGET,
@@ -776,11 +760,11 @@ class UpworkAdapter(HttpAdapter):
             description_md=description_md,
             jd_completeness=jd_completeness,
             jd_source=jd_source,
-            # `created_date`, not `published_date`: the API's own cutoff logic
-            # (there is no date filter, only client-side pagination against
-            # this field - see `upwork_query.py`) keys off `created_date`, so
-            # a stored `posted_at` that disagreed with it would make a job
-            # look older or newer than the cutoff that actually admitted it.
+            # `created_date`, not `published_date`: the API has no date filter
+            # of its own, so `_check_age` at rank time is the only thing
+            # enforcing the age limit for this source, and it reads what is
+            # stored here. A `posted_at` taken from a different field would
+            # make a job look older or newer than the search reported it.
             posted_at=norm.parse_datetime(item.get("created_date")),
             apply_url=item.get("url"),
             source_url=item.get("url"),
