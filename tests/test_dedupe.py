@@ -3,10 +3,27 @@ from __future__ import annotations
 
 import datetime as dt
 
-from jobhunt.pipeline import simhash
+from jobhunt import store
+from jobhunt.db.session import session_scope
+from jobhunt.pipeline import dedupe, simhash
 from jobhunt.pipeline.dedupe import DedupeRecord, cluster
+from jobhunt.sources.base import JobPosting
 
 T0 = dt.datetime(2026, 8, 1, 9, 0)
+
+
+def make_job(cfg, **kwargs):
+    defaults = {
+        "source": "ashby", "external_id": "x1", "market": "global_remote",
+        "title": "Senior Backend Engineer", "company_name": "Acme",
+        "remote_type": "remote", "description_text": "We build things. " * 40,
+    }
+    defaults.update(kwargs)
+    with session_scope(cfg.db_path) as session:
+        job, _ = store.upsert_posting(session, JobPosting(**defaults))
+        session.flush()
+        return job.id
+
 
 BACKEND_JD = (
     "We are looking for a backend engineer to build and operate our payments API. "
@@ -165,3 +182,25 @@ def test_three_way_split_keeps_three_heads() -> None:
     assert result[1] == 1
     assert result[2] == 2
     assert result[3] == 3
+
+
+def test_two_upwork_gigs_with_the_same_title_do_not_cluster(cfg) -> None:
+    """Every Upwork job would otherwise share one anonymous company bucket.
+
+    Task 8's extractor supplies a real company only when the description names
+    one; every other gig normalizes to the constant "Upwork client". Without an
+    escape, `grouping_key` collapses every anonymous "react developer" gig from
+    every client into one cluster, and all but one vanish from the shortlist.
+    """
+    first = make_job(
+        cfg, source="upwork", market="upwork", external_id="d1",
+        title="React developer", company_name="Upwork client",
+    )
+    second = make_job(
+        cfg, source="upwork", market="upwork", external_id="d2",
+        title="React developer", company_name="Upwork client",
+    )
+    with session_scope(cfg.db_path) as session:
+        records = dedupe.records_from_db(session)
+        keys = {r.id: r.company_key for r in records if r.id in (first, second)}
+    assert keys[first] != keys[second]

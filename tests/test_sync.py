@@ -650,3 +650,34 @@ def test_a_run_with_a_truncated_ref_reports_degraded_rather_than_ok(cfg) -> None
     result = sync.sync_source(cfg, "linkedin", from_raw="R9")
     assert result.status == "degraded"
     assert "ended early" in (result.error_detail or "")
+
+
+def test_the_upwork_adapter_is_built_with_config_and_refs(cfg) -> None:
+    prefs, _ = prefs_module.load(cfg)
+    prefs.upwork.queries = ["rag"]
+    prefs.upwork.job_types = ["hourly"]
+    prefs_module.save(cfg, prefs)
+    adapter = sync.build_adapter(cfg, "upwork")
+    assert adapter.config is cfg
+    assert [ref.token for ref in adapter.discover()] == ["rag|hourly"]
+
+
+def test_upwork_refs_come_from_preferences_not_the_boards_table(cfg, monkeypatch) -> None:
+    prefs, _ = prefs_module.load(cfg)
+    prefs.upwork.queries = ["rag"]
+    prefs_module.save(cfg, prefs)
+    monkeypatch.setattr(
+        "jobhunt.sources.upwork.agent.run",
+        lambda *a, **k: '{"pages": [], "details": {}}',
+    )
+    result = sync.sync_source(cfg, "upwork")
+    assert result.boards > 0
+
+
+def test_a_candidate_only_pass_never_starts_an_upwork_fetch(cfg, monkeypatch) -> None:
+    called = []
+    monkeypatch.setattr(
+        "jobhunt.sources.upwork.agent.run", lambda *a, **k: called.append(1) or "{}"
+    )
+    sync.sync_source(cfg, "upwork", only_status="candidate")
+    assert called == []
