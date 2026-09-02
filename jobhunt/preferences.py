@@ -11,6 +11,7 @@ preserved byte for byte, so hand edits and the wizard can coexist.
 """
 from __future__ import annotations
 
+import copy
 import dataclasses
 import pathlib
 import re
@@ -622,6 +623,29 @@ def load(config: Config) -> tuple[Preferences, dict[str, Any]]:
     return from_filters(document), document
 
 
+def _packaged_profile(market: str) -> dict[str, Any]:
+    """The shipped defaults for a market profile the user's file does not have.
+
+    A profile this writer creates from nothing used to be created empty, and
+    `save` only ever writes the keys it owns - which do not include
+    `llm_gate_prompt` or `min_score_to_surface`. So turning on a market the
+    user's existing filters.yaml predates (Upwork, for anyone whose file was
+    installed before it existed) produced a profile with no gate prompt and no
+    surfacing bar: `runner._prompt_text` returned "" and the whole batch was
+    gated with no market instructions at all. `install_user_copies` cannot fix
+    that - it never overwrites a filters.yaml that already exists.
+
+    Only the creation path reads this. A profile the user already has, however
+    they edited it, is left exactly as it is.
+    """
+    try:
+        packaged = yaml.safe_load(PACKAGED_FILTERS.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    profile = (packaged.get("profiles") or {}).get(market)
+    return copy.deepcopy(profile) if isinstance(profile, dict) else {}
+
+
 def save(config: Config, prefs: Preferences) -> pathlib.Path:
     """Merge the managed block into filters.yaml, preserving everything else."""
     _, document = load(config)
@@ -629,7 +653,9 @@ def save(config: Config, prefs: Preferences) -> pathlib.Path:
 
     document.setdefault("profiles", {})
     for market, rules in generated["profiles"].items():
-        profile = document["profiles"].setdefault(market, {})
+        if market not in document["profiles"]:
+            document["profiles"][market] = _packaged_profile(market)
+        profile = document["profiles"][market]
         # Replace only the keys this module owns. A gate prompt path, a surface
         # threshold, or a hand-written hard_excludes list stays untouched.
         owned = ["hard_requires", "seniority_min", "seniority_max", "salary", "allow_worldwide"]
@@ -641,7 +667,8 @@ def save(config: Config, prefs: Preferences) -> pathlib.Path:
             profile.pop(key, None)
         profile.update(rules)
     for market in generated["profiles"]:
-        document["profiles"].setdefault(market, {})
+        if market not in document["profiles"]:
+            document["profiles"][market] = _packaged_profile(market)
 
     # `update` can add a key but never remove one, and `to_filters` signals "no
     # source restriction" by omitting `sources` entirely. Without the pop, a

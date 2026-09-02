@@ -640,3 +640,42 @@ def test_upwork_preferences_round_trip_through_from_filters() -> None:
     restored = preferences.from_filters(filters)
     assert isinstance(restored.upwork, preferences.UpworkPreferences)
     assert restored.upwork.min_hourly == 50.0
+
+
+def test_a_market_profile_this_writer_creates_is_seeded_from_the_packaged_one(cfg) -> None:
+    """The real machine's filters.yaml predates Upwork: it has yc, global_remote
+    and tr_local and no upwork block. `install_user_copies` never overwrites an
+    existing file, and `save` only writes the keys it owns, so the created
+    profile used to have no `llm_gate_prompt` and no `min_score_to_surface` -
+    the Upwork batch was gated with an empty prompt and no surfacing bar."""
+    path = preferences.filters_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump({"profiles": {"global_remote": {"llm_gate_prompt": "prompts/mine.md"}}}),
+        encoding="utf-8",
+    )
+
+    prefs, _ = preferences.load(cfg)
+    preferences.save(cfg, prefs)
+
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    upwork = document["profiles"]["upwork"]
+    assert upwork["llm_gate_prompt"] == "prompts/gate_upwork.md"
+    assert upwork["min_score_to_surface"] == 0.6
+    # A profile the user already had keeps whatever they put in it.
+    assert document["profiles"]["global_remote"]["llm_gate_prompt"] == "prompts/mine.md"
+
+
+def test_seeding_never_touches_a_profile_that_already_exists(cfg) -> None:
+    path = preferences.filters_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump({"profiles": {"upwork": {"min_score_to_surface": 0.9}}}), encoding="utf-8"
+    )
+
+    prefs, _ = preferences.load(cfg)
+    preferences.save(cfg, prefs)
+
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert document["profiles"]["upwork"]["min_score_to_surface"] == 0.9
+    assert "llm_gate_prompt" not in document["profiles"]["upwork"]
