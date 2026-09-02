@@ -57,8 +57,8 @@ from jobhunt import preferences as preferences_module
 from jobhunt.config import Config
 from jobhunt.db.models import utcnow
 from jobhunt.pipeline import normalize as norm
+from jobhunt.pipeline.client_identity import COMPANY_NAME_PLACEHOLDER, name_from_domain
 from jobhunt.pipeline.client_identity import detect as detect_client_identity
-from jobhunt.pipeline.client_identity import name_from_domain
 from jobhunt.sources import upwork_query as query
 from jobhunt.sources.base import BoardRef, HttpAdapter, JobPosting
 from jobhunt.sources.upwork_guard import FetchBudget
@@ -69,7 +69,6 @@ log = logging.getLogger(__name__)
 _UNTRUSTED_OPEN = "<untrusted_participant_content>"
 _UNTRUSTED_CLOSE = "</untrusted_participant_content>"
 
-COMPANY_NAME_PLACEHOLDER = "Upwork client"
 
 # The only tool `fetch` ever puts on an allow-list. See the module docstring -
 # this is the enforcement, not a comment beside it. A single tool name, not a

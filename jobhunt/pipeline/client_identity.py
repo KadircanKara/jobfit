@@ -32,6 +32,13 @@ from dataclasses import dataclass
 # Upwork itself than to the client.
 _SCAN_WINDOW = 4000
 
+# The company name an Upwork posting gets when nothing here recovers a real one.
+# It lives in this module, not in the adapter, because `store.upsert_posting`
+# has to recognise it to keep a real extracted company from being overwritten by
+# it - and importing the adapter from the store would be a cycle (the adapter's
+# budget imports the store) as well as dragging httpx into a database module.
+COMPANY_NAME_PLACEHOLDER = "Upwork client"
+
 # Domains a job description legitimately mentions that are never the client:
 # collaboration tools, code hosts, meeting software, and the platform itself.
 # A naive domain regex returns one of these for a large fraction of the

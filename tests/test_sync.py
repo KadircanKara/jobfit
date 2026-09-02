@@ -681,3 +681,94 @@ def test_a_candidate_only_pass_never_starts_an_upwork_fetch(cfg, monkeypatch) ->
     )
     sync.sync_source(cfg, "upwork", only_status="candidate")
     assert called == []
+
+
+def _upwork_envelope(with_detail: bool) -> dict:
+    """The fixture payload, optionally with the detail document removed.
+
+    Dropping `details` is exactly what `known_ids` produces on the second run:
+    the search result still arrives in full (snippet, trailer metadata and all),
+    only the paid-for `get` document is gone.
+    """
+    payload = load_fixture("upwork_payload.json")
+    return {
+        "pages": payload["pages"],
+        "details": payload["details"] if with_detail else {},
+    }
+
+
+def test_a_second_upwork_pass_keeps_the_body_rate_and_client_it_paid_for(cfg) -> None:
+    """Run 2 has no detail document, but an Upwork posting is never empty - the
+    trailer and the snippet are always there - so `_absent_fields` alone let the
+    snippet overwrite the full JD, blank the hourly rate that only the detail
+    carries, and revert the extracted client to the anonymous placeholder, which
+    is what "Find contacts" searches LinkedIn for."""
+    place_raw(cfg, "upwork", "rag|hourly", "R1", _upwork_envelope(with_detail=True))
+    sync.normalize_pass(cfg, "upwork", "R1")
+    with session_scope(cfg.db_path) as session:
+        job = session.query(Job).filter_by(source="upwork", external_id="2094821655490856773").one()
+        before = (
+            job.description_text, job.description_md, job.jd_completeness,
+            job.salary_min, job.salary_max, job.salary_period, job.company.name,
+        )
+        assert job.jd_completeness == "full"
+        assert job.company.name == "Northquill"
+        assert (job.salary_min, job.salary_max) == (20, 30)
+
+    place_raw(cfg, "upwork", "rag|hourly", "R2", _upwork_envelope(with_detail=False))
+    result = sync.normalize_pass(cfg, "upwork", "R2")
+    with session_scope(cfg.db_path) as session:
+        job = session.query(Job).filter_by(source="upwork", external_id="2094821655490856773").one()
+        assert (
+            job.description_text, job.description_md, job.jd_completeness,
+            job.salary_min, job.salary_max, job.salary_period, job.company.name,
+        ) == before
+        assert job.jd_extracted_at is not None
+    # Nothing about the gig changed, so re-gating it would be pure waste.
+    assert result.updated == 0
+
+
+def test_a_real_edit_to_a_description_still_lands(cfg) -> None:
+    """The guard must only refuse downgrades. A source that genuinely re-sends a
+    changed full description - which is every ATS adapter, every run - has to
+    keep overwriting the stored row."""
+    payload = load_fixture("greenhouse_stripe.json")
+    place_raw(cfg, "greenhouse", "stripe", "R1", payload)
+    sync.normalize_pass(cfg, "greenhouse", "R1")
+
+    edited = json.loads(json.dumps(payload))
+    edited_id = str(edited["jobs"][0]["id"])
+    rewritten = "Rewritten description with new requirements. " * 20
+    edited["jobs"][0]["content"] = f"&lt;p&gt;{rewritten}&lt;/p&gt;"
+    place_raw(cfg, "greenhouse", "stripe", "R2", edited)
+    result = sync.normalize_pass(cfg, "greenhouse", "R2")
+
+    assert result.updated == 1
+    with session_scope(cfg.db_path) as session:
+        job = session.query(Job).filter_by(source="greenhouse", external_id=edited_id).one()
+        assert "Rewritten description" in (job.description_text or "")
+
+
+def test_a_full_body_is_not_replaced_by_a_shorter_one_that_reads_as_a_snippet(cfg) -> None:
+    """The accepted cost of the downgrade guard, pinned so it stays deliberate.
+
+    `norm.completeness` calls anything under 400 characters a snippet, so an ATS
+    that genuinely rewrites a full JD down to a couple of sentences is refused
+    the same way an Upwork run-2 snippet is. Keeping a stale body is the
+    cheaper mistake: the other direction throws away a paid-for detail fetch on
+    every single Upwork run, for every gig.
+    """
+    payload = load_fixture("greenhouse_stripe.json")
+    place_raw(cfg, "greenhouse", "stripe", "R1", payload)
+    sync.normalize_pass(cfg, "greenhouse", "R1")
+
+    edited = json.loads(json.dumps(payload))
+    edited_id = str(edited["jobs"][0]["id"])
+    edited["jobs"][0]["content"] = "&lt;p&gt;Now hiring. Apply within.&lt;/p&gt;"
+    place_raw(cfg, "greenhouse", "stripe", "R2", edited)
+    sync.normalize_pass(cfg, "greenhouse", "R2")
+
+    with session_scope(cfg.db_path) as session:
+        job = session.query(Job).filter_by(source="greenhouse", external_id=edited_id).one()
+        assert job.jd_completeness == "full"
+        assert "Apply within" not in (job.description_text or "")
