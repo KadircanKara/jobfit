@@ -13,11 +13,14 @@ def test_a_company_that_introduces_itself_is_found() -> None:
     assert detect("Ai - Automation Expert", text).company_name == "Karma and Luck"
 
 
-def test_a_person_who_introduces_themselves_is_found() -> None:
+def test_a_person_who_introduces_themselves_names_their_company() -> None:
+    """The person's own name is not returned - the outreach message greets the
+    LinkedIn contact it is sent to, not whoever typed the posting. What this
+    pattern is for is the company on the other side of "founder of"."""
     text = "Hi, I'm Oliver, founder of Brightline. We need a backend engineer."
     found = detect("Backend engineer", text)
-    assert found.person_name == "Oliver"
     assert found.company_name == "Brightline"
+    assert not hasattr(found, "person_name")
 
 
 def test_an_anonymous_posting_yields_nothing() -> None:
@@ -53,7 +56,6 @@ def test_a_noise_brand_named_as_a_company_is_rejected() -> None:
 def test_this_is_matches_regardless_of_capitalisation() -> None:
     text = "This is Alex from Acme, we need a backend engineer."
     found = detect("x", text)
-    assert found.person_name == "Alex"
     assert found.company_name == "Acme"
 
 
@@ -100,9 +102,7 @@ def test_a_three_word_name_with_no_noise_word_still_survives() -> None:
 
 def test_a_person_affiliated_with_a_noise_company_is_dropped_too() -> None:
     text = "this is Alex from Zoom, and we want a Zoom plugin built for internal use."
-    found = detect("x", text)
-    assert found.person_name is None
-    assert found.company_name is None
+    assert detect("x", text).company_name is None
 
 
 def test_name_from_domain_strips_the_tld_and_title_cases() -> None:
@@ -130,3 +130,20 @@ def test_a_longer_word_sharing_a_prefix_with_a_brand_still_survives() -> None:
 def test_a_standalone_x_token_no_longer_trips_the_x_dot_com_brand() -> None:
     found = detect("x", "X Corp is looking for a contractor")
     assert found.company_name == "X Corp"
+
+
+def test_the_platform_a_gig_deploys_to_is_never_the_client() -> None:
+    """Domain outranks every other signal, and `get_or_create_company` dedupes on
+    domain - so a gig that mentions vercel.com used to become a Vercel gig and
+    merge into the real Vercel company row."""
+    for host in ("vercel.com", "supabase.com", "railway.app", "make.com", "pinecone.io"):
+        text = f"We need help with our app; it deploys to https://{host} already."
+        assert detect("Backend developer", text).domain is None, host
+
+
+def test_a_real_client_domain_still_wins_over_the_stack_it_names() -> None:
+    text = (
+        "We are Northquill (northquill.ai). Our app is hosted on vercel.com and "
+        "our data lives in supabase.com."
+    )
+    assert detect("RAG engineer", text).domain == "northquill.ai"

@@ -46,8 +46,9 @@ COMPANY_NAME_PLACEHOLDER = "Upwork client"
 # to work in or the doc to read, never as the client), so this list is the
 # difference between the extractor being useful and being actively harmful.
 #
-# Several of these brands (monday, medium, notion, apple, asana, loom) are
-# also common English words, which means a real client legitimately named
+# Several of these brands (monday, medium, notion, apple, asana, loom, and
+# among the deployment and no-code entries make, render, railway, bubble, fly)
+# are also common English words, which means a real client legitimately named
 # "Apple Valley Farms" or "Monday Morning Studio" will be silently rejected
 # by the word-level check below (`_is_noise_name`). That trade is deliberate,
 # not an oversight: a miss here costs one job no outreach; a false positive
@@ -104,6 +105,79 @@ _NOISE_DOMAINS = frozenset({
     "outlook.com",
     "hotmail.com",
     "icloud.com",
+    # Where the work gets deployed, stored, or sent from. These are what an
+    # Upwork gig actually names - "deploys to vercel.com", "our data is in
+    # supabase" - and a domain outranks every other signal here, so without
+    # them "Vercel" becomes the client. Worse than a bad name: `store.
+    # get_or_create_company` dedupes on domain, so the gig merges into the real
+    # Vercel company row and takes its contacts and history with it.
+    "vercel.com",
+    "vercel.app",
+    "netlify.com",
+    "netlify.app",
+    "supabase.com",
+    "firebase.com",
+    "heroku.com",
+    "herokuapp.com",
+    "railway.app",
+    "render.com",
+    "fly.io",
+    "replit.com",
+    "cloudflare.com",
+    "digitalocean.com",
+    "godaddy.com",
+    "hostinger.com",
+    "bluehost.com",
+    "github.io",
+    "mongodb.com",
+    # Site builders and storefronts: the platform the client's site sits on,
+    # never the client.
+    "wix.com",
+    "squarespace.com",
+    "webflow.com",
+    "framer.com",
+    "bubble.io",
+    "contentful.com",
+    "strapi.io",
+    "woocommerce.com",
+    "bigcommerce.com",
+    "canva.com",
+    # Messaging, email, payments and support: the integration to build against.
+    "twilio.com",
+    "sendgrid.com",
+    "mailchimp.com",
+    "klaviyo.com",
+    "intercom.com",
+    "zendesk.com",
+    "discord.com",
+    "telegram.org",
+    "whatsapp.com",
+    "paypal.com",
+    "typeform.com",
+    # Automation and no-code, the single most-named category in an AI-automation
+    # gig ("automation expert (Make.com)" is a title, not a client).
+    "zapier.com",
+    "make.com",
+    "n8n.io",
+    "retool.com",
+    # Models, vector stores and AI infrastructure - the stack the gig asks for.
+    "huggingface.co",
+    "pinecone.io",
+    "weaviate.io",
+    "qdrant.tech",
+    "langchain.com",
+    "openrouter.ai",
+    "replicate.com",
+    "perplexity.ai",
+    "elevenlabs.io",
+    "claude.ai",
+    "midjourney.com",
+    # Rival marketplaces and job boards, named to compare rates or to say where
+    # not to be contacted.
+    "fiverr.com",
+    "freelancer.com",
+    "toptal.com",
+    "indeed.com",
 })
 
 _URL_RE = re.compile(r"https?://([a-z0-9][a-z0-9.-]*\.[a-z]{2,})", re.IGNORECASE)
@@ -171,14 +245,22 @@ _SENTENCE_BREAK_RE = re.compile(r"[.!?\n]")
 
 @dataclass(frozen=True)
 class Identity:
-    """Whatever could be recovered about the client. Any field may be None."""
+    """Whatever could be recovered about the client. Any field may be None.
+
+    No `person_name`: the person patterns are still read, but only for the
+    company half of "this is Alex from Northquill". The outreach message
+    greets the LinkedIn contact it is actually being sent to, by that
+    contact's own name (`drafts._first_name`) - who need not be, and usually
+    is not, whoever typed the posting - so a name recovered here has no
+    consumer, and a returned field nothing reads is a field a later editor
+    will wire into a greeting believing it was meant for one.
+    """
 
     domain: str | None
     company_name: str | None
-    person_name: str | None
 
 
-_NOTHING = Identity(domain=None, company_name=None, person_name=None)
+_NOTHING = Identity(domain=None, company_name=None)
 
 
 def detect(title: str, description: str | None) -> Identity:
@@ -195,15 +277,15 @@ def detect(title: str, description: str | None) -> Identity:
 
     domain = _find_domain(window)
     company_name = _find_company(window)
-    person_name, person_company = _find_person(window)
+    _, person_company = _find_person(window)
 
     if person_company and not company_name:
         company_name = person_company
 
-    if domain is None and company_name is None and person_name is None:
+    if domain is None and company_name is None:
         return _NOTHING
 
-    return Identity(domain=domain, company_name=company_name, person_name=person_name)
+    return Identity(domain=domain, company_name=company_name)
 
 
 def _find_domain(window: str) -> str | None:
@@ -274,6 +356,11 @@ def _is_noise_name(name: str) -> bool:
     rejecting real multi-word names: "Karma and Luck", "Booz Allen Hamilton"
     and "Zoomer Labs" all survive, since none of their tokens - "zoomer" is
     not "zoom" - is itself a noise brand.
+
+    Tokenising on punctuation is what makes a hyphenated name whose second half
+    is a brand word - "Heir-loom Goods" splitting to ["heir", "loom", "goods"] -
+    rejected outright, and that is the deliberate fail-closed side of the same
+    rule that catches "Zoom-Labs".
     """
     return any(token in _NOISE_BRANDS for token in _tokenize(name))
 
