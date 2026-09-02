@@ -573,6 +573,60 @@ def test_an_unstated_salary_can_be_excluded_explicitly(cfg) -> None:
     assert "salary not stated" in verdict.reasons
 
 
+# --- freelance rate floor ------------------------------------------------------
+
+
+def test_a_fixed_price_budget_is_never_annualised(cfg) -> None:
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="r1",
+                      salary_min=800, salary_max=800, salary_period="fixed",
+                      salary_currency="USD", salary_is_stated=True)
+    filters = {"profiles": {"upwork": {"salary": {"min_annual": 100000, "currency": "USD"}}},
+               "global": {"max_age_days": 30}}
+    assert "salary_below" not in verdict_for(cfg, job_id, filters).codes
+
+
+def test_an_hourly_rate_below_the_floor_is_dropped(cfg) -> None:
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="r2",
+                      salary_min=15, salary_max=20, salary_period="hourly",
+                      salary_currency="USD", salary_is_stated=True)
+    filters = {"profiles": {"upwork": {"rate": {"min_hourly": 40}}},
+               "global": {"max_age_days": 30}}
+    assert "rate_below" in verdict_for(cfg, job_id, filters).codes
+
+
+def test_an_hourly_rate_at_the_top_of_the_band_clears_the_floor(cfg) -> None:
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="r3",
+                      salary_min=30, salary_max=50, salary_period="hourly",
+                      salary_currency="USD", salary_is_stated=True)
+    filters = {"profiles": {"upwork": {"rate": {"min_hourly": 40}}},
+               "global": {"max_age_days": 30}}
+    assert "rate_below" not in verdict_for(cfg, job_id, filters).codes
+
+
+def test_a_fixed_budget_below_its_own_floor_is_dropped(cfg) -> None:
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="r4",
+                      salary_min=200, salary_max=200, salary_period="fixed",
+                      salary_currency="USD", salary_is_stated=True)
+    filters = {"profiles": {"upwork": {"rate": {"min_fixed": 1500}}},
+               "global": {"max_age_days": 30}}
+    assert "rate_below" in verdict_for(cfg, job_id, filters).codes
+
+
+def test_an_unstated_rate_passes(cfg) -> None:
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="r5")
+    filters = {"profiles": {"upwork": {"rate": {"min_hourly": 40}}},
+               "global": {"max_age_days": 30}}
+    assert "rate_below" not in verdict_for(cfg, job_id, filters).codes
+
+
+def test_the_rate_rule_ignores_a_salaried_job(cfg) -> None:
+    job_id = make_job(cfg, external_id="r6", salary_min=90000, salary_period="annual",
+                      salary_currency="USD", salary_is_stated=True)
+    filters = {"profiles": {"global_remote": {"rate": {"min_hourly": 40}}},
+               "global": {"max_age_days": 30}}
+    assert "rate_below" not in verdict_for(cfg, job_id, filters).codes
+
+
 # --- seniority ceiling --------------------------------------------------------
 
 

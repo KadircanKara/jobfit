@@ -504,6 +504,13 @@ def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -
             # seniority ladder would silently filter gigs. The rate floor is a
             # different quantity, handled where the adapter reads it.
             rules["require_titles_regex"] = title_patterns(prefs.upwork.queries) or [".*"]
+            if prefs.upwork.min_hourly or prefs.upwork.min_fixed:
+                rate: dict[str, Any] = {}
+                if prefs.upwork.min_hourly:
+                    rate["min_hourly"] = prefs.upwork.min_hourly
+                if prefs.upwork.min_fixed:
+                    rate["min_fixed"] = prefs.upwork.min_fixed
+                rules["rate"] = rate
             profiles[market] = rules
             continue
         hard_requires: dict[str, Any] = {}
@@ -618,9 +625,9 @@ def save(config: Config, prefs: Preferences) -> pathlib.Path:
         # threshold, or a hand-written hard_excludes list stays untouched.
         owned = ["hard_requires", "seniority_min", "seniority_max", "salary", "allow_worldwide"]
         if market == UPWORK_SOURCE:
-            # Upwork only ever owns its title pattern: a regenerated profile
-            # must replace the old one rather than merge into it.
-            owned = ["require_titles_regex"]
+            # Upwork only ever owns its title pattern and rate floor: a
+            # regenerated profile must replace the old ones rather than merge.
+            owned = ["require_titles_regex", "rate"]
         for key in owned:
             profile.pop(key, None)
         profile.update(rules)

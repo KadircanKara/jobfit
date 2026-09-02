@@ -49,6 +49,7 @@ REASON_LABELS: dict[str, str] = {
     "seniority_high": "seniority above the ceiling",
     "salary_unstated": "salary not stated",
     "salary_below": "salary below the floor",
+    "rate_below": "freelance rate below the floor",
     "tz_overlap": "timezone overlap below the minimum",
 }
 
@@ -119,6 +120,7 @@ def evaluate(
     _check_hard_excludes(haystack, profile, verdict)
     _check_seniority(job, profile, verdict)
     _check_salary(job, profile, verdict)
+    _check_rate(job, profile, verdict)
     _check_timezone(job, profile, verdict)
     _apply_boosts(job, company, profile, verdict)
 
@@ -270,6 +272,12 @@ def _check_seniority(job: Job, profile: dict[str, Any], verdict: Verdict) -> Non
 
 # Everything is compared as an annual figure. A job stating a monthly or hourly
 # band is converted with these, which are hours and months, not exchange rates.
+#
+# "fixed" (a freelance project budget) is deliberately absent here, not a gap
+# to fill in later: there is no number of fixed-price projects per year that
+# means anything, so a project budget must never be annualised. `_check_salary`
+# treats a missing factor as "unknown" and returns, which is exactly what a
+# fixed-price figure is to a salaried floor.
 _PERIOD_TO_ANNUAL = {
     "annual": 1.0, "monthly": 12.0, "weekly": 52.0, "daily": 260.0, "hourly": 2080.0,
 }
@@ -332,6 +340,24 @@ def _convert(amount: float, frm: str, to: str, rates: dict[str, Any]) -> float |
     if source <= 0:
         return None
     return amount / source * target
+
+
+def _check_rate(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
+    """Judge a freelance rate against its own floor, never the salary floor.
+
+    An hourly rate and an annual salary are not the same quantity, and 2080
+    hours is a fiction for contract work: a $60/hr gig is not a $125k offer.
+    """
+    rules = profile.get("rate") or {}
+    period = (job.salary_period or "").lower()
+    floor = rules.get("min_hourly") if period == "hourly" else rules.get("min_fixed")
+    if not floor or period not in ("hourly", "fixed"):
+        return
+    top = job.salary_max or job.salary_min
+    if top is None:
+        return  # unstated is never a rejection
+    if float(top) < float(floor):
+        verdict.drop("rate_below", f"{period} rate {top:g} below {float(floor):g}")
 
 
 def _check_timezone(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
