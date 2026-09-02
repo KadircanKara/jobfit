@@ -288,7 +288,7 @@ def draft(
         if "drafted" not in TRANSITIONS[row.state]:
             raise IllegalTransition(row.state, "drafted")
         row.route = chosen
-        row.body = drafts.template(job, contact, chosen)
+        row.body = drafts.template(job, contact, chosen, config=config)
         row.drafted_at = utcnow()
         # A redraft from `failed` must not carry the old failure forward - the
         # retried row has not failed yet, and a stale message next to a

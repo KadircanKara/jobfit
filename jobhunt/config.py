@@ -104,6 +104,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # An invite ignored this long is not going to be accepted, and a queue
         # that never drains is a queue nobody trusts.
         "poll_window_days": 21,
+        # Quoted in the Upwork pitch. Empty string omits the rate sentence entirely.
+        "rate_line": "$30/hour",
     },
 }
 
