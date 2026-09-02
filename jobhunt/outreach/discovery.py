@@ -50,7 +50,12 @@ class SearchesPeople(Protocol):
     """The one method `search_company` needs. `UnipileClient` satisfies this."""
 
     def search_people(
-        self, company: str, keywords: list[str], *, limit: int = 5
+        self,
+        company: str,
+        keywords: list[str],
+        *,
+        limit: int = 5,
+        location: str | None = None,
     ) -> list[dict[str, Any]]: ...
 
 
@@ -67,19 +72,27 @@ def find_contacts(job: Job | None) -> list[ContactCandidate]:
     ]
 
 
-def _cache_key(company_name: str) -> str:
+def _cache_key(company_name: str, location: str | None = None) -> str:
     # Cache identity is the company, not the exact string typed for it - "Acme"
-    # and " acme " must not each pay for their own search.
-    return _CACHE_KEY.format(company=company_name.strip().lower())
+    # and " acme " must not each pay for their own search. The location is part
+    # of that identity: the same name in two places is two different searches
+    # with two different answers, and sharing one entry would serve whichever
+    # was asked for first.
+    key = company_name.strip().lower()
+    if location and location.strip():
+        key = f"{key}|{location.strip().lower()}"
+    return _CACHE_KEY.format(company=key)
 
 
-def _cached(config: Config, company_name: str, now: dt.datetime) -> list[ContactCandidate] | None:
+def _cached(
+    config: Config, company_name: str, now: dt.datetime, location: str | None = None
+) -> list[ContactCandidate] | None:
     # A session of its own, committing independently of whatever request called
     # in: a cache read/write is a side effect of answering the question, not
     # part of the question's own transaction, and there is nothing here that
     # needs to roll back together with the caller's session.
     with session_scope(config.db_path) as session:
-        raw = store.meta_get(session, _cache_key(company_name))
+        raw = store.meta_get(session, _cache_key(company_name, location))
     if raw is None:
         return None
     try:
@@ -100,14 +113,18 @@ def _cached(config: Config, company_name: str, now: dt.datetime) -> list[Contact
 
 
 def _store(
-    config: Config, company_name: str, candidates: list[ContactCandidate], now: dt.datetime
+    config: Config,
+    company_name: str,
+    candidates: list[ContactCandidate],
+    now: dt.datetime,
+    location: str | None = None,
 ) -> None:
     payload = {
         "stamp": now.isoformat(),
         "candidates": [dataclasses.asdict(c) for c in candidates],
     }
     with session_scope(config.db_path) as session:
-        store.meta_set(session, _cache_key(company_name), json.dumps(payload))
+        store.meta_set(session, _cache_key(company_name, location), json.dumps(payload))
 
 
 def search_company(
@@ -117,6 +134,7 @@ def search_company(
     config: Config,
     now: dt.datetime | None = None,
     limit: int = 5,
+    location: str | None = None,
 ) -> list[ContactCandidate]:
     """Recruiters and managers at this company. Inferred, never stated.
 
@@ -135,10 +153,12 @@ def search_company(
     exception for the whole search.
     """
     now = now or utcnow()
-    cached = _cached(config, company_name, now)
+    cached = _cached(config, company_name, now, location)
     if cached is not None:
         return cached
-    items = client.search_people(company_name, list(ROLE_KEYWORDS), limit=limit)
+    items = client.search_people(
+        company_name, list(ROLE_KEYWORDS), limit=limit, location=location
+    )
     candidates = []
     for item in items:
         if not isinstance(item, dict):
@@ -163,5 +183,32 @@ def search_company(
                 origin="company_search",
             )
         )
-    _store(config, company_name, candidates, now)
+    candidates = _ranked(candidates, company_name)
+    _store(config, company_name, candidates, now, location)
     return candidates
+
+
+def _ranked(
+    candidates: list[ContactCandidate], company_name: str
+) -> list[ContactCandidate]:
+    """Best guesses first. Stable, and never drops anyone.
+
+    The search is a name match over free text, so it returns people at the
+    company mixed with people who merely share a word with it - live, the
+    founder of the company came back third, behind an unrelated founder and an
+    Apple engineer. Two signals, in order: whether the headline names the
+    company, then whether it names a hiring or engineering-leadership role.
+    Everything is kept, because a headline is often empty and an empty headline
+    is not evidence of anything.
+    """
+    company = company_name.strip().lower()
+
+    def key(candidate: ContactCandidate) -> tuple[int, int]:
+        headline = (candidate.headline or "").lower()
+        names_company = bool(company) and company in headline
+        names_role = any(role in headline for role in ROLE_KEYWORDS)
+        # Negated so that True sorts first, with `sorted`'s stability keeping
+        # LinkedIn's own order within each tier.
+        return (not names_company, not names_role)
+
+    return sorted(candidates, key=key)

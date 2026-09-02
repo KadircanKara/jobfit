@@ -261,6 +261,43 @@ def _salary(
     return None, None, None, False
 
 
+# Upwork reports a US client's state as a two-letter code. It cannot be passed
+# on as-is: LinkedIn's location lookup reads "CA" as Canada, "IN" as India and
+# "LA" as Laos, so an abbreviation does not merely fail to help - it moves the
+# search to the wrong country. US-only on purpose; other countries' subdivision
+# codes have no table here, and guessing one is worse than storing nothing.
+_US_STATES = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
+    "CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
+    "DC": "District of Columbia", "FL": "Florida", "GA": "Georgia", "HI": "Hawaii",
+    "ID": "Idaho", "IL": "Illinois", "IN": "Indiana", "IA": "Iowa",
+    "KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine",
+    "MD": "Maryland", "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota",
+    "MS": "Mississippi", "MO": "Missouri", "MT": "Montana", "NE": "Nebraska",
+    "NV": "Nevada", "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico",
+    "NY": "New York", "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio",
+    "OK": "Oklahoma", "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island",
+    "SC": "South Carolina", "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas",
+    "UT": "Utah", "VT": "Vermont", "VA": "Virginia", "WA": "Washington",
+    "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming",
+}
+
+
+def _client_region(client_company: dict, country_name: str) -> str | None:
+    """The client's state or region, spelled out, or None.
+
+    Only the value that can be trusted to mean what it says: a US two-letter
+    code is expanded through the table above, a longer string is taken as
+    already spelled out, and a short code under any other country is dropped.
+    """
+    state = _as_str(client_company.get("state")).strip()
+    if not state:
+        return None
+    if len(state) == 2 and country_name.strip().lower() in ("united states", "usa", "us"):
+        return _US_STATES.get(state.upper())
+    return state if len(state) > 2 else None
+
+
 def _client_quality(item: dict) -> tuple[bool | None, float | None]:
     """Payment verification and lifetime spend, from the search result.
 
@@ -728,6 +765,7 @@ class UpworkAdapter(HttpAdapter):
             client_company.get("country"), _as_dict(item.get("client")).get("country")
         )
         country = norm.country_code(country_name) if country_name else None
+        client_region = _client_region(client_company, country_name)
 
         # The API never exposes a company name (see the module docstring); this
         # is the only place one can come from. The domain wins when both are
@@ -770,4 +808,5 @@ class UpworkAdapter(HttpAdapter):
             source_url=item.get("url"),
             client_verified=client_verified,
             client_total_spent=client_total_spent,
+            client_region=client_region,
         )

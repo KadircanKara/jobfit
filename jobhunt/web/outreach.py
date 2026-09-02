@@ -16,6 +16,7 @@ from jobhunt.db.session import session_scope
 from jobhunt.outreach import caps, discovery, provider, service
 from jobhunt.outreach.unipile_client import UnipileError
 from jobhunt.pipeline.client_identity import COMPANY_NAME_PLACEHOLDER
+from jobhunt.rank import regions
 
 # Why `find` did nothing, for the drawer to show in place of a result. An
 # anonymous gig is the common case on Upwork, not an error, so it is said
@@ -42,6 +43,24 @@ _STATE_RANK = {
 # typo or a caller inventing provenance, and stored provenance the ranker and
 # the drawer both read is not a field to take on trust.
 CONTACT_ORIGINS = ("job_poster", "company_search", "manual")
+
+
+def _job_location(job: Job) -> str | None:
+    """The place to narrow a people-search to, as a name LinkedIn can resolve.
+
+    Region first: "Nexora" across the whole United States does not surface the
+    Californian company that "California, United States" finds immediately, and
+    Upwork reports the client's state on every posting that has a detail.
+    Falls back to the country alone, then to nothing - an unresolvable or
+    unknown location costs the filter, never the search.
+
+    `job.country` is a two-letter code, which is exactly what must not be sent:
+    LinkedIn's lookup reads "CA" as Canada. It is spelled out here first.
+    """
+    country = regions.country_name(job.country) if job.country else None
+    if job.client_region and country:
+        return f"{job.client_region}, {country}"
+    return job.client_region or country
 
 
 def _existing_profile_urls(session) -> set[str]:
@@ -183,7 +202,7 @@ def register(app: FastAPI, config: Config, sender: provider.LinkedInProvider) ->
             if client is not None and hasattr(client, "search_people") and company:
                 try:
                     candidates = candidates + discovery.search_company(
-                        client, company, config=config
+                        client, company, config=config, location=_job_location(job)
                     )
                 except UnipileError as error:
                     existing_urls = _existing_profile_urls(session)

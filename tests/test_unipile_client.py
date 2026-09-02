@@ -273,3 +273,75 @@ def test_a_decoded_unicode_slug_is_accepted_and_re_encoded_on_the_wire(decoded, 
 
     _client(handler).get_user(decoded)
     assert wire_form in seen["url"]
+
+
+def test_the_account_id_travels_as_a_query_parameter_not_in_the_body() -> None:
+    """Live, the body form is a hard 400: "path": "/account_id", "Required
+    property". The whole company-search path had never once worked."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = request.content.decode()
+        return httpx.Response(200, json={"items": []})
+
+    _client(handler).search_people("Acme", ["engineer"])
+    assert "account_id=acct-1" in seen["url"]
+    assert "account_id" not in seen["body"]
+
+
+def test_a_location_reaches_the_search_when_one_is_known() -> None:
+    """Measured: "Nexora" alone returned Istanbul and Tunisia; the same query
+    filtered to California surfaced the Californian company's founder first."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/parameters" in str(request.url):
+            return httpx.Response(200, json={"items": [{"id": "102095887",
+                                                        "title": "California, United States"}]})
+        seen["body"] = request.content.decode()
+        return httpx.Response(200, json={"items": []})
+
+    _client(handler).search_people("Nexora", ["founder"], location="California, United States")
+    assert "102095887" in seen["body"]
+
+
+def test_an_unresolvable_location_searches_without_one() -> None:
+    """A location nobody can place must cost the filter, never the search."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/parameters" in str(request.url):
+            return httpx.Response(200, json={"items": []})
+        seen["body"] = request.content.decode()
+        return httpx.Response(200, json={"items": []})
+
+    _client(handler).search_people("Acme", ["founder"], location="Atlantis")
+    assert "location" not in seen["body"]
+
+
+def test_a_failing_location_lookup_still_searches() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/parameters" in str(request.url):
+            return httpx.Response(500, text="boom")
+        return httpx.Response(200, json={"items": [{"name": "Jane"}]})
+
+    assert _client(handler).search_people("Acme", ["founder"], location="California") == [
+        {"name": "Jane"}
+    ]
+
+
+def test_the_company_name_is_the_query_and_roles_do_not_dilute_it() -> None:
+    """Measured live: "Nexora founder OR CTO OR recruiter" returned six
+    co-founders of six unrelated companies and nobody at Nexora - LinkedIn
+    matched the roles and lost the name. The company name alone returned the
+    CFO of Nexora Solutions and the founder of Nexora AI."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.content.decode()
+        return httpx.Response(200, json={"items": []})
+
+    _client(handler).search_people("Nexora", ["founder", "recruiter", "CTO"])
+    assert '"keywords": "Nexora"' in seen["body"] or '"keywords":"Nexora"' in seen["body"]
+    assert "OR" not in seen["body"]

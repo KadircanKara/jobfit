@@ -98,6 +98,7 @@ class JobPosting:
     # read these must be able to tell "never hired" from "never asked".
     client_verified: bool | None = None
     client_total_spent: float | None = None
+    client_region: str | None = None
 
 
 @runtime_checkable

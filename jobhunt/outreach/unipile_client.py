@@ -115,16 +115,72 @@ class UnipileClient:
             body["message"] = note
         return self._call("POST", "/api/v1/users/invite", json=body)
 
-    def search_people(self, company: str, keywords: list[str], *, limit: int = 5) -> list[dict[str, Any]]:
-        # Unverified without live credentials: shape per Unipile's docs, to be
-        # corrected in manual testing if it's wrong.
-        body = {
-            "account_id": self.account_id,
+    def resolve_location(self, name: str) -> str | None:
+        """LinkedIn's own id for a place name, or None if it cannot be placed.
+
+        The search takes ids, not names. Never raises: a location that cannot
+        be resolved must cost the filter, not the search - an unfiltered result
+        set is still useful, an exception here is not.
+        """
+        if not name.strip():
+            return None
+        try:
+            payload = self._call(
+                "GET", "/api/v1/linkedin/search/parameters",
+                params={"account_id": self.account_id, "type": "LOCATION", "keywords": name},
+            )
+        except UnipileError:
+            return None
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list) or not items:
+            return None
+        first = items[0]
+        identifier = first.get("id") if isinstance(first, dict) else None
+        return str(identifier) if identifier else None
+
+    def search_people(
+        self,
+        company: str,
+        keywords: list[str],
+        *,
+        limit: int = 5,
+        location: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """People matching a company name, optionally narrowed to one place.
+
+        `account_id` is a query parameter here, not a body field. Sent in the
+        body it is a hard 400 ("path": "/account_id", "Required property"),
+        which is what this method did until it was first run against a live
+        account - the company-search path had never returned anything.
+
+        `location` is a place *name*; it is resolved to LinkedIn's id and
+        dropped if it cannot be. It is worth the extra call: searching a
+        company name alone returns same-named companies worldwide, and the
+        client's own country and state are known for every Upwork posting.
+        Industry is deliberately not filtered on - measured, it removed every
+        genuine match, because it keys off how LinkedIn classifies a person's
+        employer and small companies are classified thinly or not at all.
+        """
+        # The company name is the whole query. Appending the role words
+        # ("Nexora founder OR CTO OR recruiter") does not narrow the search, it
+        # dilutes it: measured live, that form returned six co-founders of six
+        # unrelated companies and nobody at Nexora, because LinkedIn matched the
+        # common role words and lost the rare name. The name alone returned the
+        # CFO of Nexora Solutions and the founder of Nexora AI. `keywords` is
+        # still taken, and still used - to rank what comes back, below.
+        body: dict[str, Any] = {
             "api": "classic",
             "category": "people",
-            "keywords": f"{company} {' OR '.join(keywords)}",
+            "keywords": company.strip(),
         }
-        payload = self._call("POST", "/api/v1/linkedin/search", json=body)
+        if location:
+            location_id = self.resolve_location(location)
+            if location_id:
+                body["location"] = [location_id]
+        payload = self._call(
+            "POST", "/api/v1/linkedin/search",
+            params={"account_id": self.account_id}, json=body,
+        )
         items = payload.get("items") if isinstance(payload, dict) else None
         if not isinstance(items, list):
             raise UnipileError("search_people: response body was not the expected shape")

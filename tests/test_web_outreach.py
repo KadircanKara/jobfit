@@ -182,7 +182,7 @@ class FakeSearchClient:
     def __init__(self, items):
         self.items = items
 
-    def search_people(self, company, keywords, *, limit=5):
+    def search_people(self, company, keywords, *, limit=5, location=None):
         return self.items
 
 
@@ -194,7 +194,7 @@ class FakeSenderWithClient:
 
 
 class BrokenSearchClient:
-    def search_people(self, company, keywords, *, limit=5):
+    def search_people(self, company, keywords, *, limit=5, location=None):
         raise UnipileError("search_people: response body was not the expected shape")
 
 
@@ -240,7 +240,7 @@ def test_find_contacts_returns_the_posted_contact_and_the_searched_ones(client, 
 class ExplodingSearchClient:
     """Any call at all is the bug this test is about."""
 
-    def search_people(self, company, keywords, *, limit=5):
+    def search_people(self, company, keywords, *, limit=5, location=None):
         raise AssertionError(f"searched LinkedIn for {company!r}, which is not a company")
 
 
@@ -361,7 +361,7 @@ def test_stated_contacts_never_calls_search_people_even_when_the_sender_has_one(
     calls: list[tuple[str, list[str]]] = []
 
     class SpySearchClient:
-        def search_people(self, company, keywords, *, limit=5):
+        def search_people(self, company, keywords, *, limit=5, location=None):
             calls.append((company, keywords))
             return []
 
@@ -404,3 +404,28 @@ def test_an_invented_origin_is_refused(client, job_id):
         json={"full_name": "Deniz Aksoy", "origin": "referred_by_a_friend"},
     )
     assert response.status_code == 422
+
+
+def test_the_clients_region_and_country_narrow_the_people_search(cfg, monkeypatch) -> None:
+    """Measured live: "Nexora" alone returned companies in Istanbul and Tunisia;
+    narrowed to California it surfaced the Californian company's founder first.
+    The country must be spelled out - LinkedIn reads the code "CA" as Canada."""
+    from jobhunt.db.models import Job
+    from jobhunt.web import outreach as web_outreach
+
+    job = Job(country="US", client_region="California")
+    assert web_outreach._job_location(job) == "California, United States"
+
+
+def test_a_job_with_only_a_country_still_narrows_by_it(cfg) -> None:
+    from jobhunt.db.models import Job
+    from jobhunt.web import outreach as web_outreach
+
+    assert web_outreach._job_location(Job(country="TR")) == "Turkey"
+
+
+def test_a_job_with_no_location_narrows_by_nothing(cfg) -> None:
+    from jobhunt.db.models import Job
+    from jobhunt.web import outreach as web_outreach
+
+    assert web_outreach._job_location(Job()) is None

@@ -44,7 +44,7 @@ class FakeSearch:
         self.items = items
         self.calls = 0
 
-    def search_people(self, company, keywords, *, limit=5):
+    def search_people(self, company, keywords, *, limit=5, location=None):
         self.calls += 1
         return self.items
 
@@ -125,3 +125,42 @@ def test_upsert_posting_carries_the_poster_into_the_database(cfg) -> None:
         assert outcome == "new"
         assert job.poster_name == "Jane Doe"
         assert job.poster_profile_url == "https://www.linkedin.com/in/jane-doe-1234"
+
+
+def test_candidates_naming_the_company_rank_above_ones_that_do_not(cfg) -> None:
+    """The live California search for "Nexora" returned, in LinkedIn's order:
+    a CFO at Nexora Solutions, the founder of Nexora AI, an unrelated founder in
+    India, and an Apple engineer. Whoever actually works at the company belongs
+    at the top of the drawer, not wherever LinkedIn happened to put them."""
+    class Client:
+        def search_people(self, company, keywords, *, limit=5, location=None):
+            return [
+                {"name": "Nithya Subramanian", "headline": "Engineering @ Apple"},
+                {"name": "Dan Collins", "headline": "VP of Talent Acquisition"},
+                {"name": "Ambrin Maria", "headline": "Founder & CEO at Nexora AI"},
+            ]
+
+    got = [c.full_name for c in discovery.search_company(Client(), "Nexora", config=cfg)]
+    assert got[0] == "Ambrin Maria"
+
+
+def test_a_role_headline_outranks_an_unrelated_one(cfg) -> None:
+    """Among candidates who all fail to name the company, the one whose job is
+    to hire is still the better guess than one whose headline says nothing."""
+    class Client:
+        def search_people(self, company, keywords, *, limit=5, location=None):
+            return [
+                {"name": "Jade Sizemore", "headline": "B2B Regional Support Specialist"},
+                {"name": "Dan Collins", "headline": "VP of Talent Acquisition"},
+            ]
+
+    got = [c.full_name for c in discovery.search_company(Client(), "Nexora", config=cfg)]
+    assert got[0] == "Dan Collins"
+
+
+def test_ranking_never_drops_anyone(cfg) -> None:
+    class Client:
+        def search_people(self, company, keywords, *, limit=5, location=None):
+            return [{"name": "A", "headline": None}, {"name": "B", "headline": "CTO at Nexora"}]
+
+    assert len(discovery.search_company(Client(), "Nexora", config=cfg)) == 2

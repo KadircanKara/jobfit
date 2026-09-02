@@ -496,3 +496,33 @@ def test_an_unusable_client_country_is_simply_unknown() -> None:
     posting = next(UpworkAdapter().normalize(_envelope(details), _ref()))
     assert posting.country is None
     assert posting.jd_completeness == "full"
+
+
+# --- the client's region ------------------------------------------------------
+
+
+def test_a_us_state_code_is_spelled_out() -> None:
+    """"CA" must never travel as-is: LinkedIn's own location lookup resolves it
+    to Canada, so an abbreviation would silently search the wrong country."""
+    details = {"1": {"content": {"title": "t", "description": "body " * 40},
+                     "clientCompanyPublic": {"country": {"name": "United States"}, "state": "CA"}}}
+    assert next(UpworkAdapter().normalize(_envelope(details), _ref())).client_region == "California"
+
+
+def test_a_state_code_outside_the_us_is_left_alone() -> None:
+    """The map is US-only. "CA" under Canada is a province code this module has
+    no table for, and inventing one would be worse than storing nothing."""
+    details = {"1": {"content": {"title": "t", "description": "body " * 40},
+                     "clientCompanyPublic": {"country": {"name": "Canada"}, "state": "ON"}}}
+    assert next(UpworkAdapter().normalize(_envelope(details), _ref())).client_region is None
+
+
+def test_a_spelled_out_region_survives_unchanged() -> None:
+    details = {"1": {"content": {"title": "t", "description": "body " * 40},
+                     "clientCompanyPublic": {"country": {"name": "United States"},
+                                             "state": "California"}}}
+    assert next(UpworkAdapter().normalize(_envelope(details), _ref())).client_region == "California"
+
+
+def test_no_detail_means_no_region() -> None:
+    assert next(UpworkAdapter().normalize(_envelope({}), _ref())).client_region is None

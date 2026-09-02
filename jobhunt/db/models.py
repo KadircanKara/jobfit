@@ -150,6 +150,10 @@ class Job(Base):
     # Null on every other source, and null means unknown - never "zero".
     client_verified: Mapped[bool | None] = mapped_column(Boolean)
     client_total_spent: Mapped[float | None] = mapped_column(Float)
+    # The client's state or region, spelled out ("California", not "CA").
+    # Country alone is too coarse to pin a company name on LinkedIn, and the
+    # abbreviation is worse than useless: "CA" resolves to Canada there.
+    client_region: Mapped[str | None] = mapped_column(String(100))
 
     canonical_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), index=True)
     first_seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
