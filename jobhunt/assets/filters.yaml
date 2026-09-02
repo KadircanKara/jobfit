@@ -49,6 +49,12 @@ profiles:
     # No hard_requires, no seniority: a gig has no country or employment type
     # worth filtering on, and Upwork's entry/intermediate/expert levels rate
     # the contract's difficulty, not a career stage.
+    #
+    # The title filter is ".*" on purpose, and it has to be stated: without it
+    # the global engineer/developer pattern below applies and empties the
+    # market. Upwork already matched the fetch query against the whole posting
+    # server-side, so re-filtering on the title here could only subtract.
+    require_titles_regex: [".*"]
     llm_gate_prompt: prompts/gate_upwork.md
     min_score_to_surface: 0.6
 

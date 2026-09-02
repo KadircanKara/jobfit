@@ -503,7 +503,16 @@ def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -
             # difficulty, not a career stage: mapping them onto the salaried
             # seniority ladder would silently filter gigs. The rate floor is a
             # different quantity, handled where the adapter reads it.
-            rules["require_titles_regex"] = title_patterns(prefs.upwork.queries) or [".*"]
+            # `[".*"]`, unconditionally: the fetch query *is* the title filter
+            # here, and Upwork applies it server-side against the whole posting.
+            # Re-deriving a title-only pattern from the same queries locally can
+            # only subtract - it drops "AI Engineer for chatbot" and "Need a
+            # Django dev to fix my scraper", both of which Upwork itself matched
+            # and returned - and would show a large `title_unmatched` bar on a
+            # source that fetched perfectly. The overriding empty profile is
+            # still needed: without it the salaried global pattern (engineer,
+            # developer, ...) empties the market instead.
+            rules["require_titles_regex"] = [".*"]
             if prefs.upwork.min_hourly or prefs.upwork.min_fixed:
                 rate: dict[str, Any] = {}
                 if prefs.upwork.min_hourly:

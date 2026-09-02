@@ -6,6 +6,7 @@ translation lives here and is tested rather than being generated per run.
 from __future__ import annotations
 
 import dataclasses
+import re
 
 import pytest
 import yaml
@@ -177,8 +178,27 @@ def test_the_upwork_profile_overrides_the_global_title_regex() -> None:
     prefs = Preferences(titles=["Backend Engineer"])
     prefs.upwork.queries = ["rag pipeline", "llm"]
     profile = preferences.to_filters(prefs)["profiles"]["upwork"]
-    assert profile["require_titles_regex"]
+    assert profile["require_titles_regex"] == [".*"]
     assert profile["require_titles_regex"] != preferences.title_patterns_for(prefs)
+
+
+def test_the_upwork_profile_never_re_filters_on_the_query_titles() -> None:
+    """Upwork matched these queries against the whole posting, server-side. A
+    title-only approximation of the same queries locally drops gigs Upwork
+    itself returned - "AI Engineer for chatbot" contains none of the words in
+    the query that found it - and that shows up as a `title_unmatched` bar on a
+    source that fetched perfectly."""
+    prefs = Preferences(titles=["Backend Engineer"])
+    prefs.upwork.queries = ["rag pipeline", "llm", "ai automation"]
+    patterns = preferences.to_filters(prefs)["profiles"]["upwork"]["require_titles_regex"]
+    assert patterns == [".*"]
+    for title in (
+        "Build a RAG pipeline for our docs",
+        "AI Engineer for chatbot",
+        "Need a Django dev to fix my scraper",
+        "Automation expert (Make.com)",
+    ):
+        assert any(re.search(pattern, title) for pattern in patterns), title
 
 
 def test_an_empty_upwork_query_list_matches_everything() -> None:
