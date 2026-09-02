@@ -46,6 +46,30 @@ detail document - the id goes in `params.id`, exactly as `org_uid` and
 past the budget is simply left out of `details` below, never guessed at or
 padded with a placeholder.
 
+From each detail document, copy out **only** the object at
+`data.marketplaceJobPosting`, and from that object only these keys:
+
+- `content` - and inside it, only `title` and **`description`**
+- `contractTerms`
+- `clientCompanyPublic`
+
+Everything else in the detail document (`status`, `can_apply`,
+`client_record`, `bid_stats_available`, and any other top-level key) is not
+needed - leave it out.
+
+**`content.description` is the single most important field in this whole
+task.** It is the full job description, it is long, and it is the only reason
+the detail call is made at all: everything else here is already known from the
+search page. Copy it in full, exactly as returned, however long it is. Never
+summarise it, never truncate it, never replace it with an ellipsis or a note,
+and never drop the key because the value is large. A detail whose
+`content.description` is missing is worth less than no detail at all, because
+it silently replaces a real description with nothing.
+
+If a job's `get` genuinely returns no `description` - the key is truly absent
+from the API's own response, not merely long - then leave that id out of
+`details` entirely rather than including it with the key missing.
+
 ## If a call fails
 
 If any `find_jobs` call errors, times out, or comes back with nothing
@@ -62,13 +86,17 @@ Return exactly one JSON object and nothing else - no prose before it, none
 after it, in a single fenced code block, shaped exactly like this:
 
 ```json
-{"pages": [{"results": [...]}], "details": {"<id>": {...}}}
+{"pages": [{"results": [...]}],
+ "details": {"<id>": {"content": {"title": "...", "description": "..."},
+                      "contractTerms": {...}, "clientCompanyPublic": {...}}}}
 ```
 
 - `pages` is a list with one entry per search page you fetched, each holding
   that page's `results` array exactly as `find_jobs` returned it, unmodified.
-- `details` maps each id you fetched a detail for, as a string key, to that
-  `get` response, exactly as `find_jobs` returned it, unmodified.
+- `details` maps each id you fetched a detail for, as a string key, to the
+  three-key projection described above - `content` (with `title` and the full
+  `description`), `contractTerms`, and `clientCompanyPublic` - taken from that
+  id's `data.marketplaceJobPosting`.
 - Any id you did not fetch a detail for - because it was already known,
   because the detail budget was spent, or because the call failed - is simply
   absent from `details`.

@@ -642,6 +642,49 @@ def test_upwork_preferences_round_trip_through_from_filters() -> None:
     assert restored.upwork.min_hourly == 50.0
 
 
+def test_the_client_switches_reach_the_upwork_profile() -> None:
+    prefs = preferences.Preferences(
+        upwork=preferences.UpworkPreferences(
+            require_verified_client=True, require_client_spend=True
+        )
+    )
+    client = preferences.to_filters(prefs)["profiles"]["upwork"]["client"]
+    assert client == {"require_verified": True, "require_spend": True}
+
+
+def test_the_client_key_is_omitted_when_both_switches_are_off() -> None:
+    """Same discipline as `sources`: an always-present key churns the filter
+    fingerprint and re-gates the whole corpus on every write."""
+    prefs = preferences.Preferences()
+    assert "client" not in preferences.to_filters(prefs)["profiles"]["upwork"]
+
+
+def test_a_client_switch_turned_off_again_leaves_no_rule_behind(cfg) -> None:
+    """`update` adds keys and never removes them, so without `client` in the
+    owned list a switch could be turned on but never off - the corpus would
+    stay filtered with nothing in the UI still saying so."""
+    prefs, _ = preferences.load(cfg)
+    prefs.upwork.require_client_spend = True
+    preferences.save(cfg, prefs)
+
+    prefs, _ = preferences.load(cfg)
+    assert prefs.upwork.require_client_spend is True
+    prefs.upwork.require_client_spend = False
+    preferences.save(cfg, prefs)
+
+    document = yaml.safe_load(preferences.filters_path(cfg).read_text(encoding="utf-8"))
+    assert "client" not in document["profiles"]["upwork"]
+
+
+def test_the_client_switches_accept_a_plain_word(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    updated = preferences.apply_updates(
+        prefs, {"upwork.require_client_spend": "true", "upwork.require_verified_client": "yes"}
+    )
+    assert updated.upwork.require_client_spend is True
+    assert updated.upwork.require_verified_client is True
+
+
 def test_a_market_profile_this_writer_creates_is_seeded_from_the_packaged_one(cfg) -> None:
     """The real machine's filters.yaml predates Upwork: it has yc, global_remote
     and tr_local and no upwork block. `install_user_copies` never overwrites an

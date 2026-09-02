@@ -380,3 +380,87 @@ def test_an_unparseable_response_spends_the_budget_on_each_retry(cfg, monkeypatc
     assert len(calls) == 2
     assert adapter.budget._spent(utcnow()) == 2
 
+
+
+# --- the projected detail shape, and description loss -------------------------
+
+
+def _envelope(details: dict) -> dict:
+    return {
+        "pages": [{"results": [{
+            "id": "1", "title": "Build a RAG pipeline", "job_type": "fixed",
+            "budget": "2000.0", "created_date": "2026-09-01T10:00:00+0000",
+            "description_snippet": "short teaser",
+            "client": {"verification_status": "VERIFIED", "total_spent": "$4,336.92"},
+        }]}],
+        "details": details,
+    }
+
+
+def test_a_projected_detail_is_read_the_same_as_a_wrapped_one() -> None:
+    """The prompt now asks for `data.marketplaceJobPosting` already unwrapped.
+    Payloads fetched before that change are still on disk and still normalize."""
+    projected = {"1": {"content": {"title": "t", "description": "the full body " * 20}}}
+    wrapped = {"1": {"data": {"marketplaceJobPosting": projected["1"]}}}
+
+    a = next(UpworkAdapter().normalize(_envelope(projected), _ref()))
+    b = next(UpworkAdapter().normalize(_envelope(wrapped), _ref()))
+
+    assert a.jd_completeness == "full" and b.jd_completeness == "full"
+    assert a.description_text == b.description_text
+
+
+def test_a_detail_that_lost_its_description_does_not_claim_to_be_full() -> None:
+    """The exact shape the first real run produced: six details, every one with
+    `content` present but `description` silently gone. Counting those as full
+    marks the row extracted and it is never re-fetched."""
+    posting = next(UpworkAdapter().normalize(_envelope({"1": {"content": {"title": "t"}}}), _ref()))
+    assert posting.jd_completeness == "snippet"
+    assert posting.description_text == "short teaser"
+
+
+def test_client_verification_and_spend_are_read_from_the_search_result() -> None:
+    posting = next(UpworkAdapter().normalize(_envelope({}), _ref()))
+    assert posting.client_verified is True
+    assert posting.client_total_spent == 4336.92
+
+
+def test_an_unstated_client_block_leaves_both_fields_unknown() -> None:
+    envelope = _envelope({})
+    envelope["pages"][0]["results"][0].pop("client")
+    posting = next(UpworkAdapter().normalize(envelope, _ref()))
+    assert posting.client_verified is None
+    assert posting.client_total_spent is None
+
+
+def test_a_fetch_that_lost_every_description_is_retried_once(cfg, monkeypatch) -> None:
+    """Description loss is silent - well-formed JSON, no error key - so nothing
+    upstream can tell it from a search that legitimately found no detail. The
+    one place it is detectable is here, against the ids we asked for."""
+    import json as _json
+
+    lossy = _json.dumps(_envelope({"1": {"content": {"title": "t"}}}))
+    good = _json.dumps(_envelope({"1": {"content": {"title": "t", "description": "x" * 200}}}))
+    answers = [lossy, good]
+    monkeypatch.setattr(
+        "jobhunt.sources.upwork.agent.run", lambda *a, **k: answers.pop(0)
+    )
+
+    adapter = UpworkAdapter(config=cfg)
+    envelope = adapter.fetch(_ref(), None)
+
+    assert answers == []
+    assert "description" in envelope["details"]["1"]["content"]
+
+
+def test_a_fetch_whose_retry_is_also_lossy_keeps_what_it_got(cfg, monkeypatch) -> None:
+    """One retry, then take it. A ref with genuinely description-less details
+    must still contribute its search results rather than returning empty."""
+    import json as _json
+
+    lossy = _json.dumps(_envelope({"1": {"content": {"title": "t"}}}))
+    monkeypatch.setattr("jobhunt.sources.upwork.agent.run", lambda *a, **k: lossy)
+
+    envelope = UpworkAdapter(config=cfg).fetch(_ref(), None)
+
+    assert len(envelope["pages"][0]["results"]) == 1

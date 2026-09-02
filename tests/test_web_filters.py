@@ -106,6 +106,23 @@ def test_the_upwork_block_is_flattened_into_dotted_updates() -> None:
     assert updates["upwork.verified_payment_only"] == "false"
 
 
+def test_the_client_switches_survive_the_browser_round_trip() -> None:
+    """The `sources` checkbox shipped broken this exact way: rendered in the UI,
+    posted by the browser, and silently dropped for want of an entry here."""
+    prefs = webfilters.apply(
+        Preferences(),
+        {"upwork": {"require_client_spend": True, "require_verified_client": True}},
+    )
+    assert prefs.upwork.require_client_spend is True
+    assert prefs.upwork.require_verified_client is True
+
+
+def test_a_client_switch_can_be_turned_back_off_through_the_browser() -> None:
+    prefs = webfilters.apply(Preferences(), {"upwork": {"require_client_spend": True}})
+    prefs = webfilters.apply(prefs, {"upwork": {"require_client_spend": False}})
+    assert prefs.upwork.require_client_spend is False
+
+
 def test_an_empty_upwork_query_list_clears_rather_than_being_dropped() -> None:
     updates = webfilters._updates_from({"upwork": {"queries": []}})
     assert updates["upwork.queries"] == "none"

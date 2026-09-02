@@ -49,6 +49,8 @@ _FIELD_OF_KEY = {
     "upwork.experience_level": "upwork.experience_level",
     "upwork experience level": "upwork.experience_level",
     "upwork.verified_payment_only": "upwork.verified_payment_only",
+    "upwork.require_verified_client": "upwork.require_verified_client",
+    "upwork.require_client_spend": "upwork.require_client_spend",
     "upwork.workload": "upwork.workload",
     "upwork workload": "upwork.workload",
 }
@@ -100,6 +102,13 @@ def _days_from(payload: Any) -> int:
     return max(1, math.ceil(amount * AGE_UNITS[unit]))
 
 
+_UPWORK_FLAG_FIELDS = (
+    "verified_payment_only",
+    "require_verified_client",
+    "require_client_spend",
+)
+
+
 def _upwork_updates(payload: dict[str, Any]) -> dict[str, str]:
     """Flatten the nested `upwork` block into the same dotted vocabulary.
 
@@ -128,8 +137,9 @@ def _upwork_updates(payload: dict[str, Any]) -> dict[str, str]:
             raise FieldError(f"upwork.{field}", "a rate floor has to be above zero")
         updates[f"upwork.{field}"] = f"{amount:g}"
 
-    if "verified_payment_only" in payload:
-        updates["upwork.verified_payment_only"] = str(bool(payload["verified_payment_only"])).lower()
+    for field in _UPWORK_FLAG_FIELDS:
+        if field in payload:
+            updates[f"upwork.{field}"] = str(bool(payload[field])).lower()
 
     return updates
 

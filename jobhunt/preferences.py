@@ -86,6 +86,17 @@ class UpworkPreferences:
     min_fixed: float | None = None
     experience_level: list[str] = dataclasses.field(default_factory=list)
     verified_payment_only: bool = True
+    # Drop postings whose client has verified no payment method, locally, after
+    # the fetch. Distinct from `verified_payment_only` above, which is a search
+    # parameter Upwork applies server-side: that one shapes what comes back,
+    # this one is a rule over what did. Both are wanted - the pushdown keeps the
+    # page from filling with dead weight, and the rule still holds if Upwork
+    # ignores the parameter or a row was stored before it was set.
+    require_verified_client: bool = False
+    # Drop postings whose client has never spent anything. Not the same signal
+    # as verification: every client in the first real run was VERIFIED, yet 14
+    # of 40 had spent $0.00 - a verified card is not a hiring history.
+    require_client_spend: bool = False
     workload: list[str] = dataclasses.field(default_factory=list)
     proposals_max: int | None = None
     client_min_hires: int | None = None
@@ -268,6 +279,10 @@ def _apply_upwork(target: UpworkPreferences, name: str, value: str) -> None:
         )
     elif name == "verified_payment_only":
         target.verified_payment_only = value.lower() not in ("false", "no", "0")
+    elif name == "require_verified_client":
+        target.require_verified_client = value.lower() in ("true", "yes", "1", "on")
+    elif name == "require_client_spend":
+        target.require_client_spend = value.lower() in ("true", "yes", "1", "on")
     elif name == "workload":
         target.workload = [] if blank else _restricted(_split(value), UPWORK_WORKLOAD, "upwork workload")
     elif name == "proposals_max":
@@ -526,6 +541,16 @@ def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -
                 if prefs.upwork.min_fixed:
                     rate["min_fixed"] = prefs.upwork.min_fixed
                 rules["rate"] = rate
+            client: dict[str, Any] = {}
+            if prefs.upwork.require_verified_client:
+                client["require_verified"] = True
+            if prefs.upwork.require_client_spend:
+                client["require_spend"] = True
+            # Omitted entirely when neither is on, for the reason `sources` is:
+            # an always-present key churns the filter fingerprint and re-gates
+            # the corpus every time the document is rewritten.
+            if client:
+                rules["client"] = client
             profiles[market] = rules
             continue
         hard_requires: dict[str, Any] = {}
@@ -665,9 +690,11 @@ def save(config: Config, prefs: Preferences) -> pathlib.Path:
         # threshold, or a hand-written hard_excludes list stays untouched.
         owned = ["hard_requires", "seniority_min", "seniority_max", "salary", "allow_worldwide"]
         if market == UPWORK_SOURCE:
-            # Upwork only ever owns its title pattern and rate floor: a
-            # regenerated profile must replace the old ones rather than merge.
-            owned = ["require_titles_regex", "rate"]
+            # Upwork only ever owns its title pattern, rate floor and client
+            # rules: a regenerated profile must replace the old ones rather than
+            # merge. `client` has to be listed here or a switch could be turned
+            # on but never off - `update` adds keys and never removes them.
+            owned = ["require_titles_regex", "rate", "client"]
         for key in owned:
             profile.pop(key, None)
         profile.update(rules)

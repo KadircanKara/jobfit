@@ -50,6 +50,8 @@ REASON_LABELS: dict[str, str] = {
     "salary_unstated": "salary not stated",
     "salary_below": "salary below the floor",
     "rate_below": "freelance rate below the floor",
+    "client_no_spend": "client has never spent anything",
+    "client_unverified": "client has not verified payment",
     "tz_overlap": "timezone overlap below the minimum",
 }
 
@@ -57,7 +59,8 @@ REASON_LABELS: dict[str, str] = {
 # so telling the user to adjust them from the browser would be a lie.
 TUNABLE_REASONS = frozenset(
     {"age", "title_unmatched", "field_mismatch", "seniority_low", "seniority_high",
-     "salary_unstated", "salary_below", "rate_below"}
+     "salary_unstated", "salary_below", "rate_below",
+     "client_no_spend", "client_unverified"}
 )
 
 
@@ -121,6 +124,7 @@ def evaluate(
     _check_seniority(job, profile, verdict)
     _check_salary(job, profile, verdict)
     _check_rate(job, profile, verdict)
+    _check_client(job, profile, verdict)
     _check_timezone(job, profile, verdict)
     _apply_boosts(job, company, profile, verdict)
 
@@ -358,6 +362,27 @@ def _check_rate(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
         return  # unstated is never a rejection
     if float(top) < float(floor):
         verdict.drop("rate_below", f"{period} rate {top:g} below {float(floor):g}")
+
+
+def _check_client(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
+    """Judge who is paying, when the user has asked to be picky about it.
+
+    Both switches default off, so a filters.yaml written before they existed
+    keeps exactly the corpus it had. Both follow the house rule that unknown is
+    never a rejection: `client_verified` and `client_total_spent` are null on
+    every source but Upwork, and null there means the fetch never learned the
+    value - not that the client is unverified or has spent nothing. Reading a
+    null as a zero would silently drop the entire rest of the corpus the moment
+    either switch was turned on.
+    """
+    rules = profile.get("client") or {}
+
+    if rules.get("require_spend") and job.client_total_spent is not None:
+        if job.client_total_spent <= 0:
+            verdict.drop("client_no_spend", "client has never spent on this platform")
+
+    if rules.get("require_verified") and job.client_verified is False:
+        verdict.drop("client_unverified", "client has not verified a payment method")
 
 
 def _check_timezone(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:

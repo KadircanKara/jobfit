@@ -143,6 +143,14 @@ class Job(Base):
     poster_name: Mapped[str | None] = mapped_column(String(200))
     poster_profile_url: Mapped[str | None] = mapped_column(Text)
 
+    # Who is paying, and whether they ever have. Upwork clients are anonymous,
+    # so these two are most of what can be known about one before contact:
+    # payment verification is a fact Upwork asserts, and lifetime spend
+    # separates a client with a history from an account that has never hired.
+    # Null on every other source, and null means unknown - never "zero".
+    client_verified: Mapped[bool | None] = mapped_column(Boolean)
+    client_total_spent: Mapped[float | None] = mapped_column(Float)
+
     canonical_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), index=True)
     first_seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)

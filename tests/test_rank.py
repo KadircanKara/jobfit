@@ -627,6 +627,60 @@ def test_the_rate_rule_ignores_a_salaried_job(cfg) -> None:
     assert "rate_below" not in verdict_for(cfg, job_id, filters).codes
 
 
+# --- client quality -----------------------------------------------------------
+
+
+def test_a_client_who_has_never_spent_is_dropped_when_asked(cfg) -> None:
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c1",
+                      client_verified=True, client_total_spent=0.0)
+    filters = {"profiles": {"upwork": {"client": {"require_spend": True}}},
+               "global": {"max_age_days": 30}}
+    assert "client_no_spend" in verdict_for(cfg, job_id, filters).codes
+
+
+def test_a_client_with_spend_survives_the_spend_rule(cfg) -> None:
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c2",
+                      client_verified=True, client_total_spent=4336.92)
+    filters = {"profiles": {"upwork": {"client": {"require_spend": True}}},
+               "global": {"max_age_days": 30}}
+    assert "client_no_spend" not in verdict_for(cfg, job_id, filters).codes
+
+
+def test_an_unknown_spend_is_never_a_rejection(cfg) -> None:
+    """The house rule. A null is "we did not learn it", not "they spent zero" -
+    and every non-Upwork job in the corpus has a null here."""
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c3",
+                      client_total_spent=None)
+    filters = {"profiles": {"upwork": {"client": {"require_spend": True}}},
+               "global": {"max_age_days": 30}}
+    assert "client_no_spend" not in verdict_for(cfg, job_id, filters).codes
+
+
+def test_an_unverified_client_is_dropped_when_asked(cfg) -> None:
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c4",
+                      client_verified=False)
+    filters = {"profiles": {"upwork": {"client": {"require_verified": True}}},
+               "global": {"max_age_days": 30}}
+    assert "client_unverified" in verdict_for(cfg, job_id, filters).codes
+
+
+def test_an_unknown_verification_is_never_a_rejection(cfg) -> None:
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c5",
+                      client_verified=None)
+    filters = {"profiles": {"upwork": {"client": {"require_verified": True}}},
+               "global": {"max_age_days": 30}}
+    assert "client_unverified" not in verdict_for(cfg, job_id, filters).codes
+
+
+def test_the_client_rules_do_nothing_unless_switched_on(cfg) -> None:
+    """Both default off, so an existing filters.yaml keeps its corpus."""
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c6",
+                      client_verified=False, client_total_spent=0.0)
+    filters = {"profiles": {"upwork": {}}, "global": {"max_age_days": 30}}
+    codes = verdict_for(cfg, job_id, filters).codes
+    assert "client_no_spend" not in codes and "client_unverified" not in codes
+
+
 # --- seniority ceiling --------------------------------------------------------
 
 

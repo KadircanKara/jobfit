@@ -64,6 +64,8 @@ type Draft = {
     min_fixed: string;
     experience_level: string[];
     verified_payment_only: boolean;
+    require_verified_client: boolean;
+    require_client_spend: boolean;
   };
 };
 
@@ -88,6 +90,8 @@ function draftFrom(filters: Filters): Draft {
       min_fixed: filters.upwork?.min_fixed ? String(filters.upwork.min_fixed) : "",
       experience_level: filters.upwork?.experience_level ?? [],
       verified_payment_only: filters.upwork?.verified_payment_only ?? true,
+      require_verified_client: filters.upwork?.require_verified_client ?? false,
+      require_client_spend: filters.upwork?.require_client_spend ?? false,
     },
   };
 }
@@ -139,6 +143,8 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
           min_fixed: draft.upwork.min_fixed || null,
           experience_level: draft.upwork.experience_level,
           verified_payment_only: draft.upwork.verified_payment_only,
+          require_verified_client: draft.upwork.require_verified_client,
+          require_client_spend: draft.upwork.require_client_spend,
         },
       });
       onSaved(body.filters);
@@ -496,6 +502,37 @@ function UpworkPanel({
           />
           <span>Verified payment only</span>
         </label>
+        <div className="hint">Asked of Upwork's own search, so unverified clients never come back.</div>
+      </div>
+
+      <div className="field">
+        <label className="checkline">
+          <input
+            type="checkbox"
+            checked={value.require_verified_client}
+            onChange={(e) => onChange("require_verified_client", e.target.checked)}
+          />
+          <span>Drop unverified clients after the fetch</span>
+        </label>
+        <div className="hint">
+          Belt and braces with the box above: this one is a rule over what was stored, so it
+          still holds for jobs fetched before that box was ticked.
+        </div>
+      </div>
+
+      <div className="field">
+        <label className="checkline">
+          <input
+            type="checkbox"
+            checked={value.require_client_spend}
+            onChange={(e) => onChange("require_client_spend", e.target.checked)}
+          />
+          <span>Drop clients who have never spent</span>
+        </label>
+        <div className="hint">
+          A different signal from payment verification: in the first real run every client was
+          verified, yet 14 of 40 had spent $0.00. A card on file is not a hiring history.
+        </div>
       </div>
 
       <div className="notes">

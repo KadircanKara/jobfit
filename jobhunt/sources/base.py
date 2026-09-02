@@ -93,6 +93,12 @@ class JobPosting:
     poster_name: str | None = None
     poster_profile_url: str | None = None
 
+    # Upwork is the only source that says anything about who is paying. None
+    # everywhere else, and None means unknown rather than zero - the rules that
+    # read these must be able to tell "never hired" from "never asked".
+    client_verified: bool | None = None
+    client_total_spent: float | None = None
+
 
 @runtime_checkable
 class SourceAdapter(Protocol):

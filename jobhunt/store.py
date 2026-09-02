@@ -242,6 +242,8 @@ def _row_fields(
         "source_url": posting.source_url,
         "poster_name": posting.poster_name,
         "poster_profile_url": posting.poster_profile_url,
+        "client_verified": posting.client_verified,
+        "client_total_spent": posting.client_total_spent,
     }
 
 

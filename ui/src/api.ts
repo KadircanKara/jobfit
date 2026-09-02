@@ -7,6 +7,8 @@ export type UpworkFilters = {
   min_fixed: number | null;
   experience_level: string[];
   verified_payment_only: boolean;
+  require_verified_client: boolean;
+  require_client_spend: boolean;
   workload: string[];
   proposals_max: number | null;
   client_min_hires: number | null;

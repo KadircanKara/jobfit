@@ -103,7 +103,14 @@ KNOWN_IDS_LIMIT = 500
 # the timeout with the work essentially done. Halving the transcript is what
 # keeps a ref comfortably inside the window; the timeout below is the backstop,
 # not the fix.
-DETAIL_BUDGET = 6
+#
+# Cut again from 6 to 4 once the loss described in `_details_missing_descriptions`
+# turned up: it fell entirely on the later of two refs, and within a turn it
+# took the longest field first, so how much a turn has already transcribed is
+# the thing most worth keeping down. Fewer details per turn also costs less
+# than it looks - the projection in the prompt means a detail is now three keys
+# rather than a whole document.
+DETAIL_BUDGET = 4
 
 # Well under agent.DEFAULT_TIMEOUT (1800s): a hung MCP call must not block a
 # nightly run for half an hour, twice over. Worst case per ref is now two
@@ -191,8 +198,15 @@ def _detail_node(detail: dict) -> dict[str, Any]:
     A per-job `get` returns `{"data": {"marketplaceJobPosting": {...}}}` -
     everything this module reads from a detail (description, contract terms,
     client company) lives inside that inner object, never at the top level.
+
+    The fetch prompt now asks for that inner object directly rather than the
+    whole document, so both shapes are accepted: payloads written before that
+    change are still on disk and must still normalize. The wrapper is the
+    special case, not the default - if `data.marketplaceJobPosting` is there,
+    that is the node; otherwise the detail already is one.
     """
-    return _as_dict(_as_dict(detail.get("data")).get("marketplaceJobPosting"))
+    wrapped = _as_dict(_as_dict(detail.get("data")).get("marketplaceJobPosting"))
+    return wrapped or detail
 
 
 def _client_company(detail_node: dict) -> dict[str, Any]:
@@ -222,6 +236,37 @@ def _salary(
         period = "hourly" if job_type.startswith("hourly") else "fixed"
         return budget, None, period, True
     return None, None, None, False
+
+
+def _client_quality(item: dict) -> tuple[bool | None, float | None]:
+    """Payment verification and lifetime spend, from the search result.
+
+    Both live on the search result's `client` block, never on the detail, so
+    they are known for every posting whether or not its detail was fetched.
+
+    None means the field was absent or unreadable, and the rules that read
+    these treat None as "unknown" rather than as False or 0.0 - a client who
+    has genuinely spent nothing reports "$0.00", which is a fact, while a
+    missing key is not. Spend arrives as a display string ("$4,336.92"), so
+    the currency symbol and thousands separators come off before parsing;
+    anything that still will not parse is unknown rather than zero.
+    """
+    stats = _as_dict(item.get("client"))
+
+    status = stats.get("verification_status")
+    verified: bool | None = None
+    if isinstance(status, str) and status.strip():
+        verified = status.strip().upper() == "VERIFIED"
+
+    spent: float | None = None
+    raw_spent = stats.get("total_spent")
+    if raw_spent is not None:
+        try:
+            spent = float(str(raw_spent).replace("$", "").replace(",", "").strip())
+        except ValueError:
+            spent = None
+
+    return verified, spent
 
 
 def _trailer(item: dict, client_company: dict) -> str:
@@ -334,6 +379,24 @@ def _parse(raw: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _details_missing_descriptions(envelope: dict[str, Any]) -> int:
+    """How many returned details came back with no usable description.
+
+    The failure this exists for is silent: the answer is well-formed JSON with
+    no `error` key, the ids are all present, and only the single longest field
+    inside each one is gone. Measured on the first real run, six of six details
+    on one ref lost it - the model dropping the most expensive thing it had been
+    asked to retype. Nothing downstream can detect that, because a detail with
+    no description is byte-identical to one the API never had a description for.
+    """
+    missing = 0
+    for detail in _as_dict(envelope.get("details")).values():
+        node = _detail_node(_as_dict(detail))
+        if not _as_str(_as_dict(node.get("content")).get("description")).strip():
+            missing += 1
+    return missing
 
 
 def _coerce_envelope(parsed: dict[str, Any]) -> dict[str, Any] | None:
@@ -533,8 +596,33 @@ class UpworkAdapter(HttpAdapter):
                 return {**partial, "error": str(reported_error)}
 
             envelope = coerced
-            if envelope is not None:
-                break
+            if envelope is None:
+                continue
+
+            # Silent description loss. Retried once, because it is a
+            # transcription failure rather than an API one: the same `get`
+            # returns the description perfectly when asked again (verified
+            # live - a document whose description came back missing returned
+            # 4,283 characters of it on a re-fetch). Only when *every* detail
+            # lost its description, so a ref whose details are genuinely
+            # description-less is not retried forever; and only on the first
+            # attempt, so a second lossy answer is still kept rather than
+            # discarded - its search results are intact and worth having.
+            missing = _details_missing_descriptions(envelope)
+            total = len(_as_dict(envelope.get("details")))
+            if total and missing == total and attempt == 1:
+                log.warning(
+                    "upwork fetch for %r returned %d detail(s), all without a "
+                    "description; retrying once", ref.token, total,
+                )
+                continue
+            if missing:
+                log.warning(
+                    "upwork fetch for %r kept %d of %d detail(s) without a description; "
+                    "those jobs stay on their search snippet",
+                    ref.token, missing, total,
+                )
+            break
 
         if envelope is None:
             log.warning("upwork fetch for %r returned an unreadable or malformed response", ref.token)
@@ -608,6 +696,7 @@ class UpworkAdapter(HttpAdapter):
             jd_source = "api" if snippet_text else None
 
         client_company = _client_company(detail_node)
+        client_verified, client_total_spent = _client_quality(item)
         trailer = _trailer(item, client_company)
         description_md = f"{description_text}\n\n{trailer}" if description_text else trailer
 
@@ -657,4 +746,6 @@ class UpworkAdapter(HttpAdapter):
             posted_at=norm.parse_datetime(item.get("created_date")),
             apply_url=item.get("url"),
             source_url=item.get("url"),
+            client_verified=client_verified,
+            client_total_spent=client_total_spent,
         )
