@@ -81,6 +81,15 @@ ALLOWED_TOOLS = "mcp__upwork__upwork__find_jobs"
 # if this personal tool is ever pointed at a different Upwork account.
 _DEFAULT_ORG_UID = "1808166514497822721"
 
+# How many already-stored ids the prompt names, at most. Every one of these is
+# inlined into the prompt for every ref, so an unbounded list grows the prompt
+# with the corpus forever - a year of gigs would be thousands of ids in front of
+# a search that only ever returns a page or two of results. The newest are the
+# ones a recency-sorted search can actually collide with; an id old enough to
+# fall off this list costs one redundant `get` in the worst case, and that get
+# is a read inside the same turn, not a Connect.
+KNOWN_IDS_LIMIT = 500
+
 # How many `action=get` calls one fetch may make. Each is its own read inside
 # the same agent turn, not a separate Connect-spending action - the cap exists
 # to keep one turn's tool calls bounded, the same reasoning as PAGE_SIZE in
@@ -352,6 +361,11 @@ class UpworkAdapter(HttpAdapter):
         # one that would blow up the moment anything asked it a question.
         self.budget = FetchBudget(config) if config is not None else None
         self.known_ids = known_ids or set()
+        # Set by `fetch`, read by `was_refused` right after, exactly like
+        # LinkedIn's `_truncated`. A refused ref returns the same empty envelope
+        # a genuinely empty search does, so without this the run counts it as a
+        # success and reports zero jobs with no reason attached.
+        self._refused = False
 
     def board_refs(self, prefs: preferences_module.UpworkPreferences) -> list[BoardRef]:
         """One ref per (query, job_type). See `upwork_query.refs_for`."""
@@ -383,6 +397,16 @@ class UpworkAdapter(HttpAdapter):
         """
         return True
 
+    def was_refused(self) -> bool:
+        """Whether the fetch just made never went out because the budget said no.
+
+        Read once per ref by `sync.fetch_pass`, the same way `was_truncated` is,
+        and for the same reason: the envelope a refusal writes is byte-identical
+        to the one a search that found nothing writes, and a run that refused
+        half its refs must not report `ok` with an unexplained zero.
+        """
+        return self._refused
+
     def fetch(self, ref: BoardRef, client: httpx.Client | None) -> dict[str, Any]:
         """One search-and-detail pass through the Upwork MCP, via `claude -p`.
 
@@ -393,6 +417,7 @@ class UpworkAdapter(HttpAdapter):
         caller iterating many refs cannot afford one bad ref to end the run.
         """
         empty: dict[str, Any] = {"pages": [], "details": {}}
+        self._refused = False
         if self.config is None or self.budget is None:
             return empty
 
@@ -446,6 +471,9 @@ class UpworkAdapter(HttpAdapter):
                     "upwork fetch for %r stopped before %s: %s",
                     ref.token, "the search" if attempt == 1 else "a retry", refusal,
                 )
+                # Only the first attempt: a refused retry still means the search
+                # itself ran, so the ref is not one the budget kept off the wire.
+                self._refused = attempt == 1
                 return empty
             self.budget.spend()
             try:
@@ -460,6 +488,15 @@ class UpworkAdapter(HttpAdapter):
 
             parsed = _parse(raw)
             if parsed is None:
+                # The only evidence there will ever be for this failure. Without
+                # it, "returned an unreadable response" below is all a first
+                # real run leaves behind, and an environmental problem (a
+                # missing MCP server, a login prompt, a refusal) is
+                # indistinguishable from a model that just wrote prose.
+                log.warning(
+                    "upwork fetch for %r attempt %d returned no JSON object; raw: %.500s",
+                    ref.token, attempt, raw,
+                )
                 continue
 
             # A model that follows the prompt's own "if a call fails" section

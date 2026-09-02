@@ -256,6 +256,29 @@ def test_the_guard_refusing_skips_the_subprocess_entirely(cfg, monkeypatch) -> N
     adapter.budget.tripped = True
     adapter.fetch(_ref(), None)
     assert called == []
+    # The envelope a refusal writes is identical to the one an empty search
+    # writes; this flag is the only thing that tells the run they differ.
+    assert adapter.was_refused() is True
+
+
+def test_a_search_that_actually_ran_is_not_reported_as_refused(cfg, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "jobhunt.sources.upwork.agent.run", lambda *a, **k: '{"pages": [], "details": {}}'
+    )
+    adapter = UpworkAdapter(config=cfg)
+    adapter.fetch(_ref(), None)
+    assert adapter.was_refused() is False
+
+
+def test_an_unreadable_response_is_logged_with_its_raw_text(cfg, monkeypatch, caplog) -> None:
+    """The only evidence a first real run leaves for an environmental failure -
+    a missing MCP server, a login prompt - is this log line."""
+    monkeypatch.setattr(
+        "jobhunt.sources.upwork.agent.run", lambda *a, **k: "I could not reach the Upwork server."
+    )
+    with caplog.at_level("WARNING"):
+        UpworkAdapter(config=cfg).fetch(_ref(), None)
+    assert "could not reach the Upwork server" in caplog.text
 
 
 def test_a_config_less_adapter_does_not_call_out(cfg, monkeypatch) -> None:

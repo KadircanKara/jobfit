@@ -20,13 +20,13 @@ from jobhunt.sources.base import JobPosting, RateLimit
 from jobhunt.sources.linkedin import LinkedInAdapter
 
 
-def place_raw(cfg, source: str, token: str, run_key: str, payload: dict) -> None:
+def place_raw(cfg, source: str, token: str, run_key: str, payload: dict, **flags) -> None:
     directory = sync.raw_dir(cfg, source, run_key)
     directory.mkdir(parents=True, exist_ok=True)
     envelope = {
         "run_key": run_key, "source": source, "provider": source, "token": token,
         "market": "global_remote", "board_id": None, "fetched_at": "2026-08-20T00:00:00",
-        "payload": payload,
+        "payload": payload, **flags,
     }
     (directory / f"{source}__{token}.json").write_text(json.dumps(envelope), encoding="utf-8")
 
@@ -772,3 +772,35 @@ def test_a_full_body_is_not_replaced_by_a_shorter_one_that_reads_as_a_snippet(cf
         job = session.query(Job).filter_by(source="greenhouse", external_id=edited_id).one()
         assert job.jd_completeness == "full"
         assert "Apply within" not in (job.description_text or "")
+
+
+def test_a_run_whose_refs_were_all_refused_reports_degraded_rather_than_ok(cfg) -> None:
+    """A budget refusal writes the same empty envelope a search that found
+    nothing writes. Left unmarked, a run that spent its whole allowance before
+    it started reports `ok` with zero jobs and no reason attached."""
+    place_raw(cfg, "upwork", "rag|hourly", "R9", {"pages": [], "details": {}}, refused=True)
+    result = sync.sync_source(cfg, "upwork", from_raw="R9")
+    assert result.refused == 1
+    assert result.status == "degraded"
+    assert "never ran" in (result.error_detail or "")
+
+
+def test_the_upwork_known_ids_are_capped_at_the_most_recent(cfg, monkeypatch) -> None:
+    """Every one of these is inlined into the prompt for every ref, so the whole
+    corpus in there grows forever. LinkedIn's are only compared in Python and
+    stay uncapped - dropping one there means re-fetching a page over the wire."""
+    monkeypatch.setattr(sync.upwork_source, "KNOWN_IDS_LIMIT", 3)
+    monkeypatch.setattr(sync, "_KNOWN_ID_LIMITS", {"upwork": 3})
+    with session_scope(cfg.db_path) as session:
+        for index in range(6):
+            job, _ = store.upsert_posting(
+                session,
+                JobPosting(
+                    source="upwork", external_id=f"gig-{index}", market="upwork",
+                    title="RAG engineer", company_name="Upwork client",
+                ),
+            )
+            job.last_seen_at = utcnow() - dt_module.timedelta(days=10 - index)
+
+    assert sync._known_ids_for(cfg, "upwork", newest=3) == {"gig-3", "gig-4", "gig-5"}
+    assert len(sync._known_ids_for(cfg, "upwork")) == 6

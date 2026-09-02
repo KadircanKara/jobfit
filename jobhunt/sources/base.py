@@ -128,6 +128,10 @@ class SourceAdapter(Protocol):
         """
         ...
 
+    def was_refused(self) -> bool:
+        """Whether the fetch just made never went out at all. See HttpAdapter."""
+        ...
+
     def normalize(self, raw: Any, ref: BoardRef) -> Iterator[JobPosting]:
         """Raw payload -> canonical records. Pure function, no I/O."""
         ...
@@ -161,6 +165,16 @@ class HttpAdapter:
 
         Every adapter but LinkedIn always sees the whole listing it asked for,
         so the default is simply False.
+        """
+        return False
+
+    def was_refused(self) -> bool:
+        """Whether the fetch just made was refused by a budget before going out.
+
+        Distinct from `was_truncated`: truncated means "we looked and did not
+        see everything", refused means "we never looked". Both produce an empty
+        payload that would otherwise read as a search that found nothing. Only
+        the Upwork adapter has a budget that can refuse, so the default is False.
         """
         return False
 

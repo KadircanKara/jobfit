@@ -23,6 +23,11 @@ from jobhunt.config import Config
 from jobhunt.db.models import utcnow
 from jobhunt.db.session import session_scope
 
+# Attempts, not refs: `fetch` spends a unit on each of its two attempts, so a
+# day of retries is 6 refs, not 12. Counting attempts is the point - the scarce
+# thing is the `claude -p` turn, and a retry is a whole extra turn with a whole
+# extra live search behind it. The name is kept because the daily meta key it
+# writes is already in the database under it; read it as "ref attempts".
 DAILY_REFS = 12
 BREAKER_AFTER = 3
 
@@ -49,7 +54,7 @@ class FetchBudget:
             return "the circuit breaker tripped for this run"
         spent = self._spent(now)
         if spent >= DAILY_REFS:
-            return f"today's budget of {DAILY_REFS} refs is spent ({spent})"
+            return f"today's budget of {DAILY_REFS} fetch attempts is spent ({spent})"
         return None
 
     def spend(self, n: int = 1, *, now: dt.datetime | None = None) -> None:

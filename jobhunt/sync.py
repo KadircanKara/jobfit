@@ -28,6 +28,7 @@ from jobhunt.config import Config
 from jobhunt.db.models import Board, Job, Run, utcnow
 from jobhunt.db.session import session_scope
 from jobhunt.pipeline.dedupe import apply_clustering
+from jobhunt.sources import upwork as upwork_source
 from jobhunt.sources.base import BoardRef
 
 
@@ -49,6 +50,9 @@ class SourceResult:
     # Refs whose fetch ended early - a crawl guard refused, or the source did.
     # Not an error: nothing failed, we simply did not see the whole listing.
     truncated: int = 0
+    # Refs a fetch budget kept off the wire entirely. Also not an error, but a
+    # run made of these does no work at all and must never report a bare `ok`.
+    refused: int = 0
     status: str = "ok"
     error_detail: str | None = None
 
@@ -58,6 +62,7 @@ class SourceResult:
             f"normalized={self.normalized} new={self.new} updated={self.updated} "
             f"unchanged={self.unchanged} deactivated={self.deactivated} "
             f"clustered={self.clustered} errors={self.errors} truncated={self.truncated} "
+            f"refused={self.refused} "
             f"rejected={self.rejected} dead_boards={self.dead_boards} run={self.run_key}"
         )
 
@@ -191,19 +196,34 @@ def build_adapter(config: Config, source: str):
         return cls()
     prefs, _ = prefs_module.load(config)
     board_prefs = prefs.upwork if source == "upwork" else prefs
-    adapter = cls(config=config, known_ids=_known_ids_for(config, source))
+    known = _known_ids_for(config, source, newest=_KNOWN_ID_LIMITS.get(source))
+    adapter = cls(config=config, known_ids=known)
     adapter.set_refs(adapter.board_refs(board_prefs))
     return adapter
 
 
-def _known_ids_for(config: Config, source: str) -> set[str]:
+# Sources whose known ids are capped, and at what. Upwork's are inlined into an
+# agent prompt once per ref, so the whole corpus in there grows without bound;
+# LinkedIn's are only compared in Python, where the full set costs nothing and
+# an id dropped from it would mean re-fetching a detail page over the network.
+_KNOWN_ID_LIMITS = {"upwork": upwork_source.KNOWN_IDS_LIMIT}
+
+
+def _known_ids_for(config: Config, source: str, newest: int | None = None) -> set[str]:
     """External ids already in the corpus for one source.
 
     Shared by every generated-ref adapter that skips re-fetching a detail it
     already has - LinkedIn's guest HTML pages and Upwork's `get` calls alike.
+
+    `newest` caps the result at that many most-recently-seen ids. Recency is the
+    right axis to cut on: these adapters search by recency too, so an id old
+    enough to be dropped is one this run is unlikely to see again.
     """
     with session_scope(config.db_path) as session:
-        rows = session.scalars(select(Job.external_id).where(Job.source == source)).all()
+        query = select(Job.external_id).where(Job.source == source)
+        if newest is not None:
+            query = query.order_by(Job.last_seen_at.desc()).limit(newest)
+        rows = session.scalars(query).all()
     return set(rows)
 
 
@@ -268,6 +288,9 @@ def fetch_pass(
                 # `truncated` key there would collide with anything upstream
                 # ever happens to name the same way. See `_is_truncated`.
                 "truncated": adapter.was_truncated(),
+                # Same reasoning, different question: this ref never went out at
+                # all. See SourceAdapter.was_refused.
+                "refused": adapter.was_refused(),
             }
             (out_dir / f"{ref.key}.json").write_text(
                 json.dumps(envelope, ensure_ascii=False), encoding="utf-8"
@@ -387,6 +410,8 @@ def normalize_pass(
     for envelope in envelopes:
         ref = BoardRef(envelope["provider"], envelope["token"], envelope["market"])
         truncated = _is_truncated(envelope)
+        if envelope.get("refused"):
+            result.refused += 1
         with session_scope(config.db_path) as session:
             board = store.get_or_create_board(
                 session, ref.provider, ref.token, "sync", ref.market
@@ -505,6 +530,7 @@ def sync_source(
         normalized = normalize_pass(config, source, run_key, dry_run=dry_run)
         for field in (
             "normalized", "new", "updated", "unchanged", "deactivated", "clustered", "truncated",
+            "refused",
         ):
             setattr(result, field, getattr(normalized, field))
         if from_raw is not None:
@@ -522,6 +548,15 @@ def sync_source(
             messages.append(
                 f"{result.truncated} of {result.boards} searches ended early "
                 f"(crawl guard or the source refused); their jobs were left active"
+            )
+        # A budget refusal writes the same empty envelope a search that found
+        # nothing writes, so without this a run that spent its whole allowance
+        # before starting reports `ok` with zero jobs and no reason.
+        if result.refused:
+            result.status = "failed" if result.status == "failed" else "degraded"
+            messages.append(
+                f"{result.refused} of {result.boards} searches never ran "
+                f"(the fetch budget refused them); nothing was fetched for those"
             )
         result.error_detail = "\n".join(messages) or None
     except Exception as exc:  # noqa: BLE001 - source isolation
