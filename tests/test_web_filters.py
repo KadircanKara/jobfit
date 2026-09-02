@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from jobhunt import preferences as prefs_module
 from jobhunt.preferences import Preferences
 from jobhunt.web import filters as webfilters
 
@@ -94,3 +95,30 @@ def test_a_selection_of_only_upwork_is_accepted():
     """`upwork` is its own adapter now, not a plan that expands to nothing."""
     prefs = webfilters.apply(Preferences(), {"sources": ["upwork"]})
     assert prefs.sources == ["upwork"]
+
+
+def test_the_upwork_block_is_flattened_into_dotted_updates() -> None:
+    updates = webfilters._updates_from(
+        {"upwork": {"min_hourly": 45, "queries": ["rag", "llm"], "verified_payment_only": False}}
+    )
+    assert updates["upwork.min_hourly"] == "45"
+    assert updates["upwork.queries"] == "rag, llm"
+    assert updates["upwork.verified_payment_only"] == "false"
+
+
+def test_an_empty_upwork_query_list_clears_rather_than_being_dropped() -> None:
+    updates = webfilters._updates_from({"upwork": {"queries": []}})
+    assert updates["upwork.queries"] == "none"
+
+
+def test_a_bad_upwork_value_is_tagged_against_its_own_field(cfg) -> None:
+    prefs, _ = prefs_module.load(cfg)
+    with pytest.raises(webfilters.FieldError) as excinfo:
+        webfilters.apply(prefs, {"upwork": {"experience_level": ["advanced"]}})
+    assert excinfo.value.field.startswith("upwork")
+
+
+def test_a_negative_upwork_rate_floor_is_rejected_against_its_own_field() -> None:
+    with pytest.raises(webfilters.FieldError) as excinfo:
+        webfilters.apply(Preferences(), {"upwork": {"min_hourly": -5}})
+    assert excinfo.value.field == "upwork.min_hourly"

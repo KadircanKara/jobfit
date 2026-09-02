@@ -1,3 +1,18 @@
+// Mirrors preferences.UpworkPreferences: a different market's vocabulary,
+// kept as its own object rather than folded into the shared fields above.
+export type UpworkFilters = {
+  queries: string[];
+  job_types: string[];
+  min_hourly: number | null;
+  min_fixed: number | null;
+  experience_level: string[];
+  verified_payment_only: boolean;
+  workload: string[];
+  proposals_max: number | null;
+  client_min_hires: number | null;
+  max_pages: number;
+};
+
 export type Filters = {
   titles: string[];
   locations: string[];
@@ -14,6 +29,7 @@ export type Filters = {
   // Named selections of `titles`, so a set worth returning to can be picked
   // again after the field is cleared.
   title_groups: Record<string, string[]>;
+  upwork: UpworkFilters;
 };
 
 export type VocabRow = { value: string; label: string; count: number };

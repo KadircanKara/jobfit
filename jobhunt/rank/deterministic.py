@@ -57,7 +57,7 @@ REASON_LABELS: dict[str, str] = {
 # so telling the user to adjust them from the browser would be a lie.
 TUNABLE_REASONS = frozenset(
     {"age", "title_unmatched", "field_mismatch", "seniority_low", "seniority_high",
-     "salary_unstated", "salary_below"}
+     "salary_unstated", "salary_below", "rate_below"}
 )
 
 

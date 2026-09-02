@@ -19,13 +19,19 @@ const JOB_TYPES: [string, string][] = [
   ["temporary", "temporary"],
 ];
 
-// Mirrors SOURCE_CHOICES in jobhunt/preferences.py. Upwork is listed and
-// disabled rather than omitted, so the plan is visible before it ships.
+// Mirrors SOURCE_CHOICES in jobhunt/preferences.py.
 const SOURCES: { id: string; label: string; hint: string; enabled: boolean }[] = [
   { id: "ats", label: "ATS", hint: "Greenhouse, Ashby, Lever and nine more", enabled: true },
   { id: "linkedin", label: "LinkedIn", hint: "Public job search", enabled: true },
-  { id: "upwork", label: "Upwork", hint: "Not yet — arrives with the GitHub MCP phase", enabled: false },
+  { id: "upwork", label: "Upwork", hint: "Freelance postings, its own settings below", enabled: true },
 ];
+
+// Mirrors UPWORK_JOB_TYPES / UPWORK_EXPERIENCE in jobhunt/preferences.py.
+const UPWORK_JOB_TYPES: [string, string][] = [
+  ["hourly", "hourly"],
+  ["fixed", "fixed price"],
+];
+const UPWORK_EXPERIENCE = ["entry_level", "intermediate", "expert"];
 
 // Sample rates until the server reports the snapshot it fetched for the run.
 // Shown with their timestamp so nobody reads a stale number as live.
@@ -51,6 +57,14 @@ type Draft = {
   age_value: string;
   age_unit: string;
   top_n: string;
+  upwork: {
+    queries: string[];
+    job_types: string[];
+    min_hourly: string;
+    min_fixed: string;
+    experience_level: string[];
+    verified_payment_only: boolean;
+  };
 };
 
 function draftFrom(filters: Filters): Draft {
@@ -67,6 +81,14 @@ function draftFrom(filters: Filters): Draft {
     age_value: String(filters.max_age_days || 30),
     age_unit: "days",
     top_n: String(filters.top_n || 50),
+    upwork: {
+      queries: filters.upwork?.queries ?? [],
+      job_types: filters.upwork?.job_types?.length ? filters.upwork.job_types : ["hourly", "fixed"],
+      min_hourly: filters.upwork?.min_hourly ? String(filters.upwork.min_hourly) : "",
+      min_fixed: filters.upwork?.min_fixed ? String(filters.upwork.min_fixed) : "",
+      experience_level: filters.upwork?.experience_level ?? [],
+      verified_payment_only: filters.upwork?.verified_payment_only ?? true,
+    },
   };
 }
 
@@ -84,6 +106,9 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
+
+  const setUpwork = <K extends keyof Draft["upwork"]>(key: K, value: Draft["upwork"][K]) =>
+    setDraft((current) => ({ ...current, upwork: { ...current.upwork, [key]: value } }));
 
   const local = useMemo(() => validate(draft), [draft]);
   const messages = { ...local, ...errors };
@@ -107,6 +132,14 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
         currency: draft.currency,
         max_age: { value: Number(draft.age_value), unit: draft.age_unit },
         top_n: Number(draft.top_n),
+        upwork: {
+          queries: draft.upwork.queries,
+          job_types: draft.upwork.job_types,
+          min_hourly: draft.upwork.min_hourly || null,
+          min_fixed: draft.upwork.min_fixed || null,
+          experience_level: draft.upwork.experience_level,
+          verified_payment_only: draft.upwork.verified_payment_only,
+        },
       });
       onSaved(body.filters);
       setImpact(body.title_impact);
@@ -352,12 +385,132 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
 
         <SourcePicker value={draft.sources} onChange={(next) => set("sources", next)} />
 
+        {draft.sources.includes("upwork") && (
+          <UpworkPanel value={draft.upwork} onChange={setUpwork} messages={messages} />
+        )}
+
         <button className="btn ghost" onClick={save} disabled={!valid || draft.sources.length === 0}>
           {saved ? "Saved" : "Save filters"}
         </button>
       </div>
       <FeedsPanel reloadToken={feedsReload} />
     </>
+  );
+}
+
+function UpworkPanel({
+  value,
+  onChange,
+  messages,
+}: {
+  value: Draft["upwork"];
+  onChange: <K extends keyof Draft["upwork"]>(key: K, next: Draft["upwork"][K]) => void;
+  messages: Record<string, string>;
+}) {
+  const toggle = <K extends "job_types" | "experience_level">(key: K, item: string) =>
+    onChange(key, (value[key].includes(item) ? value[key].filter((v) => v !== item) : [...value[key], item]) as Draft["upwork"][K]);
+
+  return (
+    <div className="fields upwork">
+      <TagField
+        label="Upwork queries"
+        wide
+        tags={value.queries}
+        vocab={[]}
+        placeholder="Add a search term, press Enter"
+        freeNote="free text"
+        emptyNote="No suggestions — Upwork has no fixed title vocabulary, type your own."
+        onChange={(tags) => onChange("queries", tags)}
+        hint={<>searched against the posting itself, not matched against the titles above</>}
+      />
+
+      <div className="field">
+        <label>
+          <span>Job type</span>
+        </label>
+        <div className="toggles">
+          {UPWORK_JOB_TYPES.map(([id, label]) => (
+            <button
+              key={id}
+              className="chip"
+              aria-pressed={value.job_types.includes(id)}
+              onClick={() => toggle("job_types", id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={messages["upwork.min_hourly"] ? "field bad" : "field"}>
+        <label>
+          <span>Min hourly rate</span>
+        </label>
+        <input
+          inputMode="numeric"
+          placeholder="any"
+          value={value.min_hourly}
+          onChange={(e) => onChange("min_hourly", e.target.value)}
+        />
+        <div className="hint">$ per hour</div>
+      </div>
+
+      <div className={messages["upwork.min_fixed"] ? "field bad" : "field"}>
+        <label>
+          <span>Min fixed budget</span>
+        </label>
+        <input
+          inputMode="numeric"
+          placeholder="any"
+          value={value.min_fixed}
+          onChange={(e) => onChange("min_fixed", e.target.value)}
+        />
+        <div className="hint">$ for the whole project</div>
+      </div>
+
+      <div className="field">
+        <label>
+          <span>Experience level</span>
+        </label>
+        <div className="toggles">
+          {UPWORK_EXPERIENCE.map((level) => (
+            <button
+              key={level}
+              className="chip"
+              aria-pressed={value.experience_level.includes(level)}
+              onClick={() => toggle("experience_level", level)}
+            >
+              {level.replace("_", " ")}
+            </button>
+          ))}
+        </div>
+        <div className="hint">{value.experience_level.length ? "" : "no restriction"}</div>
+      </div>
+
+      <div className="field">
+        <label className="checkline">
+          <input
+            type="checkbox"
+            checked={value.verified_payment_only}
+            onChange={(e) => onChange("verified_payment_only", e.target.checked)}
+          />
+          <span>Verified payment only</span>
+        </label>
+      </div>
+
+      <div className="notes">
+        {messages["upwork.queries"] && <div className="err">{messages["upwork.queries"]}</div>}
+        {messages["upwork.job_types"] && <div className="err">{messages["upwork.job_types"]}</div>}
+        {messages["upwork.min_hourly"] && <div className="err">{messages["upwork.min_hourly"]}</div>}
+        {messages["upwork.min_fixed"] && <div className="err">{messages["upwork.min_fixed"]}</div>}
+        {messages["upwork.experience_level"] && (
+          <div className="err">{messages["upwork.experience_level"]}</div>
+        )}
+        {messages["upwork.verified_payment_only"] && (
+          <div className="err">{messages["upwork.verified_payment_only"]}</div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -428,6 +581,13 @@ function validate(draft: Draft): Record<string, string> {
   const top = Number(draft.top_n);
   if (!/^\d+$/.test(draft.top_n.trim()) || top < 1 || top > 200) {
     out.top_n = "Pick a whole number between 1 and 200.";
+  }
+
+  if (draft.upwork.min_hourly.trim() && !(Number(draft.upwork.min_hourly) > 0)) {
+    out["upwork.min_hourly"] = "Numbers only, above zero.";
+  }
+  if (draft.upwork.min_fixed.trim() && !(Number(draft.upwork.min_fixed) > 0)) {
+    out["upwork.min_fixed"] = "Numbers only, above zero.";
   }
 
   return out;

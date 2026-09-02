@@ -315,6 +315,14 @@ main {
 .fields .wide {
   grid-column: span 2;
 }
+/* The Upwork panel is its own grid, not a continuation of the shared one
+   above it: it only appears once Upwork is ticked, so a seam marks where the
+   settings stop being about every source and start being about one of them. */
+.fields.upwork {
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--line);
+}
 .notes {
   grid-column: 1 / -1;
 }
@@ -362,6 +370,20 @@ main {
 .field.bad .taginput,
 .field.bad .suffixed {
   border-color: var(--crit);
+}
+/* A checkbox paired with its own label text, rather than a field whose label
+   sits above an input — same row, same vertical center as the box itself. */
+.field label.checkline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0;
+  cursor: pointer;
+}
+.field label.checkline span {
+  text-transform: none;
+  font-size: var(--small);
+  color: var(--ink-dim);
 }
 
 .err {
@@ -2465,8 +2487,7 @@ tr.drawer > td {
 
 /* ---------------- sources ---------------- */
 
-/* Which corpora a run fetches and shortlists from. Upwork sits in the row,
-   disabled, so the plan is visible before it ships rather than absent. */
+/* Which corpora a run fetches and shortlists from. */
 .sources {
   display: flex;
   flex-wrap: wrap;
