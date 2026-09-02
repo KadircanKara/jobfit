@@ -518,7 +518,11 @@ export const api = {
   },
   // Fires a company-scoped LinkedIn people search. Only ever call this from a
   // user action on one job's drawer - never from anything that loops over jobs.
-  async findContacts(jobId: number): Promise<{ candidates: ContactCandidate[] }> {
+  // `note` is set when the search was skipped rather than run - an Upwork gig
+  // whose client is anonymous has no company name to search for.
+  async findContacts(
+    jobId: number,
+  ): Promise<{ candidates: ContactCandidate[]; note?: string | null }> {
     return detailJson(await fetch(`/api/outreach/${jobId}/find`, { method: "POST" }));
   },
   async revisionPreview(jobId: number): Promise<RevisePreview> {

@@ -15,6 +15,16 @@ from jobhunt.db.models import Contact, Job, Outreach
 from jobhunt.db.session import session_scope
 from jobhunt.outreach import caps, discovery, provider, service
 from jobhunt.outreach.unipile_client import UnipileError
+from jobhunt.pipeline.client_identity import COMPANY_NAME_PLACEHOLDER
+
+# Why `find` did nothing, for the drawer to show in place of a result. An
+# anonymous gig is the common case on Upwork, not an error, so it is said
+# plainly rather than raised.
+NO_COMPANY_TO_SEARCH = (
+    "Upwork does not publish this client's company, and the posting does not name "
+    "one, so there is nothing to search LinkedIn for. Add a contact by hand if you "
+    "work out who they are."
+)
 
 # Ordering for "most advanced state" across a job's contacts. `failed` and
 # `cancelled` are not progress - a job whose only contact bounced should not
@@ -140,7 +150,9 @@ def register(app: FastAPI, config: Config, sender: provider.LinkedInProvider) ->
 
         The company search fires only here, and only when the current sender
         actually exposes one - the stub, the default, does not. Nothing on the
-        fetch/sync path holds a reference to this function at all.
+        fetch/sync path holds a reference to this function at all. It also does
+        not fire for an anonymous Upwork gig, whose company is a placeholder
+        string rather than a company; `note` says so, and the drawer shows it.
 
         Kept as a POST that returns both kinds, stated included: the drawer
         already shows the stated poster from the GET above, and merges these
@@ -156,6 +168,18 @@ def register(app: FastAPI, config: Config, sender: provider.LinkedInProvider) ->
             candidates = discovery.find_contacts(job)
             client = getattr(current_sender, "client", None)
             company = job.company.name if job.company else None
+            if company == COMPANY_NAME_PLACEHOLDER:
+                # Not a company: it is what an Upwork gig is called when
+                # `client_identity` recovered nothing from the description, and
+                # Upwork never publishes one. Searching LinkedIn for it spends a
+                # real people-search and returns whoever LinkedIn thinks "Upwork
+                # client" means, presented in the drawer exactly like a genuine
+                # candidate at a genuine company.
+                existing_urls = _existing_profile_urls(session)
+                return {
+                    "candidates": _candidate_payload(candidates, existing_urls),
+                    "note": NO_COMPANY_TO_SEARCH,
+                }
             if client is not None and hasattr(client, "search_people") and company:
                 try:
                     candidates = candidates + discovery.search_company(
@@ -171,7 +195,7 @@ def register(app: FastAPI, config: Config, sender: provider.LinkedInProvider) ->
                         },
                     ) from error
             existing_urls = _existing_profile_urls(session)
-            return {"candidates": _candidate_payload(candidates, existing_urls)}
+            return {"candidates": _candidate_payload(candidates, existing_urls), "note": None}
 
     @app.post("/api/outreach/{job_id}/contacts")
     def add_contact(job_id: int, payload: dict[str, Any]) -> dict[str, Any]:

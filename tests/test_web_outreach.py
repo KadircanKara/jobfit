@@ -237,6 +237,62 @@ def test_find_contacts_returns_the_posted_contact_and_the_searched_ones(client, 
     assert sam["existing"] is False
 
 
+class ExplodingSearchClient:
+    """Any call at all is the bug this test is about."""
+
+    def search_people(self, company, keywords, *, limit=5):
+        raise AssertionError(f"searched LinkedIn for {company!r}, which is not a company")
+
+
+def _anonymous_upwork_job(cfg) -> int:
+    from jobhunt.pipeline.client_identity import COMPANY_NAME_PLACEHOLDER
+
+    with session_scope(cfg.db_path) as session:
+        company = Company(name=COMPANY_NAME_PLACEHOLDER, normalized_name="upwork client")
+        session.add(company)
+        session.flush()
+        job = Job(
+            external_id="up-1", source="upwork", market="upwork",
+            title="RAG pipeline engineer", title_normalized="rag pipeline engineer",
+            company_id=company.id,
+        )
+        session.add(job)
+        session.flush()
+        return job.id
+
+
+def test_find_contacts_never_searches_linkedin_for_the_upwork_placeholder(client, cfg) -> None:
+    """Most gigs name no client, so most Find contacts presses land here. Left
+    alone, each one spends a people-search and shows whoever LinkedIn thinks
+    "Upwork client" is, styled exactly like a real candidate."""
+    job_id = _anonymous_upwork_job(cfg)
+    client.app.state.outreach_sender = FakeSenderWithClient.__new__(FakeSenderWithClient)
+    client.app.state.outreach_sender.client = ExplodingSearchClient()
+
+    response = client.post(f"/api/outreach/{job_id}/find")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["candidates"] == []
+    assert "nothing to search" in body["note"]
+
+
+def test_find_contacts_still_searches_for_a_gig_with_a_recovered_client(client, cfg) -> None:
+    job_id = _anonymous_upwork_job(cfg)
+    with session_scope(cfg.db_path) as session:
+        job = session.get(Job, job_id)
+        real = Company(name="Northquill", normalized_name="northquill")
+        session.add(real)
+        session.flush()
+        job.company_id = real.id
+
+    client.app.state.outreach_sender = FakeSenderWithClient([
+        {"name": "Sam Lee", "headline": "Founder", "profile_url": "https://www.linkedin.com/in/sam"},
+    ])
+    body = client.post(f"/api/outreach/{job_id}/find").json()
+    assert [c["full_name"] for c in body["candidates"]] == ["Sam Lee"]
+    assert body["note"] is None
+
+
 def test_find_contacts_on_an_unknown_job_is_a_404(client) -> None:
     assert client.post("/api/outreach/9999/find").status_code == 404
 
