@@ -214,6 +214,31 @@ def _client_company(detail_node: dict) -> dict[str, Any]:
     return _as_dict(detail_node.get("clientCompanyPublic"))
 
 
+def _country_name(*candidates: Any) -> str:
+    """The first candidate that yields a country name, as a plain string.
+
+    `clientCompanyPublic.country` is an object, not the string this module
+    originally assumed - `{"name": "United States", "region": "", ...}` - while
+    the search result's `client.country` really is a bare string. Both reach
+    here, and handing the object to `norm.country_code` raised an
+    `AttributeError` that `normalize`'s per-result guard swallowed whole: the
+    posting was dropped, and dropped *only* when its detail fetch had
+    succeeded, which is the opposite of the intent.
+
+    Anything that is neither a string nor an object with a usable `name` is
+    treated as no answer, so a shape not seen yet costs a country rather than
+    a job.
+    """
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        if isinstance(candidate, dict):
+            name = candidate.get("name")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+    return ""
+
+
 def _salary(
     item: dict, detail_node: dict, job_type: str
 ) -> tuple[float | None, float | None, str | None, bool]:
@@ -282,7 +307,7 @@ def _trailer(item: dict, client_company: dict) -> str:
     stats = _as_dict(item.get("client"))
 
     client_bits = [
-        client_company.get("country") or stats.get("country") or "unknown country",
+        _country_name(client_company.get("country"), stats.get("country")) or "unknown country",
         f"{stats.get('total_hires')} hires" if stats.get("total_hires") is not None else "hires unknown",
         f"{stats.get('total_spent')} spent" if stats.get("total_spent") is not None else "spend unknown",
         f"{stats.get('rating')} rating" if stats.get("rating") is not None else "rating unknown",
@@ -652,6 +677,17 @@ class UpworkAdapter(HttpAdapter):
                 try:
                     posting = self._normalize_one(item, ref, details)
                 except Exception:
+                    # Isolating one bad result is right; doing it silently is
+                    # not. A dict where a string was expected in
+                    # `clientCompanyPublic.country` discarded every posting
+                    # whose detail had been fetched, across two runs, and left
+                    # nothing behind to say so - the count simply came up one
+                    # short against a payload nobody re-reads.
+                    log.warning(
+                        "upwork: dropping result %r from %r",
+                        (item or {}).get("id") if isinstance(item, dict) else item,
+                        ref.token, exc_info=True,
+                    )
                     continue
                 if posting is not None:
                     yield posting
@@ -704,8 +740,10 @@ class UpworkAdapter(HttpAdapter):
 
         # The client's country, not a work location - every Upwork gig is remote,
         # so this answers "where is the client based", never "where must I be".
-        country_name = client_company.get("country") or _as_dict(item.get("client")).get("country")
-        country = norm.country_code(country_name)
+        country_name = _country_name(
+            client_company.get("country"), _as_dict(item.get("client")).get("country")
+        )
+        country = norm.country_code(country_name) if country_name else None
 
         # The API never exposes a company name (see the module docstring); this
         # is the only place one can come from. The domain wins when both are

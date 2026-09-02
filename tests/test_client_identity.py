@@ -147,3 +147,24 @@ def test_a_real_client_domain_still_wins_over_the_stack_it_names() -> None:
         "our data lives in supabase.com."
     )
     assert detect("RAG engineer", text).domain == "northquill.ai"
+
+
+def test_a_www_prefix_is_never_the_company_name() -> None:
+    """Live: "www.cb-holistictherapy.ie" became the company "Www". Two faults at
+    once - the `www.` label was treated as the name, and `.ie` was not a TLD this
+    module knew, so it fell back to the first label instead of the last-but-one."""
+    assert name_from_domain("www.cb-holistictherapy.ie") == "Cb Holistictherapy"
+
+
+def test_an_unlisted_tld_still_yields_the_name_before_it() -> None:
+    assert name_from_domain("northquill.se") == "Northquill"
+
+
+def test_a_two_part_public_suffix_is_not_mistaken_for_the_name() -> None:
+    """The reason the TLD set exists: naively taking the last-but-one label
+    would call this company "Co"."""
+    assert name_from_domain("acme-labs.co.uk") == "Acme Labs"
+
+
+def test_a_bare_single_label_is_returned_as_is() -> None:
+    assert name_from_domain("acme") == "Acme"

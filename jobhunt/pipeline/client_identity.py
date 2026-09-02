@@ -426,6 +426,11 @@ def name_from_domain(domain: str) -> str:
     "Northquill" than as the raw hostname, and "acme-labs.io" as "Acme Labs".
     """
     labels = domain.split(".")
+    # "www" is never anyone's name. Dropped before the fallback below picks the
+    # first label, which is what turned "www.cb-holistictherapy.ie" into the
+    # company "Www" on a live run.
+    if len(labels) > 1 and labels[0].lower() == "www":
+        labels = labels[1:]
     core = labels[-2] if len(labels) >= 2 and labels[-1] in _KNOWN_TLDS else labels[0]
     words = re.split(r"[-_]+", core)
     return " ".join(word.capitalize() for word in words if word) or domain

@@ -464,3 +464,35 @@ def test_a_fetch_whose_retry_is_also_lossy_keeps_what_it_got(cfg, monkeypatch) -
     envelope = UpworkAdapter(config=cfg).fetch(_ref(), None)
 
     assert len(envelope["pages"][0]["results"]) == 1
+
+
+def test_a_client_country_object_does_not_lose_the_job() -> None:
+    """`clientCompanyPublic.country` is an object, not the string the module
+    docstring claimed: `{"name": "United States", "region": "", ...}`. It reached
+    `norm.country_code`, which called `.strip()` on a dict, and `normalize`'s
+    per-result `except Exception` swallowed it - so a posting was dropped for the
+    sole reason that its detail fetch had succeeded. Seen live: 19 of 20 results
+    stored, the missing one being the only one with a detail."""
+    details = {"1": {
+        "content": {"title": "t", "description": "the full body " * 20},
+        "clientCompanyPublic": {"country": {"name": "United States", "region": ""}, "state": "FL"},
+    }}
+    postings = list(UpworkAdapter().normalize(_envelope(details), _ref()))
+
+    assert len(postings) == 1
+    assert postings[0].country == "US"
+    assert postings[0].jd_completeness == "full"
+
+
+def test_a_client_country_string_still_works() -> None:
+    details = {"1": {"content": {"title": "t", "description": "body " * 40},
+                     "clientCompanyPublic": {"country": "Germany"}}}
+    assert next(UpworkAdapter().normalize(_envelope(details), _ref())).country == "DE"
+
+
+def test_an_unusable_client_country_is_simply_unknown() -> None:
+    details = {"1": {"content": {"title": "t", "description": "body " * 40},
+                     "clientCompanyPublic": {"country": {"region": "EMEA"}}}}
+    posting = next(UpworkAdapter().normalize(_envelope(details), _ref()))
+    assert posting.country is None
+    assert posting.jd_completeness == "full"
