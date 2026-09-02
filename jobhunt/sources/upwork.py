@@ -29,8 +29,9 @@ document, nested under `data.marketplaceJobPosting`:
   the search-level `budget` directly; no detail is needed for it.
 - `data.marketplaceJobPosting.clientCompanyPublic` carries `country`, `state`
   and `timezone` - and no company name. That is why `company_name` falls back
-  to a constant here; Task 8 extracts a real identity from the description
-  text. It appears only in the detail document, never on a search result.
+  to a constant here unless `client_identity.detect` recovers a real one from
+  the description text. It appears only in the detail document, never on a
+  search result.
 
 Upwork's `experience_level` (`ENTRY_LEVEL`/`INTERMEDIATE`/`EXPERT`) rates the
 *contract's* difficulty, not the freelancer's career stage, so it is never
@@ -56,6 +57,7 @@ from jobhunt import preferences as preferences_module
 from jobhunt.config import Config
 from jobhunt.db.models import utcnow
 from jobhunt.pipeline import normalize as norm
+from jobhunt.pipeline.client_identity import detect as detect_client_identity
 from jobhunt.sources import upwork_query as query
 from jobhunt.sources.base import BoardRef, HttpAdapter, JobPosting
 from jobhunt.sources.upwork_guard import FetchBudget
@@ -563,12 +565,20 @@ class UpworkAdapter(HttpAdapter):
         country_name = client_company.get("country") or _as_dict(item.get("client")).get("country")
         country = norm.country_code(country_name)
 
+        # The API never exposes a company name (see the module docstring); this
+        # is the only place one can come from. A found domain or company name
+        # replaces the placeholder - the placeholder itself is the safe
+        # fallback for the description not naming anyone identifiable.
+        identity = detect_client_identity(title, description_text)
+        company_name = identity.company_name or identity.domain or COMPANY_NAME_PLACEHOLDER
+
         return JobPosting(
             source=self.source_id,
             external_id=external_id,
             market=ref.market,
             title=title,
-            company_name=COMPANY_NAME_PLACEHOLDER,
+            company_name=company_name,
+            company_domain=identity.domain,
             location_raw="Remote",
             country=country,
             remote_type="remote",
