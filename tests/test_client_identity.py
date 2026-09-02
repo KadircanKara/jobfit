@@ -168,3 +168,68 @@ def test_a_two_part_public_suffix_is_not_mistaken_for_the_name() -> None:
 
 def test_a_bare_single_label_is_returned_as_is() -> None:
     assert name_from_domain("acme") == "Acme"
+
+
+# --- the product a client wants built -----------------------------------------
+
+
+def test_a_product_the_client_wants_built_is_a_company_lead() -> None:
+    """Verbatim from a live posting. The client is anonymous, and this sentence
+    is the only thing in 1,500 words that names anyone."""
+    identity = detect(
+        "Build Nexora AI Operations Hub – A Multi-Agent AI Business Operations System",
+        "We are looking to build Nexora AI Operations Hub, a multi-agent AI business "
+        "operations platform designed to intelligently automate complex processes.",
+    )
+    assert identity.company_name == "Nexora"
+
+
+def test_the_product_name_is_trimmed_to_what_can_actually_be_searched() -> None:
+    """Measured against LinkedIn: "Nexora AI Operations Hub" returned nobody at
+    Nexora, "Nexora AI" two people, "Nexora" four. The descriptive tail is what
+    the client is building, not what anyone puts in their headline."""
+    identity = detect("t", "We are building Aurora Data Platform, a warehouse tool.")
+    assert identity.company_name == "Aurora"
+
+
+def test_a_generic_thing_to_build_is_not_a_name() -> None:
+    identity = detect("t", "We are looking to build a multi-agent AI platform for ops.")
+    assert identity.company_name is None
+
+
+def test_a_stated_company_is_not_trimmed() -> None:
+    """Trimming is for a product description. A company that introduces itself
+    said its own name, and dropping half of it would be inventing a new one."""
+    identity = detect("t", "We're Northquill Labs, and we need a backend engineer.")
+    assert identity.company_name == "Northquill Labs"
+
+
+def test_a_stated_company_still_outranks_a_product_name() -> None:
+    identity = detect(
+        "t",
+        "We are looking to build Nexora Hub, a platform. Our company, Vantage Systems, "
+        "has been at this for years.",
+    )
+    assert identity.company_name == "Vantage Systems"
+
+
+def test_a_domain_still_outranks_a_product_name() -> None:
+    identity = detect("t", "We are building Nexora Hub, a platform. See northquill.ai for us.")
+    assert identity.domain == "northquill.ai"
+
+
+def test_a_product_name_that_is_only_a_generic_word_is_rejected() -> None:
+    assert detect("t", "We are building Platform Hub, a tool.").company_name is None
+
+
+def test_a_sentence_initial_introduction_is_matched() -> None:
+    """These patterns were anchored to lowercase lead-ins, so the form a posting
+    actually opens with - "We're Acme," at the start of a sentence - never
+    matched, while the mid-sentence "we're Acme," did."""
+    assert detect("t", "We're Northquill, and we need help.").company_name == "Northquill"
+    assert detect("t", "Our company, Vantage, is hiring.").company_name == "Vantage"
+    assert detect("t", "I'm Sarah, founder of Northquill.").company_name == "Northquill"
+
+
+def test_the_lowercase_forms_still_match() -> None:
+    assert detect("t", "Hi, we're Northquill, and we need help.").company_name == "Northquill"

@@ -206,13 +206,63 @@ _SENTENCE_START = r"(?:^|[.!?\n])\s*"
 # A company name that introduces itself, strongest first. Matched against the
 # original-cased text (not lowercased) so the captured group keeps the case
 # the client wrote it in.
+# The lead-in words are matched case-insensitively with an inline `(?i:...)`
+# group, the same way `_PERSON_PATTERNS` scopes "this is" below. Without it
+# these patterns only ever fired mid-sentence: "We're Acme" and "Our company,
+# Acme," - which is how a posting actually opens - never matched at all, while
+# "we're Acme" did. The capture itself stays case-sensitive on purpose, so the
+# `[A-Z]` anchor still separates a name from ordinary prose and the captured
+# group keeps the case the client wrote.
 _COMPANY_PATTERNS = [
-    re.compile(r"\bproduct called ([A-Z][\w.&' -]{1,40}?)\b[.,]"),
-    re.compile(r"\bour (?:company|startup|business),?\s+([A-Z][\w.&' -]{1,40}?),"),
-    re.compile(r"\bwe['’]re\s+([A-Z][\w.&' -]{1,40}?)[,.]"),
-    re.compile(_SENTENCE_START + r"([A-Z][\w.&' -]{1,40}?)\s+is looking for\b"),
-    re.compile(_SENTENCE_START + r"([A-Z][\w.&' -]{1,40}?)\s+is hiring\b"),
+    re.compile(r"(?i:\bproduct called )([A-Z][\w.&' -]{1,40}?)\b[.,]"),
+    re.compile(r"(?i:\bour (?:company|startup|business),?\s+)([A-Z][\w.&' -]{1,40}?),"),
+    re.compile(r"(?i:\bwe['’]re\s+)([A-Z][\w.&' -]{1,40}?)[,.]"),
+    re.compile(_SENTENCE_START + r"([A-Z][\w.&' -]{1,40}?)\s+(?i:is looking for)\b"),
+    re.compile(_SENTENCE_START + r"([A-Z][\w.&' -]{1,40}?)\s+(?i:is hiring)\b"),
 ]
+
+# The thing the client says they want built. Weaker than every pattern above,
+# and read only when they all come back empty: an anonymous client who names
+# nothing else will still name the product, and on a corpus where the company
+# is recovered for roughly one posting in six, that sentence is often the only
+# lead there is. Weak because a product that does not exist yet frequently has
+# no company behind it - which is why this feeds the reviewed candidate list in
+# the drawer and never an address to send to.
+_PRODUCT_PATTERNS = [
+    re.compile(r"(?i:\b(?:looking to build|we are building|we['’]re building)\s+"
+               r"(?:the\s+)?)([A-Z][\w.&' -]{1,40}?)\s*[,.]"),
+]
+
+# Words that describe what a thing *is*, not what it is called. A product name
+# is written as "<name> <what it does>" - "Nexora AI Operations Hub", "Aurora
+# Data Platform" - and only the leading part is what anyone puts in a LinkedIn
+# headline. Measured against the live search: the full "Nexora AI Operations
+# Hub" returned nobody at Nexora, "Nexora AI" two people, and "Nexora" four.
+_PRODUCT_NOUNS = frozenset({
+    "ai", "ml", "api", "app", "application", "assistant", "automation", "bot",
+    "cloud", "crm", "dashboard", "data", "engine", "erp", "gateway", "hub",
+    "intelligence", "manager", "operations", "ops", "pipeline", "platform",
+    "portal", "saas", "service", "services", "software", "solution",
+    "solutions", "suite", "system", "systems", "tool", "toolkit", "workflow",
+})
+
+
+def _trim_product_name(name: str) -> str | None:
+    """The leading proper part of a product name, or None if there is none.
+
+    Everything from the first descriptive word onward is dropped, because that
+    tail describes the thing rather than naming it and no employee's headline
+    carries it. At least one word must survive, and it must not itself be a
+    descriptive word - "Platform Hub" names nothing and searching for it would
+    return whoever LinkedIn thinks "Platform" means.
+    """
+    kept: list[str] = []
+    for word in name.split():
+        if word.strip(".,&'-").lower() in _PRODUCT_NOUNS:
+            break
+        kept.append(word)
+    return " ".join(kept) if kept else None
+
 
 # Someone introducing themselves by name and, usually, their company. "This
 # is" is scoped case-insensitive with an inline group (`(?i:...)`) rather
@@ -222,7 +272,7 @@ _COMPANY_PATTERNS = [
 # unrelated lowercase prose.
 _PERSON_PATTERNS = [
     re.compile(
-        r"\bI['’]m\s+([A-Z][a-z]+),?\s+(?:the\s+)?founder of\s+([A-Z][\w.&' -]{1,40}?)[.,]"
+        r"(?i:\bI['’]m\s+)([A-Z][a-z]+),?\s+(?i:(?:the\s+)?founder of\s+)([A-Z][\w.&' -]{1,40}?)[.,]"
     ),
     re.compile(
         r"(?i:this is)\s+([A-Z][a-z]+)\s+from\s+([A-Z][\w.&' -]{1,40}?)[.,]"
@@ -281,11 +331,29 @@ def detect(title: str, description: str | None) -> Identity:
 
     if person_company and not company_name:
         company_name = person_company
+    if not company_name:
+        # Last, and only when nothing stated a company: a product name is a
+        # lead, not an assertion about who the client is.
+        company_name = _find_product(window)
 
     if domain is None and company_name is None:
         return _NOTHING
 
     return Identity(domain=domain, company_name=company_name)
+
+
+def _find_product(window: str) -> str | None:
+    """A product the client says they want built, trimmed to its name."""
+    for pattern in _PRODUCT_PATTERNS:
+        for match in pattern.finditer(window):
+            captured = _clean_name(match.group(1))
+            if captured is None:
+                continue
+            trimmed = _trim_product_name(captured)
+            if trimmed is None or _is_noise_name(trimmed):
+                continue
+            return trimmed
+    return None
 
 
 def _find_domain(window: str) -> str | None:
