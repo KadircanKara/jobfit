@@ -101,9 +101,16 @@ def test_the_upwork_pitch_fits_a_dm(cfg) -> None:
 
 
 def test_the_upwork_note_fits_a_connection_request(cfg) -> None:
-    """invite_note carries a 300 character cap; the long pitch does not fit untruncated."""
-    body = drafts.template(_upwork_job("A" * 120), contact(), provider.INVITE_NOTE, config=cfg)
+    """invite_note carries a 300 character cap; a title this long forces truncation.
+
+    120 "A"s fits inside the fixed prefix/suffix untouched - it does not exercise
+    `_truncated_title` at all. 250 does, and the fixed ask must survive verbatim:
+    truncating the ask instead of the title would still fit the limit while
+    destroying the message.
+    """
+    body = drafts.template(_upwork_job("A" * 250), contact(), provider.INVITE_NOTE, config=cfg)
     assert not drafts.over_limit(body, provider.INVITE_NOTE)
+    assert "would love to connect about it." in body
 
 
 def test_upwork_template_without_config_still_works() -> None:

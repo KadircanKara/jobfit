@@ -94,6 +94,9 @@ def _upwork_pitch(job: Job, contact: Contact, config: Config | None) -> str:
         if rate
         else "I am available on short notice.\n\n"
     )
+    # "the best and fastest service" is verbatim from the user's own message, which
+    # they sent successfully - this is the model we're reproducing, not stock sales
+    # copy to clean up. Leave it as their own words.
     return (
         f"Hi {_first_name(contact)},\n\n"
         f'I hope everything is fine. I am writing to you for "{job.title}" that you shared on Upwork. '
