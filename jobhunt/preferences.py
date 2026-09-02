@@ -89,7 +89,12 @@ class UpworkPreferences:
     workload: list[str] = dataclasses.field(default_factory=list)
     proposals_max: int | None = None
     client_min_hires: int | None = None
-    max_pages: int = 3
+    # Two pages of 10, not three: every result on every page is echoed back
+    # verbatim through the fetch prompt, so a page is output tokens the model
+    # retypes, not a cheap extra request. See DETAIL_BUDGET in sources/upwork.py
+    # for the measurement. Recency-sorted, page three is also the least likely
+    # to hold anything the cutoff has not already excluded.
+    max_pages: int = 2
 
 
 @dataclasses.dataclass
@@ -270,7 +275,7 @@ def _apply_upwork(target: UpworkPreferences, name: str, value: str) -> None:
     elif name == "client_min_hires":
         target.client_min_hires = None if blank else int(_number(value))
     elif name == "max_pages":
-        target.max_pages = 3 if blank else int(_number(value))
+        target.max_pages = 2 if blank else int(_number(value))
 
 
 def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:

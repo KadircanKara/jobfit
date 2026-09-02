@@ -238,8 +238,23 @@ def build_pipeline(config: Config, state: AppState) -> Any:
         if state.supervisor is not None:
             state.supervisor.state.rank = report
 
+    def on_degraded(source: str, detail: str | None) -> None:
+        # A source that finished without doing the job. It reaches the same
+        # `degraded` list an unreachable source lands in, so the page shows one
+        # notion of "this run is not what it looks like" rather than two.
+        if state.supervisor is not None:
+            if source not in state.supervisor.state.degraded:
+                state.supervisor.state.degraded.append(source)
+        state.log.emit(
+            phase="sync",
+            source=source,
+            message=f"{source} finished degraded · {detail or 'no detail'}",
+            level="warning",
+        )
+
     pipeline.on_board = on_board
     pipeline.on_rank = on_rank
+    pipeline.on_degraded = on_degraded
     pipeline.should_stop = lambda: bool(state.supervisor and state.supervisor.stopping)
     return pipeline
 

@@ -94,13 +94,29 @@ KNOWN_IDS_LIMIT = 500
 # the same agent turn, not a separate Connect-spending action - the cap exists
 # to keep one turn's tool calls bounded, the same reasoning as PAGE_SIZE in
 # upwork_query.py, not to protect anything scarce on Upwork's side.
-DETAIL_BUDGET = 10
+#
+# What actually binds is not the calls but what they force into the *answer*:
+# the prompt asks for every detail document back verbatim, so each one is
+# thousands of output tokens the model has to retype. Measured at 10 details
+# over 3 pages, a single ref took 335s and 36k output tokens - past the 300s
+# this module allowed at the time, so every ref of the first real run died at
+# the timeout with the work essentially done. Halving the transcript is what
+# keeps a ref comfortably inside the window; the timeout below is the backstop,
+# not the fix.
+DETAIL_BUDGET = 6
 
 # Well under agent.DEFAULT_TIMEOUT (1800s): a hung MCP call must not block a
 # nightly run for half an hour, twice over. Worst case per ref is now two
-# attempts at this timeout each - 600s total - since a hang on the first
+# attempts at this timeout each - 1800s total - since a hang on the first
 # attempt still pays for a retry rather than escaping the loop early.
-FETCH_TIMEOUT_SECONDS = 300.0
+#
+# 300s was too tight to be a backstop: a healthy ref measured 335s, so the
+# timeout was firing on success rather than on hangs, and three of those in a
+# row tripped the circuit breaker and took out a whole run. This is sized for
+# what a *working* fetch costs - the transcription is the slow part, and it
+# scales with DETAIL_BUDGET above - leaving the timeout to catch the thing it
+# was meant to catch.
+FETCH_TIMEOUT_SECONDS = 900.0
 
 _PROMPT_RELATIVE = pathlib.Path("prompts/upwork_fetch.md")
 _PACKAGED_PROMPT = pathlib.Path(__file__).resolve().parent.parent / "assets" / _PROMPT_RELATIVE

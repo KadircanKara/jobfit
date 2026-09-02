@@ -5,6 +5,8 @@ engine keeps its own vocabulary rather than growing web concepts.
 """
 from __future__ import annotations
 
+import pytest
+
 from jobhunt import preferences as prefs_module
 from jobhunt import sources as source_registry
 from jobhunt.web import engine as engine_module
@@ -76,6 +78,57 @@ def test_a_degraded_source_comes_back_as_a_failure_rather_than_an_exception(cfg,
     result = pipeline.fetch_source("greenhouse")
 
     assert result.status == "degraded"
+
+
+def test_a_failed_source_raises_out_of_fetch_board(cfg, monkeypatch):
+    """`sync_source` reports "failed", never "error" - the string the guard used
+    to compare against. While it did, every hard failure returned a job count
+    like a healthy fetch, and the run finished `completed` with nothing in it.
+    That is exactly how a whole Upwork run of fetch timeouts reported clean."""
+    monkeypatch.setattr(
+        engine_module.sync, "sync_source",
+        lambda config, source, **kw: _failed_result(source),
+    )
+    pipeline = engine_module.EnginePipeline(cfg)
+
+    with pytest.raises(RuntimeError, match="everything timed out"):
+        pipeline.fetch_board("upwork", "upwork")
+
+
+def test_a_degraded_source_is_announced_rather_than_swallowed(cfg, monkeypatch):
+    """Degraded fetched something, so it must not raise and lose the count - but
+    the run has to hear about it, or a half-empty sync reads as a whole one."""
+    monkeypatch.setattr(
+        engine_module.sync, "sync_source",
+        lambda config, source, **kw: _degraded_result(source),
+    )
+    pipeline = engine_module.EnginePipeline(cfg)
+    heard = []
+    pipeline.on_degraded = lambda source, detail: heard.append((source, detail))
+
+    assert pipeline.fetch_board("greenhouse", "greenhouse") == 0
+    assert heard == [("greenhouse", "boom")]
+
+
+def test_a_healthy_source_announces_nothing(cfg, monkeypatch):
+    monkeypatch.setattr(
+        engine_module.sync, "sync_source",
+        lambda config, source, **kw: _blank_result(source),
+    )
+    pipeline = engine_module.EnginePipeline(cfg)
+    heard = []
+    pipeline.on_degraded = lambda source, detail: heard.append(source)
+
+    pipeline.fetch_board("greenhouse", "greenhouse")
+
+    assert heard == []
+
+
+def _failed_result(source):
+    result = _blank_result(source)
+    result.status = "failed"
+    result.error_detail = "everything timed out"
+    return result
 
 
 def _blank_result(source):

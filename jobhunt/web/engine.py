@@ -33,6 +33,9 @@ class EnginePipeline:
         self.config = config
         self.gate_runner = gate or Gate(config=config)
         self.on_board: Callable[[str, int, int, str], None] | None = None
+        # Called when a source finished but did not do the whole job. Separate
+        # from an exception because a degraded source still returns a count.
+        self.on_degraded: Callable[[str, str | None], None] | None = None
         # Called with a partial RankReport while stage 1 runs, so a pass over
         # thousands of jobs is not a blank panel until it finishes.
         self.on_rank: Callable[[RankReport], None] | None = None
@@ -75,8 +78,17 @@ class EnginePipeline:
 
     def fetch_board(self, source: str, board: str) -> int:
         result = self.fetch_source(source)
-        if result.status == "error":
+        # "failed" and "degraded" are the words `sync_source` actually uses.
+        # This compared against "error", which it never sets, so every failure
+        # returned a job count like a healthy fetch: an Upwork run whose every
+        # ref timed out finished `completed` with an empty shortlist and no
+        # indication anything had gone wrong.
+        if result.status == "failed":
             raise RuntimeError(result.error_detail or f"{source} failed")
+        if result.status == "degraded" and self.on_degraded:
+            # Degraded fetched *something*, so raising would throw away a real
+            # count over a partial problem. It still has to be said out loud.
+            self.on_degraded(source, result.error_detail)
         return result.new + result.updated
 
     def rank(self) -> RankReport:
