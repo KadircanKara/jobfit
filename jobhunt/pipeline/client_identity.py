@@ -21,12 +21,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# Only the first 4000 characters, mirroring `_haystack` in
-# jobhunt/rank/deterministic.py:129 - a client who names themselves does it
-# in the opening pitch ("Hi, I'm ... founder of ..."), and the tail of a long
-# posting is boilerplate (application instructions, screening questions,
-# Upwork's own footer text) where a stray domain or name is far more likely
-# to belong to a tool, a competitor, or Upwork itself than to the client.
+# Only the first 4000 characters of title + description, mirroring `_haystack`
+# in jobhunt/rank/deterministic.py:129 - a client who names themselves does it
+# in the opening pitch ("Hi, I'm ... founder of ...") or the title itself (a
+# product-named title like "Northquill.ai saas repair" is common and free to
+# read), and the tail of a long posting is boilerplate (application
+# instructions, screening questions, Upwork's own footer text) where a stray
+# domain or name is far more likely to belong to a tool, a competitor, or
+# Upwork itself than to the client.
 _SCAN_WINDOW = 4000
 
 # Domains a job description legitimately mentions that are never the client:
@@ -102,6 +104,15 @@ _FREEMAIL_DOMAINS = frozenset({
     "protonmail.com", "aol.com", "live.com", "msn.com",
 })
 
+# A sentence boundary a subject-first pattern ("X is looking for") may start
+# right after: absolute string start, a run's own newline, or the end of the
+# previous sentence (optionally followed by whitespace/indentation). Without
+# this, an unanchored `^` (or one anchored only to the true start of the
+# whole string) captures everything back to position zero the first time the
+# phrase appears anywhere but the very first sentence - two sentences
+# squashed into one "name".
+_SENTENCE_START = r"(?:^|[.!?\n])\s*"
+
 # A company name that introduces itself, strongest first. Matched against the
 # original-cased text (not lowercased) so the captured group keeps the case
 # the client wrote it in.
@@ -109,17 +120,22 @@ _COMPANY_PATTERNS = [
     re.compile(r"\bproduct called ([A-Z][\w.&' -]{1,40}?)\b[.,]"),
     re.compile(r"\bour (?:company|startup|business),?\s+([A-Z][\w.&' -]{1,40}?),"),
     re.compile(r"\bwe['’]re\s+([A-Z][\w.&' -]{1,40}?)[,.]"),
-    re.compile(r"^([A-Z][\w.&' -]{1,40}?)\s+is looking for\b", re.MULTILINE),
-    re.compile(r"^([A-Z][\w.&' -]{1,40}?)\s+is hiring\b", re.MULTILINE),
+    re.compile(_SENTENCE_START + r"([A-Z][\w.&' -]{1,40}?)\s+is looking for\b"),
+    re.compile(_SENTENCE_START + r"([A-Z][\w.&' -]{1,40}?)\s+is hiring\b"),
 ]
 
-# Someone introducing themselves by name and, usually, their company.
+# Someone introducing themselves by name and, usually, their company. "This
+# is" is scoped case-insensitive with an inline group (`(?i:...)`) rather
+# than flagging the whole pattern - a sentence genuinely starting "This is
+# Alex..." is exactly as valid a signal as "this is Alex...", but the name
+# captures themselves must stay capitalised or the pattern would also fire on
+# unrelated lowercase prose.
 _PERSON_PATTERNS = [
     re.compile(
         r"\bI['’]m\s+([A-Z][a-z]+),?\s+(?:the\s+)?founder of\s+([A-Z][\w.&' -]{1,40}?)[.,]"
     ),
     re.compile(
-        r"\bthis is\s+([A-Z][a-z]+)\s+from\s+([A-Z][\w.&' -]{1,40}?)[.,]"
+        r"(?i:this is)\s+([A-Z][a-z]+)\s+from\s+([A-Z][\w.&' -]{1,40}?)[.,]"
     ),
 ]
 
@@ -128,6 +144,13 @@ _PERSON_PATTERNS = [
 _GENERIC_SUBJECTS = frozenset({
     "i", "we", "this", "our team", "our client", "the client", "the company",
 })
+
+# A captured name that needs a full stop is not a name - it is two sentences
+# an unanchored regex glued together. Real company and person names are also
+# short: a handful of words at most.
+_MAX_NAME_CHARS = 60
+_MAX_NAME_WORDS = 6
+_SENTENCE_BREAK_RE = re.compile(r"[.!?\n]")
 
 
 @dataclass(frozen=True)
@@ -152,7 +175,7 @@ def detect(title: str, description: str | None) -> Identity:
     clears the noise list.
     """
     text = description or ""
-    window = text[:_SCAN_WINDOW]
+    window = f"{title}\n{text}"[:_SCAN_WINDOW]
 
     domain = _find_domain(window)
     company_name = _find_company(window)
@@ -186,27 +209,57 @@ def _is_noise_domain(domain: str) -> bool:
     return any(domain == host or domain.endswith(f".{host}") for host in _NOISE_DOMAINS)
 
 
+def _brand(domain: str) -> str:
+    """The brand label out of a noise domain - "zoom" out of "zoom.us"."""
+    labels = domain.split(".")
+    return labels[-2] if len(labels) >= 2 else labels[0]
+
+
+# The same noise list, but for company/person captures: "Zoom", "zoom" and
+# "zoom.us" must all be recognised as the same noise entry. A posting saying
+# "this is Alex from Zoom, we want a Zoom plugin" is naming an integration
+# target, not the client - the domain noise list alone would miss this
+# entirely, since no domain-shaped string ever appears in that sentence.
+_NOISE_BRANDS = frozenset(_brand(host) for host in _NOISE_DOMAINS)
+
+
+def _is_noise_name(name: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", name.lower())
+    return normalized in _NOISE_BRANDS
+
+
+def _plausible_name(name: str) -> bool:
+    if not name or len(name) > _MAX_NAME_CHARS:
+        return False
+    if len(name.split()) > _MAX_NAME_WORDS:
+        return False
+    return not _SENTENCE_BREAK_RE.search(name)
+
+
+def _valid_company_name(name: str) -> bool:
+    if name.lower() in _GENERIC_SUBJECTS:
+        return False
+    if not _plausible_name(name):
+        return False
+    return not _is_noise_name(name)
+
+
 def _find_company(window: str) -> str | None:
     for pattern in _COMPANY_PATTERNS:
-        match = pattern.search(window)
-        if not match:
-            continue
-        name = _clean_name(match.group(1))
-        if name and name.lower() not in _GENERIC_SUBJECTS:
-            return name
+        for match in pattern.finditer(window):
+            name = _clean_name(match.group(1))
+            if name and _valid_company_name(name):
+                return name
     return None
 
 
 def _find_person(window: str) -> tuple[str | None, str | None]:
     for pattern in _PERSON_PATTERNS:
-        match = pattern.search(window)
-        if not match:
-            continue
-        person = match.group(1).strip()
-        company = _clean_name(match.group(2))
-        if company and company.lower() in _GENERIC_SUBJECTS:
-            company = None
-        return person, company
+        for match in pattern.finditer(window):
+            person = match.group(1).strip()
+            company_raw = _clean_name(match.group(2))
+            company = company_raw if company_raw and _valid_company_name(company_raw) else None
+            return person, company
     return None, None
 
 

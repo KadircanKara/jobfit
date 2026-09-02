@@ -566,11 +566,14 @@ class UpworkAdapter(HttpAdapter):
         country = norm.country_code(country_name)
 
         # The API never exposes a company name (see the module docstring); this
-        # is the only place one can come from. A found domain or company name
-        # replaces the placeholder - the placeholder itself is the safe
-        # fallback for the description not naming anyone identifiable.
+        # is the only place one can come from. The domain wins when both are
+        # found - it is nearly unfakeable, while `discovery.search_company`
+        # (the only consumer of `company_name`; `company_domain` is used only
+        # for dedup in `store.get_or_create_company`) takes just this string,
+        # so the weaker signal must never be what actually drives the search.
+        # A domain alone is still a fine, searchable name on its own.
         identity = detect_client_identity(title, description_text)
-        company_name = identity.company_name or identity.domain or COMPANY_NAME_PLACEHOLDER
+        company_name = identity.domain or identity.company_name or COMPANY_NAME_PLACEHOLDER
 
         return JobPosting(
             source=self.source_id,
