@@ -19,6 +19,7 @@ nothing, never to guess.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 # Only the first 4000 characters of title + description, mirroring `_haystack`
@@ -37,6 +38,14 @@ _SCAN_WINDOW = 4000
 # corpus (github.com and docs.google.com are named constantly - as the repo
 # to work in or the doc to read, never as the client), so this list is the
 # difference between the extractor being useful and being actively harmful.
+#
+# Several of these brands (monday, medium, notion, apple, asana, loom) are
+# also common English words, which means a real client legitimately named
+# "Apple Valley Farms" or "Monday Morning Studio" will be silently rejected
+# by the word-level check below (`_is_noise_name`). That trade is deliberate,
+# not an oversight: a miss here costs one job no outreach; a false positive
+# sends a real LinkedIn message to a stranger at Apple. Do not narrow this
+# list to recover those names without weighing that trade again.
 _NOISE_DOMAINS = frozenset({
     "upwork.com",
     "www.upwork.com",
@@ -220,30 +229,46 @@ def _brand(domain: str) -> str:
 # "this is Alex from Zoom, we want a Zoom plugin" is naming an integration
 # target, not the client - the domain noise list alone would miss this
 # entirely, since no domain-shaped string ever appears in that sentence.
-_NOISE_BRANDS = frozenset(_brand(host) for host in _NOISE_DOMAINS)
+#
+# "x" (from x.com) is dropped on purpose: kept, it would reject any company
+# name containing a standalone "X" token ("X Corp", "Acme X"), which is a
+# far more likely real name than a stray mention of x.com typed as bare "X".
+# The domain itself is still caught separately by `_is_noise_domain`.
+_NOISE_BRANDS = frozenset(_brand(host) for host in _NOISE_DOMAINS) - {"x"}
 
 
-def _normalize_word(word: str) -> str:
-    """Lowercase, drop punctuation, and collapse a domain-shaped word to its
-    brand label - "zoom.us," and "Zoom" both become "zoom" - so the same
-    comparison recognises the brand whether it shows up bare, capitalised, or
-    written as its own domain inside a captured name.
+def _tokenize(name: str) -> list[str]:
+    """Split a captured name into brand-comparable tokens.
+
+    Splitting on a run of non-alphanumeric characters, rather than deleting
+    them in place, is what makes "Zoom-Labs" tokenize to ["zoom", "labs"]
+    instead of collapsing to the single non-matching token "zoomlabs" - the
+    same fix separates a possessive ("Zoom's team" -> ["zoom", "s", "team"])
+    and a slash-joined pair. NFKC normalisation is applied first, which folds
+    a handful of Unicode compatibility variants (e.g. full-width Latin
+    letters) to their ordinary form; it does NOT defend against a genuine
+    homoglyph attack (a Cyrillic "о" in place of a Latin "o" has no NFKC
+    mapping to the Latin letter, since they are different letters in
+    different scripts, not the same letter in two forms) - that class of
+    spoofing is a known, accepted gap, not something this module claims to
+    close.
     """
-    lowered = re.sub(r"[^a-z0-9.]", "", word.lower())
-    return lowered.split(".")[0]
+    normalized = unicodedata.normalize("NFKC", name).lower()
+    return [token for token in re.split(r"[^a-z0-9]+", normalized) if token]
 
 
 def _is_noise_name(name: str) -> bool:
-    """True if ANY word in the name is a noise brand, not just the whole name.
+    """True if ANY token in the name is a noise brand, not just the whole name.
 
     A naive whole-string check lets "Zoom Inc", "The Zoom team" and "Slack
     app" straight through, because none of those strings equals "zoom" or
     "slack" exactly - but each of them is still naming the noise entity plus
-    one qualifier word. Checking word-by-word closes that gap without
-    rejecting real multi-word names: "Karma and Luck" and "Booz Allen
-    Hamilton" contain no word that is itself a noise brand.
+    one qualifier word. Checking token-by-token closes that gap without
+    rejecting real multi-word names: "Karma and Luck", "Booz Allen Hamilton"
+    and "Zoomer Labs" all survive, since none of their tokens - "zoomer" is
+    not "zoom" - is itself a noise brand.
     """
-    return any(_normalize_word(word) in _NOISE_BRANDS for word in name.split())
+    return any(token in _NOISE_BRANDS for token in _tokenize(name))
 
 
 def _plausible_name(name: str) -> bool:

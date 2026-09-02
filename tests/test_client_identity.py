@@ -108,3 +108,25 @@ def test_a_person_affiliated_with_a_noise_company_is_dropped_too() -> None:
 def test_name_from_domain_strips_the_tld_and_title_cases() -> None:
     assert name_from_domain("northquill.ai") == "Northquill"
     assert name_from_domain("acme-labs.io") == "Acme Labs"
+
+
+def test_a_hyphen_joined_noise_brand_is_rejected() -> None:
+    assert detect("x", "our company, Zoom-Labs, and we are hiring a dev").company_name is None
+
+
+def test_a_possessive_noise_brand_is_rejected() -> None:
+    assert detect("x", "The Zoom's team is looking for a contractor").company_name is None
+
+
+def test_a_slash_joined_noise_brand_is_rejected() -> None:
+    assert detect("x", "our company, Zoom/Labs, and we are hiring a dev").company_name is None
+
+
+def test_a_longer_word_sharing_a_prefix_with_a_brand_still_survives() -> None:
+    found = detect("x", "Zoomer Labs is looking for a contractor")
+    assert found.company_name == "Zoomer Labs"
+
+
+def test_a_standalone_x_token_no_longer_trips_the_x_dot_com_brand() -> None:
+    found = detect("x", "X Corp is looking for a contractor")
+    assert found.company_name == "X Corp"
