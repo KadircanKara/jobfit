@@ -1,8 +1,15 @@
 """Upwork job search, via the Upwork MCP.
 
-This is the pure half only: `normalize` turns a stored fetch envelope into
-`JobPosting` rows. `fetch` (a later task) calls out to `claude -p` with only
-`find_jobs` on the tool allow-list - no adapter here ever spends a Connect.
+`fetch` shells out to `claude -p` with only `find_jobs` on the tool
+allow-list - `manage_proposals`, `confirm_draft`, `send_message` and
+`save_job` never appear anywhere near that allow-list, in this module or the
+prompt it renders, because applying to a listing spends Connects (a currency
+this account holds ten of, against a typical cost of 23) while searching and
+reading cost nothing. That allow-list, not a comment or a convention, is what
+makes an adapter bug in this file merely wasteful rather than expensive - see
+`jobhunt/web/gate.py`'s `--allowedTools ""` for the same argument made once
+already. `normalize` is the pure half: it turns a stored fetch envelope into
+`JobPosting` rows and never touches the network.
 
 Facts below were verified live against the Upwork MCP, not re-derived from
 documentation. A `find_jobs action=search` result carries a *truncated*
@@ -33,18 +40,57 @@ field this codebase could accidentally filter on.
 """
 from __future__ import annotations
 
+import datetime as dt
+import json
+import logging
+import os
+import pathlib
+import re
 from collections.abc import Iterator
 from typing import Any
 
+import httpx
+
 from jobhunt import preferences as preferences_module
+from jobhunt.config import Config
+from jobhunt.db.models import utcnow
 from jobhunt.pipeline import normalize as norm
 from jobhunt.sources import upwork_query as query
 from jobhunt.sources.base import BoardRef, HttpAdapter, JobPosting
+from jobhunt.sources.upwork_guard import FetchBudget
+from jobhunt.web import agent
+
+log = logging.getLogger(__name__)
 
 _UNTRUSTED_OPEN = "<untrusted_participant_content>"
 _UNTRUSTED_CLOSE = "</untrusted_participant_content>"
 
 COMPANY_NAME_PLACEHOLDER = "Upwork client"
+
+# The only tool `fetch` ever puts on an allow-list. See the module docstring -
+# this is the enforcement, not a comment beside it. A single tool name, not a
+# list: `agent.run`'s `tools` is the literal `--allowedTools` value, and a
+# comma-joined string of one item is indistinguishable from this anyway.
+ALLOWED_TOOLS = "mcp__upwork__upwork__find_jobs"
+
+# Verified live against this account (see upwork_query.py's module docstring
+# for the same discipline). UPWORK_ORG_UID overrides it without a code change
+# if this personal tool is ever pointed at a different Upwork account.
+_DEFAULT_ORG_UID = "1808166514497822721"
+
+# How many `action=get` calls one fetch may make. Each is its own read inside
+# the same agent turn, not a separate Connect-spending action - the cap exists
+# to keep one turn's tool calls bounded, the same reasoning as PAGE_SIZE in
+# upwork_query.py, not to protect anything scarce on Upwork's side.
+DETAIL_BUDGET = 10
+
+_PROMPT_RELATIVE = pathlib.Path("prompts/upwork_fetch.md")
+_PACKAGED_PROMPT = pathlib.Path(__file__).resolve().parent.parent / "assets" / _PROMPT_RELATIVE
+
+# Mirrors gate.ARRAY: a fenced or bare object is read the same way a fenced or
+# bare array is, because a model asked for "one JSON object" reliably wraps it
+# in prose or a code fence anyway.
+_OBJECT = re.compile(r"\{.*\}", re.S)
 
 
 def _strip_untrusted_wrapper(text: str) -> str:
@@ -163,6 +209,76 @@ def _trailer(item: dict, client_company: dict) -> str:
     return "\n".join(lines)
 
 
+def _cutoff(max_age_days: int) -> str:
+    """The oldest `created_date` worth paginating into, as an ISO date.
+
+    The API has no date filter of its own (see upwork_query.py) - this and
+    `sort="recency"` are what stand in for one. Reusing the user's own
+    `max_age_days` rather than a second, Upwork-only constant means one knob
+    controls "how old is too old" everywhere a source can answer it.
+    """
+    return (utcnow() - dt.timedelta(days=max(1, max_age_days))).date().isoformat()
+
+
+def _render_prompt(
+    config: Config,
+    *,
+    params: dict[str, Any],
+    cutoff: str,
+    max_pages: int,
+    known_ids: set[str],
+    detail_budget: int,
+) -> str:
+    """Fill `upwork_fetch.md`'s placeholders. `.replace`, not `str.format`:
+
+    `params` renders as a JSON object full of its own literal braces, and
+    `str.format` would need every one of those escaped to survive - the same
+    reason `rank/runner.py`'s prompt loader uses `.replace` for `{profile}`.
+    """
+    user_path = config.home / _PROMPT_RELATIVE
+    source = user_path if user_path.exists() else _PACKAGED_PROMPT
+    text = source.read_text(encoding="utf-8")
+    known = ", ".join(sorted(known_ids)) if known_ids else "(none yet - fetch every detail)"
+    return (
+        text.replace("{params}", json.dumps(params, indent=2))
+        .replace("{cutoff}", cutoff)
+        .replace("{max_pages}", str(max_pages))
+        .replace("{known_ids}", known)
+        .replace("{detail_budget}", str(detail_budget))
+    )
+
+
+def _parse(raw: str) -> dict[str, Any] | None:
+    """The envelope inside `agent.run`'s answer text, or None if none is readable.
+
+    `agent.run` already unwraps the CLI's own `--output-format json` envelope
+    via `agent.text_of` before this ever sees the string, so what arrives here
+    is the model's answer text - which still needs its own JSON pulled out of
+    whatever prose or code fence surrounds it. Mirrors `gate._parse`: a bare
+    `json.loads` first, then `_OBJECT`, because a model asked for "one JSON
+    object" reliably wraps it in a code fence or a sentence anyway.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    match = _OBJECT.search(text)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 class UpworkAdapter(HttpAdapter):
     source_id = "upwork"
     market = "upwork"
@@ -170,12 +286,112 @@ class UpworkAdapter(HttpAdapter):
     # generated fresh by `board_refs` every run. See SourceAdapter.generates_refs.
     generates_refs = True
 
+    def __init__(
+        self,
+        refs: list[BoardRef] | None = None,
+        *,
+        config: Config | None = None,
+        known_ids: set[str] | None = None,
+    ) -> None:
+        super().__init__(refs)
+        self.config = config
+        # `FetchBudget` needs a real config to touch the database - a
+        # config-less adapter (the `normalize`-only shape the tests above all
+        # use) never calls `fetch` for real, so it gets no budget rather than
+        # one that would blow up the moment anything asked it a question.
+        self.budget = FetchBudget(config) if config is not None else None
+        self.known_ids = known_ids or set()
+
     def board_refs(self, prefs: preferences_module.UpworkPreferences) -> list[BoardRef]:
         """One ref per (query, job_type). See `upwork_query.refs_for`."""
         return [
             BoardRef(provider=self.source_id, token=f"{q}|{job_type}", market=self.market)
             for q, job_type in query.refs_for(prefs)
         ]
+
+    def still_fetching(self) -> bool:
+        """False once the budget has nothing left to spend for this run.
+
+        Mirrors `LinkedInAdapter.still_fetching`: a config-less adapter has
+        nothing to be polite about, and a budget that has tripped or run dry
+        makes every remaining ref in this run a guaranteed-empty round trip.
+        """
+        return self.budget is None or self.budget.allow()
+
+    def was_truncated(self) -> bool:
+        """Always True.
+
+        Every other adapter's `was_truncated` answers "did this fetch see the
+        whole listing" so `deactivate_missing` can trust an empty result to
+        mean "this ref genuinely has nothing left". A parameterised Upwork
+        search is never the whole listing - it is one query against one
+        filtered slice of the board, by construction. Reporting True
+        unconditionally is what stops `deactivate_missing` from reading a
+        legitimately-empty page (or a page that just missed the rate floor)
+        as proof the entire corpus behind that query vanished.
+        """
+        return True
+
+    def fetch(self, ref: BoardRef, client: httpx.Client | None) -> dict[str, Any]:
+        """One search-and-detail pass through the Upwork MCP, via `claude -p`.
+
+        Never raises. No config, a tripped or exhausted budget, a subprocess
+        failure, or a response this module cannot parse all degrade to the
+        same empty envelope - the contract `linkedin.py` established, because
+        a caller iterating many refs cannot afford one bad ref to end the run.
+        """
+        empty: dict[str, Any] = {"pages": [], "details": {}}
+        if self.config is None or self.budget is None:
+            return empty
+
+        refusal = self.budget.refusal()
+        if refusal is not None:
+            log.warning("upwork fetch for %r skipped: %s", ref.token, refusal)
+            return empty
+
+        try:
+            prefs, _ = preferences_module.load(self.config)
+        except Exception:
+            log.warning("upwork fetch for %r skipped: preferences could not be read", ref.token)
+            self.budget.record_failure()
+            return empty
+
+        job_query, _, job_type = ref.token.partition("|")
+        params = query.search_params(job_query, job_type, prefs.upwork)
+        params["org_uid"] = os.environ.get(query.ORG_UID_ENV) or _DEFAULT_ORG_UID
+
+        prompt = _render_prompt(
+            self.config,
+            params=params,
+            cutoff=_cutoff(prefs.max_age_days),
+            max_pages=max(1, prefs.upwork.max_pages),
+            known_ids=self.known_ids,
+            detail_budget=DETAIL_BUDGET,
+        )
+
+        self.budget.spend()
+        envelope: dict[str, Any] | None = None
+        # One retry, for an unparseable response only - a subprocess failure
+        # (AgentError) is not retried, since the CLI already ran the whole
+        # turn to produce it and a repeat is no more likely to succeed.
+        for _attempt in (1, 2):
+            try:
+                raw = agent.run(self.config, "upwork", prompt, tools=ALLOWED_TOOLS)
+            except agent.AgentError as error:
+                log.warning("upwork fetch for %r failed: %s", ref.token, error)
+                self.budget.record_failure()
+                return empty
+            envelope = _parse(raw)
+            if envelope is not None:
+                break
+
+        if envelope is None:
+            log.warning("upwork fetch for %r returned an unreadable response", ref.token)
+            self.budget.record_failure()
+            return empty
+
+        self.budget.record_ok()
+        return envelope
 
     def normalize(self, raw: Any, ref: BoardRef) -> Iterator[JobPosting]:
         """Fetch envelope -> postings. Never raises: one bad result is one lost job.

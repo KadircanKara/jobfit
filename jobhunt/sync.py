@@ -175,28 +175,45 @@ class SyncLock:
 def build_adapter(config: Config, source: str):
     """Construct one adapter.
 
-    LinkedIn is the only source whose work units come from saved preferences
-    rather than from seeded boards, and the only one whose fetch needs the
-    corpus to know which detail pages it can skip. Every other adapter takes
-    no arguments at all, so that difference is confined to this one function
-    instead of being special-cased at each call site.
+    LinkedIn and Upwork are the only sources whose work units come from saved
+    preferences rather than from seeded boards, and the only ones whose fetch
+    needs the corpus to know which detail pages it can skip. Every other
+    adapter takes no arguments at all, so that difference is confined to this
+    one function instead of being special-cased at each call site.
+
+    Without this branch, `jobhunt sync --source upwork` would build the
+    adapter, get zero refs from the inherited `discover()` (which yields
+    nothing without `set_refs`), and silently do nothing while reporting no
+    error - a working-looking source that never fetches a job.
     """
     cls = source_registry.get(source)
-    if source != "linkedin":
-        return cls()
-    prefs, _ = prefs_module.load(config)
-    adapter = cls(config=config, known_ids=_known_linkedin_ids(config))
-    adapter.set_refs(adapter.board_refs(prefs))
-    return adapter
+    if source == "linkedin":
+        prefs, _ = prefs_module.load(config)
+        adapter = cls(config=config, known_ids=_known_linkedin_ids(config))
+        adapter.set_refs(adapter.board_refs(prefs))
+        return adapter
+    if source == "upwork":
+        prefs, _ = prefs_module.load(config)
+        adapter = cls(config=config, known_ids=_known_ids_for(config, "upwork"))
+        adapter.set_refs(adapter.board_refs(prefs.upwork))
+        return adapter
+    return cls()
 
 
 def _known_linkedin_ids(config: Config) -> set[str]:
     """External ids already in the corpus, so `fetch` never re-fetches a detail
     page it has already paid for just to refresh an unchanged description."""
+    return _known_ids_for(config, "linkedin")
+
+
+def _known_ids_for(config: Config, source: str) -> set[str]:
+    """External ids already in the corpus for one source.
+
+    Shared by every generated-ref adapter that skips re-fetching a detail it
+    already has - LinkedIn's guest HTML pages and Upwork's `get` calls alike.
+    """
     with session_scope(config.db_path) as session:
-        rows = session.scalars(
-            select(Job.external_id).where(Job.source == "linkedin")
-        ).all()
+        rows = session.scalars(select(Job.external_id).where(Job.source == source)).all()
     return set(rows)
 
 

@@ -64,6 +64,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "review": {"model": None, "effort": None},
         # The revision studio: questions about a posting, and edits to cv.tex.
         "revise": {"model": None, "effort": None},
+        # Pages and reads the Upwork MCP for one search. Judgement over a
+        # bounded, cheap task - not fabrication risk, so it needs neither the
+        # model nor the effort `tailor`/`review` might warrant.
+        "upwork": {"model": None, "effort": None},
     },
     "digest": {
         "limit": 15,

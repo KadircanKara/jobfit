@@ -178,3 +178,89 @@ def test_refs_come_from_preferences_not_from_boards() -> None:
     prefs = UpworkPreferences(queries=["rag"], job_types=["hourly", "fixed"])
     tokens = [ref.token for ref in UpworkAdapter().board_refs(prefs)]
     assert tokens == ["rag|hourly", "rag|fixed"]
+
+
+# --- fetch --------------------------------------------------------------
+
+
+def test_only_find_jobs_is_ever_allowed(cfg, monkeypatch) -> None:
+    """A tool that is not on the list cannot spend connects."""
+    seen = {}
+
+    def fake_run(config, phase, prompt, *, tools, timeout=0):
+        seen["tools"] = tools
+        seen["phase"] = phase
+        return "{}"
+
+    monkeypatch.setattr("jobhunt.sources.upwork.agent.run", fake_run)
+    UpworkAdapter(config=cfg).fetch(_ref(), None)
+    assert seen["tools"] == "mcp__upwork__upwork__find_jobs"
+    assert seen["phase"] == "upwork"
+
+
+def test_a_malformed_response_degrades_rather_than_raising(cfg, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "jobhunt.sources.upwork.agent.run", lambda *a, **k: "sorry, I could not do that"
+    )
+    adapter = UpworkAdapter(config=cfg)
+    assert adapter.fetch(_ref(), None) == {"pages": [], "details": {}}
+    assert adapter.was_truncated() is True
+
+
+def test_an_agent_error_degrades_rather_than_raising(cfg, monkeypatch) -> None:
+    from jobhunt.web.agent import AgentError
+
+    def boom(*a, **k):
+        raise AgentError("claude exited 1")
+
+    monkeypatch.setattr("jobhunt.sources.upwork.agent.run", boom)
+    adapter = UpworkAdapter(config=cfg)
+    assert adapter.fetch(_ref(), None)["pages"] == []
+    assert adapter.was_truncated() is True
+
+
+def test_json_wrapped_in_prose_is_still_read(cfg, monkeypatch) -> None:
+    body = 'here you go:\n```json\n{"pages": [], "details": {}, "error": null}\n```\nhope that helps'
+    monkeypatch.setattr("jobhunt.sources.upwork.agent.run", lambda *a, **k: body)
+    assert UpworkAdapter(config=cfg).fetch(_ref(), None)["pages"] == []
+
+
+def test_known_ids_reach_the_prompt_so_details_are_not_refetched(cfg, monkeypatch) -> None:
+    seen = {}
+    monkeypatch.setattr(
+        "jobhunt.sources.upwork.agent.run",
+        lambda config, phase, prompt, **k: seen.setdefault("prompt", prompt) and "{}" or "{}",
+    )
+    UpworkAdapter(config=cfg, known_ids={"12345"}).fetch(_ref(), None)
+    assert "12345" in seen["prompt"]
+
+
+def test_upwork_is_always_truncated(cfg, monkeypatch) -> None:
+    """A parameterised search is a filtered view, never a whole board."""
+    monkeypatch.setattr(
+        "jobhunt.sources.upwork.agent.run",
+        lambda *a, **k: '{"pages": [], "details": {}, "stopped_because": "no_cursor"}',
+    )
+    adapter = UpworkAdapter(config=cfg)
+    adapter.fetch(_ref(), None)
+    assert adapter.was_truncated() is True
+
+
+def test_the_guard_refusing_skips_the_subprocess_entirely(cfg, monkeypatch) -> None:
+    called = []
+    monkeypatch.setattr(
+        "jobhunt.sources.upwork.agent.run", lambda *a, **k: called.append(1) or "{}"
+    )
+    adapter = UpworkAdapter(config=cfg)
+    adapter.budget.tripped = True
+    adapter.fetch(_ref(), None)
+    assert called == []
+
+
+def test_a_config_less_adapter_does_not_call_out(cfg, monkeypatch) -> None:
+    called = []
+    monkeypatch.setattr(
+        "jobhunt.sources.upwork.agent.run", lambda *a, **k: called.append(1) or "{}"
+    )
+    assert UpworkAdapter().fetch(_ref(), None)["pages"] == []
+    assert called == []
