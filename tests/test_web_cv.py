@@ -8,10 +8,10 @@ from __future__ import annotations
 import copy
 
 import pytest
-from conftest import load_fixture
+from conftest import FIXTURES, load_fixture
 from fastapi.testclient import TestClient
 
-from jobhunt.cv import importer, model, render, templates
+from jobhunt.cv import convert, importer, model, render, templates
 from jobhunt.web import cv as cv_routes
 from jobhunt.web.app import create_app
 
@@ -153,3 +153,85 @@ def test_a_download_name_is_the_person_in_ascii():
     assert cv_routes.download_name("Kadircan Kara", "pdf") == "Kadircan_Kara-CV.pdf"
     assert cv_routes.download_name("Özge Şahin", "tex") == "Ozge_Sahin-CV.tex"
     assert cv_routes.download_name("", "pdf") == "Master-CV.pdf"
+
+GOOD_TEMPLATE = (FIXTURES / "cv" / "upload_template.tex").read_bytes()
+
+
+@pytest.fixture
+def uploads(client, cfg):
+    cfg.raw["tailoring"]["ats_check"] = str(cfg.db_path.parent / "no_ats.py")
+    client.app.state.cv_upload = convert.UploadDesk(cfg, agent=lambda p: "", runner=passing, background=False)
+    return client
+
+
+def test_the_gallery_lists_both_built_ins_with_the_default_marked(client):
+    body = client.get("/api/cv/templates").json()
+
+    assert body["default_id"] == "classic"
+    rows = {row["id"]: row for row in body["templates"]}
+    assert rows["classic"]["default"] and rows["classic"]["builtin"] and not rows["modern"]["default"]
+
+
+def test_a_pdf_upload_is_refused_with_the_reason(uploads):
+    response = uploads.post("/api/cv/templates", files={"file": ("cv.pdf", b"%PDF-1.7", "application/pdf")})
+
+    assert response.status_code == 422 and "only .tex" in response.json()["message"]
+
+
+def test_a_template_upload_is_checked_and_can_be_accepted(uploads):
+    started = uploads.post(
+        "/api/cv/templates", files={"file": ("mine.tex", GOOD_TEMPLATE, "application/x-tex")}
+    ).json()
+    assert started["state"] == "done" and started["acceptable"], started["problems"]
+    assert uploads.get("/api/cv/templates/upload/preview.pdf").content == b"%PDF-1.7 fake"
+
+    added = uploads.post("/api/cv/templates/upload/accept", json={"name": "Mine"}).json()
+
+    assert added["name"] == "Mine" and not added["builtin"]
+    assert added["id"] in [row["id"] for row in uploads.get("/api/cv/templates").json()["templates"]]
+
+
+def test_choosing_a_default_empties_the_master(client):
+    client.put("/api/cv/profile", json={"profile": fixture()})
+    client.post("/api/cv/master")
+
+    status = client.post("/api/cv/templates/modern/default").json()
+
+    assert status["state"] == "empty" and "Modern" in status["reason"]
+    assert client.get("/api/cv/templates").json()["default_id"] == "modern"
+
+
+def test_an_unknown_template_is_a_404(client):
+    assert client.post("/api/cv/templates/nope/default").status_code == 404
+    assert client.get("/api/cv/templates/nope/source.tex").status_code == 404
+
+
+def test_built_ins_cannot_be_renamed_or_deleted(client):
+    assert client.patch("/api/cv/templates/classic", json={"name": "Mine"}).status_code == 409
+    assert client.delete("/api/cv/templates/classic").status_code == 409
+
+
+def test_an_upload_can_be_renamed_and_removed(uploads, cfg):
+    added = templates.add(cfg, "Mine", GOOD_TEMPLATE.decode(), engine="lualatex")
+
+    assert uploads.patch(f"/api/cv/templates/{added.id}", json={"name": "Yours"}).json()["name"] == "Yours"
+    assert uploads.delete(f"/api/cv/templates/{added.id}").status_code == 200
+    assert added.id not in [row["id"] for row in uploads.get("/api/cv/templates").json()["templates"]]
+
+
+def test_a_template_source_downloads_as_tex(client):
+    response = client.get("/api/cv/templates/classic/source.tex")
+
+    assert response.status_code == 200
+    assert 'filename="Classic-template.tex"' in response.headers["content-disposition"]
+    assert b"\\resumeSubheading" in response.content
+
+
+def test_a_preview_is_served_as_a_pdf(client):
+    response = client.get("/api/cv/templates/modern/preview.pdf")
+
+    assert response.status_code == 200 and response.content == b"%PDF-1.7 fake"
+
+
+def test_the_contract_is_readable(client):
+    assert b"hidable" in client.get("/api/cv/contract.md").content

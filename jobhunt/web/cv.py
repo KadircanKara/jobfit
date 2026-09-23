@@ -10,11 +10,11 @@ import re
 import unicodedata
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from jobhunt.config import Config
-from jobhunt.cv import importer, master, model
+from jobhunt.cv import convert, importer, master, model, preview, templates
 from jobhunt.cv import store as cvstore
 
 
@@ -24,6 +24,7 @@ def register(app: FastAPI, config: Config) -> None:
     # the routes knowing.
     app.state.cv_runner = None
     app.state.cv_import = importer.ImportDesk(config)
+    app.state.cv_upload = convert.UploadDesk(config)
 
     @app.get("/api/cv/profile")
     def read_profile() -> Any:
@@ -104,6 +105,107 @@ def register(app: FastAPI, config: Config) -> None:
     def master_tex() -> Any:
         return _file(config, "tex", "application/x-tex", "attachment")
 
+    # --- templates ------------------------------------------------------------
+
+    @app.get("/api/cv/templates")
+    def list_templates() -> dict[str, Any]:
+        current = templates.default_id(config)
+        return {
+            "default_id": current,
+            "templates": [_row(template, current) for template in templates.all_templates(config)],
+        }
+
+    @app.post("/api/cv/templates")
+    async def upload_template(file: UploadFile) -> Any:
+        data = await file.read(convert.UPLOAD_LIMIT + 1)
+        try:
+            return app.state.cv_upload.start(file.filename or "", data)
+        except convert.UploadRefused as exc:
+            return _refused("file", str(exc))
+        except convert.UploadFailed as exc:
+            return _conflict(str(exc))
+
+    @app.get("/api/cv/templates/upload")
+    def upload_state() -> dict[str, Any]:
+        return app.state.cv_upload.snapshot()
+
+    @app.get("/api/cv/templates/upload/preview.pdf")
+    def upload_preview() -> Any:
+        pdf = app.state.cv_upload.pdf
+        if not pdf:
+            return JSONResponse(status_code=404, content={"message": "there is no preview yet"})
+        return Response(pdf, media_type="application/pdf", headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/cv/templates/upload/accept")
+    def accept_upload(payload: dict[str, Any]) -> Any:
+        try:
+            added = app.state.cv_upload.accept(str(payload.get("name", "")))
+        except convert.UploadFailed as exc:
+            return _conflict(str(exc))
+        except templates.TemplateError as exc:
+            return _refused("name", str(exc))
+        return _row(added, templates.default_id(config))
+
+    @app.post("/api/cv/templates/upload/discard")
+    def discard_upload() -> Any:
+        try:
+            app.state.cv_upload.discard()
+        except convert.UploadFailed as exc:
+            return _conflict(str(exc))
+        return app.state.cv_upload.snapshot()
+
+    @app.patch("/api/cv/templates/{template_id}")
+    def rename_template(template_id: str, payload: dict[str, Any]) -> Any:
+        return _template_call(
+            config, lambda: _row(templates.rename(config, template_id, str(payload.get("name", ""))),
+                                 templates.default_id(config))
+        )
+
+    @app.delete("/api/cv/templates/{template_id}")
+    def remove_template(template_id: str) -> Any:
+        return _template_call(config, lambda: templates.remove(config, template_id) or {"removed": True})
+
+    @app.post("/api/cv/templates/{template_id}/default")
+    def choose_default(template_id: str) -> Any:
+        return _template_call(config, lambda: master.use_template(config, template_id).as_dict())
+
+    @app.get("/api/cv/templates/{template_id}/source.tex")
+    def template_source(template_id: str) -> Any:
+        def serve() -> Any:
+            template = templates.get(config, template_id)
+            stem = "_".join(re.findall(r"[A-Za-z0-9]+", template.name)) or "template"
+            return FileResponse(
+                template.folder / templates.SOURCE_NAME,
+                media_type="application/x-tex",
+                filename=f"{stem}-template.tex",
+            )
+
+        return _template_call(config, serve)
+
+    @app.get("/api/cv/templates/{template_id}/thumbnail.png")
+    def template_thumbnail(template_id: str) -> Any:
+        def serve() -> Any:
+            shown = preview.preview(config, template_id, runner=app.state.cv_runner)
+            if not shown.ok or shown.png is None:
+                return JSONResponse(status_code=404, content={"message": shown.log or "no thumbnail"})
+            return Response(shown.png, media_type="image/png", headers={"Cache-Control": "no-cache"})
+
+        return _template_call(config, serve)
+
+    @app.get("/api/cv/templates/{template_id}/preview.pdf")
+    def template_preview(template_id: str) -> Any:
+        def serve() -> Any:
+            shown = preview.preview(config, template_id, runner=app.state.cv_runner)
+            if not shown.ok:
+                return JSONResponse(status_code=422, content={"field": "template", "message": shown.log})
+            return Response(shown.pdf, media_type="application/pdf", headers={"Cache-Control": "no-cache"})
+
+        return _template_call(config, serve)
+
+    @app.get("/api/cv/contract.md")
+    def template_contract() -> Any:
+        return FileResponse(templates.BUILTIN_DIR / "CONTRACT.md", media_type="text/markdown; charset=utf-8")
+
     # --- the one-time import ----------------------------------------------
 
     @app.get("/api/cv/import")
@@ -139,6 +241,29 @@ def register(app: FastAPI, config: Config) -> None:
         except importer.ImportFailed as exc:
             return _conflict(str(exc))
         return app.state.cv_import.snapshot()
+
+
+def _row(template: templates.Template, default_id: str) -> dict[str, Any]:
+    return {
+        "id": template.id,
+        "name": template.name,
+        "source": template.source,
+        "engine": template.engine,
+        "description": template.description,
+        "builtin": template.builtin,
+        "default": template.id == default_id,
+    }
+
+
+def _template_call(config: Config, call: Any) -> Any:
+    try:
+        return call()
+    except templates.UnknownTemplate as exc:
+        return JSONResponse(status_code=404, content={"message": str(exc)})
+    except templates.TemplateError as exc:
+        return _conflict(str(exc))
+    except cvstore.StoreError as exc:
+        return _refused("profile", str(exc))
 
 
 def download_name(person: str, kind: str) -> str:

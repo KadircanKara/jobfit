@@ -43,7 +43,7 @@ STATIC_DIR = pathlib.Path(__file__).parent / "static"
 
 # Addresses the built interface routes to itself. Mirrors PATHS in ui/src/App.tsx;
 # a page added there without a line here 404s on refresh but works when clicked.
-SPA_PAGES = frozenset({"filters", "profile"})
+SPA_PAGES = frozenset({"filters", "profile", "templates"})
 
 
 class _BadFeedRequest(Exception):
