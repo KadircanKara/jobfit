@@ -156,53 +156,6 @@ class _SlowPipeline:
         return []
 
 
-# --- profile ---------------------------------------------------------------
-
-
-def _with_master(cfg, tmp_path):
-    path = tmp_path / "CV_Source" / "master.tex"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n", encoding="utf-8")
-    cfg.raw.setdefault("tailoring", {})["master_tex"] = str(path)
-    return path
-
-
-def test_the_master_cv_can_be_read(cfg, tmp_path):
-    _with_master(cfg, tmp_path)
-    client = TestClient(create_app(config=cfg))
-
-    body = client.get("/api/profile").json()
-
-    assert "documentclass" in body["text"]
-
-
-def test_saving_the_master_takes_a_backup(cfg, tmp_path):
-    _with_master(cfg, tmp_path)
-    client = TestClient(create_app(config=cfg))
-
-    client.post("/api/profile", json={"text": "\\documentclass{article}\\begin{document}y\\end{document}"})
-
-    assert client.get("/api/profile/backups").json()["backups"]
-
-
-def test_an_empty_master_is_refused_by_the_server(cfg, tmp_path):
-    _with_master(cfg, tmp_path)
-    client = TestClient(create_app(config=cfg))
-
-    response = client.post("/api/profile", json={"text": "  "})
-
-    assert response.status_code == 422
-
-
-def test_restoring_a_path_outside_the_backup_folder_is_refused(cfg, tmp_path):
-    _with_master(cfg, tmp_path)
-    client = TestClient(create_app(config=cfg))
-
-    response = client.post("/api/profile/restore", json={"name": "../../etc/passwd"})
-
-    assert response.status_code == 422
-
-
 # --- tailoring -------------------------------------------------------------
 
 

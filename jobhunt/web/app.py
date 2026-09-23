@@ -32,7 +32,6 @@ from jobhunt.web import filters as webfilters
 from jobhunt.web import history as history_module
 from jobhunt.web import idle as idle_module
 from jobhunt.web import outreach as outreach_routes
-from jobhunt.web import profile as profile_module
 from jobhunt.web import revise as revise_module
 from jobhunt.web import tailor as tailor_module
 from jobhunt.web import vocab as vocab_module
@@ -567,56 +566,6 @@ def create_app(*, config: Config | None = None) -> FastAPI:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-
-    # --- the master CV ------------------------------------------------
-
-    @app.get("/api/profile")
-    def read_profile() -> Any:
-        try:
-            master = profile_module.read(cfg)
-        except profile_module.ProfileError as exc:
-            return JSONResponse(status_code=404, content={"message": str(exc)})
-        return {
-            "path": str(master.path),
-            "text": master.text,
-            "modified_at": master.modified_at.isoformat(),
-        }
-
-    @app.post("/api/profile")
-    def save_profile(payload: dict[str, Any]) -> Any:
-        try:
-            backup = profile_module.write(cfg, str(payload.get("text", "")))
-        except profile_module.ProfileError as exc:
-            return JSONResponse(status_code=422, content={"field": "text", "message": str(exc)})
-        return {"saved": True, "backup": backup.name if backup else None}
-
-    @app.get("/api/profile/backups")
-    def list_backups() -> dict[str, Any]:
-        return {
-            "backups": [
-                {"name": b.name, "taken_at": b.taken_at.isoformat(), "size": b.size}
-                for b in profile_module.backups(cfg)
-            ]
-        }
-
-    @app.post("/api/profile/restore")
-    def restore_backup(payload: dict[str, Any]) -> Any:
-        try:
-            profile_module.restore(cfg, str(payload.get("name", "")))
-        except profile_module.ProfileError as exc:
-            return JSONResponse(status_code=422, content={"field": "name", "message": str(exc)})
-        return {"restored": True}
-
-    @app.post("/api/profile/compile")
-    def compile_profile(payload: dict[str, Any]) -> dict[str, Any]:
-        import base64
-
-        result = profile_module.compile_tex(cfg, text=payload.get("text"))
-        return {
-            "ok": result.ok,
-            "log": result.log,
-            "pdf": base64.b64encode(result.pdf_bytes).decode() if result.ok else None,
-        }
 
     # --- batch tailoring ----------------------------------------------
 
