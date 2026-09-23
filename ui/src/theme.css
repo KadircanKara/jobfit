@@ -2766,10 +2766,25 @@ tr.drawer > td {
 }
 @media (max-width: 1080px) {
   .cv-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .cv-side {
     position: static;
+  }
+}
+/* On a phone every field takes the full width. A "wide" field spanning two
+   columns of a one-column grid would invent a second column off the screen. */
+@media (max-width: 640px) {
+  .cv .fields .wide {
+    grid-column: auto;
+  }
+  .cv-row {
+    flex-wrap: wrap;
+  }
+  .cv-row .field,
+  .cv-row .field.wide,
+  .cv-row .cv-chips {
+    flex: 1 1 100%;
   }
 }
 .cv .btn.sm {
@@ -2841,12 +2856,15 @@ tr.drawer > td {
 }
 .cv-entry-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   margin-bottom: 10px;
 }
 .cv-entry-name {
+  min-width: 0;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 .cv-flag {
   font-family: var(--data);
