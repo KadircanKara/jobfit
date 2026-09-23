@@ -62,7 +62,7 @@ export function TemplateStep({
   return (
     <section className="tpl-step" aria-label="Choose a template for each CV">
       <div className="tpl-step-head">
-        <b>Which template should each CV use?</b>
+        <b>{hasProfile === false ? `Tailor ${count} from master.tex` : "Which template should each CV use?"}</b>
         {hasProfile && (
           <span className="note">
             Each CV is cut from your profile in the template you pick. Click a template to use it for every job.
