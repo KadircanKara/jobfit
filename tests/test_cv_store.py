@@ -16,14 +16,6 @@ from jobhunt.cv import model
 from jobhunt.cv import store as cvstore
 
 
-@pytest.fixture
-def cv_source(tmp_path, cfg):
-    folder = tmp_path / "CV_Source"
-    folder.mkdir()
-    cfg.raw.setdefault("tailoring", {})["master_tex"] = str(folder / "master.tex")
-    return folder
-
-
 def profile(**changes) -> model.Profile:
     data = copy.deepcopy(load_fixture("cv/profile.json"))
     data["basics"].update(changes)

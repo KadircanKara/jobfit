@@ -5,7 +5,7 @@ import copy
 import shutil
 
 import pytest
-from conftest import FIXTURES, load_fixture
+from conftest import FIXTURES, load_fixture, passing
 
 from jobhunt.cv import builds, model, templates, validate
 
@@ -25,11 +25,6 @@ def cv_source(tmp_path, cfg):
 
 def profile():
     return model.parse(copy.deepcopy(load_fixture("cv/profile.json")))
-
-
-def passing(argv, cwd):
-    (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")
-    return 0, "Output written on cv.pdf (1 page, 1 bytes)."
 
 
 def clean_ats(argv, cwd):

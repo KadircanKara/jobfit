@@ -1,4 +1,5 @@
-"""The CV builder over HTTP: the profile, the master CV, and the one-time import.
+"""The CV builder over HTTP: the profile, the master CV, the template library,
+and the one-time import of master.tex.
 
 Loopback only, like the rest of the app. Every rule the form enforces is
 enforced again here, and a refused profile comes back with every problem and
@@ -8,6 +9,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import FastAPI, UploadFile
@@ -131,10 +133,7 @@ def register(app: FastAPI, config: Config) -> None:
 
     @app.get("/api/cv/templates/upload/preview.pdf")
     def upload_preview() -> Any:
-        pdf = app.state.cv_upload.pdf
-        if not pdf:
-            return JSONResponse(status_code=404, content={"message": "there is no preview yet"})
-        return Response(pdf, media_type="application/pdf", headers={"Cache-Control": "no-store"})
+        return _desk_pdf(app.state.cv_upload.pdf)
 
     @app.post("/api/cv/templates/upload/accept")
     def accept_upload(payload: dict[str, Any]) -> Any:
@@ -156,31 +155,32 @@ def register(app: FastAPI, config: Config) -> None:
 
     @app.patch("/api/cv/templates/{template_id}")
     def rename_template(template_id: str, payload: dict[str, Any]) -> Any:
-        return _template_call(
-            config, lambda: _row(templates.rename(config, template_id, str(payload.get("name", ""))),
-                                 templates.default_id(config))
-        )
+        def renamed() -> Any:
+            template = templates.rename(config, template_id, str(payload.get("name", "")))
+            return _row(template, templates.default_id(config))
+
+        return _template_call(renamed)
 
     @app.delete("/api/cv/templates/{template_id}")
     def remove_template(template_id: str) -> Any:
-        return _template_call(config, lambda: templates.remove(config, template_id) or {"removed": True})
+        return _template_call(lambda: templates.remove(config, template_id) or {"removed": True})
 
     @app.post("/api/cv/templates/{template_id}/default")
     def choose_default(template_id: str) -> Any:
-        return _template_call(config, lambda: master.use_template(config, template_id).as_dict())
+        return _template_call(lambda: master.use_template(config, template_id).as_dict())
 
     @app.get("/api/cv/templates/{template_id}/source.tex")
     def template_source(template_id: str) -> Any:
         def serve() -> Any:
             template = templates.get(config, template_id)
-            stem = "_".join(re.findall(r"[A-Za-z0-9]+", template.name)) or "template"
+            stem = ascii_stem(template.name) or "template"
             return FileResponse(
                 template.folder / templates.SOURCE_NAME,
                 media_type="application/x-tex",
                 filename=f"{stem}-template.tex",
             )
 
-        return _template_call(config, serve)
+        return _template_call(serve)
 
     @app.get("/api/cv/templates/{template_id}/thumbnail.png")
     def template_thumbnail(template_id: str) -> Any:
@@ -190,7 +190,7 @@ def register(app: FastAPI, config: Config) -> None:
                 return JSONResponse(status_code=404, content={"message": shown.log or "no thumbnail"})
             return Response(shown.png, media_type="image/png", headers={"Cache-Control": "no-cache"})
 
-        return _template_call(config, serve)
+        return _template_call(serve)
 
     @app.get("/api/cv/templates/{template_id}/preview.pdf")
     def template_preview(template_id: str) -> Any:
@@ -200,7 +200,7 @@ def register(app: FastAPI, config: Config) -> None:
                 return JSONResponse(status_code=422, content={"field": "template", "message": shown.log})
             return Response(shown.pdf, media_type="application/pdf", headers={"Cache-Control": "no-cache"})
 
-        return _template_call(config, serve)
+        return _template_call(serve)
 
     @app.get("/api/cv/contract.md")
     def template_contract() -> Any:
@@ -221,10 +221,7 @@ def register(app: FastAPI, config: Config) -> None:
 
     @app.get("/api/cv/import/preview.pdf")
     def import_preview() -> Any:
-        pdf = app.state.cv_import.pdf
-        if not pdf:
-            return JSONResponse(status_code=404, content={"message": "there is no preview yet"})
-        return Response(pdf, media_type="application/pdf", headers={"Cache-Control": "no-store"})
+        return _desk_pdf(app.state.cv_import.pdf)
 
     @app.post("/api/cv/import/accept")
     def accept_import() -> Any:
@@ -255,7 +252,7 @@ def _row(template: templates.Template, default_id: str) -> dict[str, Any]:
     }
 
 
-def _template_call(config: Config, call: Any) -> Any:
+def _template_call(call: Callable[[], Any]) -> Any:
     try:
         return call()
     except templates.UnknownTemplate as exc:
@@ -268,9 +265,19 @@ def _template_call(config: Config, call: Any) -> Any:
 
 def download_name(person: str, kind: str) -> str:
     """`Kadircan_Kara-CV.pdf`: the name the tailoring skill gives every deliverable."""
-    ascii_name = unicodedata.normalize("NFKD", person).encode("ascii", "ignore").decode()
-    words = re.findall(r"[A-Za-z0-9]+", ascii_name)
-    return f"{'_'.join(words) or 'Master'}-CV.{kind}"
+    return f"{ascii_stem(person) or 'Master'}-CV.{kind}"
+
+
+def ascii_stem(text: str) -> str:
+    """A file-name-safe stem: accents folded, every other character a separator."""
+    folded = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return "_".join(re.findall(r"[A-Za-z0-9]+", folded))
+
+
+def _desk_pdf(pdf: bytes) -> Any:
+    if not pdf:
+        return JSONResponse(status_code=404, content={"message": "there is no preview yet"})
+    return Response(pdf, media_type="application/pdf", headers={"Cache-Control": "no-store"})
 
 
 def _file(config: Config, kind: str, media_type: str, disposition: str) -> Any:

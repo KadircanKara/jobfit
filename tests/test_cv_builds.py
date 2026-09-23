@@ -5,31 +5,13 @@ from __future__ import annotations
 import copy
 
 import pytest
-from conftest import load_fixture
+from conftest import LatexRecorder, load_fixture
 
 from jobhunt.cv import builds, model, render, templates
 
 
-@pytest.fixture
-def cv_source(tmp_path, cfg):
-    folder = tmp_path / "CV_Source"
-    folder.mkdir()
-    cfg.raw.setdefault("tailoring", {})["master_tex"] = str(folder / "master.tex")
-    return folder
-
-
 def profile():
     return model.parse(copy.deepcopy(load_fixture("cv/profile.json")))
-
-
-class Recorder:
-    def __init__(self):
-        self.calls = []
-
-    def __call__(self, argv, cwd):
-        self.calls.append(argv)
-        (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")
-        return 0, "Output written on cv.pdf (1 page, 1 bytes)."
 
 
 def test_a_trusted_template_is_filled_in_process(monkeypatch):
@@ -48,7 +30,7 @@ def test_an_untrusted_template_is_filled_in_a_child_process(monkeypatch):
 
 
 def test_an_untrusted_build_is_sandboxed_with_the_private_folders_closed(cfg, cv_source):
-    runner = Recorder()
+    runner = LatexRecorder()
 
     builds.build(cfg, "doc", engine="lualatex", trusted=False, runner=runner)
 
@@ -60,7 +42,7 @@ def test_an_untrusted_build_is_sandboxed_with_the_private_folders_closed(cfg, cv
 
 
 def test_a_trusted_build_is_not_sandboxed(cfg, cv_source):
-    runner = Recorder()
+    runner = LatexRecorder()
 
     builds.build(cfg, "doc", engine="lualatex", trusted=True, runner=runner)
 

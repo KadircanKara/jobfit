@@ -21,7 +21,7 @@ import { Templates } from "./Templates";
 
 /* Each section of the app is a page with its own URL, so a tab can be linked,
    bookmarked, reopened, and walked back through with the browser's own back
-   button. Three routes did not justify a router dependency. */
+   button. A handful of routes did not justify a router dependency. */
 const PATHS = {
   hunt: "/",
   filters: "/filters",
@@ -36,7 +36,7 @@ function screenFor(path: string): Screen {
     (screen) => screen !== "hunt" && path.startsWith(PATHS[screen]),
   );
   // Anything else is the hunt page. The server only serves the shell for the
-  // three known paths, so an unknown one never reaches this in the first place.
+  // known paths, so an unknown one never reaches this in the first place.
   return found ?? "hunt";
 }
 

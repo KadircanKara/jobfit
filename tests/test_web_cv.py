@@ -8,25 +8,12 @@ from __future__ import annotations
 import copy
 
 import pytest
-from conftest import FIXTURES, load_fixture
+from conftest import FIXTURES, load_fixture, passing
 from fastapi.testclient import TestClient
 
 from jobhunt.cv import convert, importer, model, render, templates
 from jobhunt.web import cv as cv_routes
 from jobhunt.web.app import create_app
-
-
-def passing(argv, cwd):
-    (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")
-    return 0, "Output written on cv.pdf (1 page, 13 bytes)."
-
-
-@pytest.fixture
-def cv_source(tmp_path, cfg):
-    folder = tmp_path / "CV_Source"
-    folder.mkdir()
-    cfg.raw.setdefault("tailoring", {})["master_tex"] = str(folder / "master.tex")
-    return folder
 
 
 @pytest.fixture
@@ -235,3 +222,11 @@ def test_a_preview_is_served_as_a_pdf(client):
 
 def test_the_contract_is_readable(client):
     assert b"hidable" in client.get("/api/cv/contract.md").content
+
+
+def test_a_template_with_an_accented_name_downloads_under_a_readable_name(client, cfg):
+    added = templates.add(cfg, "Özge look", GOOD_TEMPLATE.decode(), engine="lualatex")
+
+    response = client.get(f"/api/cv/templates/{added.id}/source.tex")
+
+    assert 'filename="Ozge_look-template.tex"' in response.headers["content-disposition"]

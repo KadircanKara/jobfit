@@ -11,10 +11,11 @@ them must not run. lualatex also gets `--nosocket` and an environment with
 nothing in it but what TeX needs: the server's own environment carries API keys
 from .env, and Lua inside a template could otherwise print them into the PDF.
 
-What this does not do is confine reads. `--safer` breaks luaotfload (Classic's
+None of that confines what TeX reads: `--safer` breaks luaotfload (Classic's
 FontAwesome icons stop loading) and `openin_any=p` stops lualatex from starting
-at all, so a template can still read files the user can read. Built-in
-templates are trusted; uploaded ones need an OS-level sandbox before they run.
+at all. So `build(sandboxed=True)` runs the engine under macOS's sandbox-exec
+(see sandbox.py), and builds.py decides which builds get it: every template
+that did not ship with the package.
 """
 from __future__ import annotations
 
@@ -110,7 +111,10 @@ def _run(argv: list[str], cwd: pathlib.Path) -> tuple[int, str]:
         done = subprocess.run(
             [binary, *argv[1:]], cwd=cwd, capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=TIMEOUT, check=False,
-            env=environment(binary, *(arg for arg in argv[1:] if os.path.isabs(arg))),
+            # Under sandbox-exec, argv[0] is the sandbox and the TeX binary comes
+            # later as an absolute path; its folder must be on PATH too, for the
+            # helpers (kpsewhich) that TeX runs.
+            env=environment(binary, *(a for a in argv[1:] if os.path.isabs(a) and os.access(a, os.X_OK))),
         )
     except subprocess.TimeoutExpired:
         return 124, f"{argv[0]} ran past {int(TIMEOUT)} seconds and was stopped."

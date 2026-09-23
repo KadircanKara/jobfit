@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from conftest import FIXTURES
+from conftest import FIXTURES, passing
 
 from jobhunt.config import DEFAULT_CONFIG
 from jobhunt.cv import convert, latex, templates, validate
@@ -22,11 +22,6 @@ def cv_source(tmp_path, cfg):
     cfg.raw.setdefault("tailoring", {})["master_tex"] = str(folder / "master.tex")
     cfg.raw["tailoring"]["ats_check"] = str(tmp_path / "missing_ats.py")
     return folder
-
-
-def passing(argv, cwd):
-    (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")
-    return 0, "Output written on cv.pdf (1 page, 1 bytes)."
 
 
 def scripted(*answers):
@@ -69,7 +64,7 @@ def test_a_file_with_placeholders_is_already_a_template():
     assert convert.is_template(GOOD) and not convert.is_template(FINISHED)
 
 
-def test_conversion_keeps_the_uploaded_preamble_byte_for_byte(cfg, cv_source):
+def test_conversion_keeps_the_uploaded_preamble_byte_for_byte():
     sneaky = "\\documentclass{article}\n\\directlua{evil()}\n" + GOOD_BODY
 
     candidate, findings, rounds = convert.convert(
@@ -92,7 +87,7 @@ def test_a_rejected_attempt_goes_back_with_the_problems(cfg, cv_source):
     assert "was rejected" in agent_fn.prompts[1] and "prints hidden items" in agent_fn.prompts[1]
 
 
-def test_an_answer_with_no_body_is_asked_for_again(cfg, cv_source):
+def test_an_answer_with_no_body_is_asked_for_again():
     agent_fn = scripted("I cannot do that.", GOOD_BODY)
 
     _, findings, rounds = convert.convert(FINISHED, agent_fn, lambda c: validate.Findings([], []))
@@ -100,7 +95,7 @@ def test_an_answer_with_no_body_is_asked_for_again(cfg, cv_source):
     assert rounds == 2 and "- answer with the body only" in agent_fn.prompts[1]
 
 
-def test_after_three_rejected_rounds_it_gives_up(cfg, cv_source):
+def test_after_three_rejected_rounds_it_gives_up():
     agent_fn = scripted(LEAKY_BODY, LEAKY_BODY, LEAKY_BODY)
 
     _, findings, rounds = convert.convert(

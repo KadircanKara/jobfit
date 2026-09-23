@@ -12,13 +12,12 @@ from __future__ import annotations
 import collections
 import dataclasses
 import json
-import threading
 import uuid
 from collections.abc import Callable
 from typing import Any
 
 from jobhunt.config import Config
-from jobhunt.cv import latex, model, render, templates
+from jobhunt.cv import desk, latex, model, render, templates
 from jobhunt.cv import store as cvstore
 from jobhunt.cv.words import split_comments, words
 from jobhunt.web import agent as agent_module
@@ -149,9 +148,12 @@ def _difference(old: collections.Counter[str], new: collections.Counter[str]) ->
     return sorted((old - new).elements()), sorted((new - old).elements())
 
 
-class ImportDesk:
+class ImportDesk(desk.Desk):
     """One import at a time, off the request thread: the agent takes minutes,
     so the page polls instead of holding a request open."""
+
+    Failure = ImportFailed
+    running_message = "the import is still running"
 
     def __init__(
         self,
@@ -168,22 +170,15 @@ class ImportDesk:
             lambda prompt: agent_module.run(config, "import", prompt, tools="", timeout=AGENT_TIMEOUT)
         )
         self.runner = runner
-        self.background = background
-        self._lock = threading.Lock()
-        self._reset()
+        super().__init__(background=background)
 
-    def _reset(self) -> None:
-        self.state = "idle"  # idle | running | done | failed
-        self.error: str | None = None
+    def _clear(self) -> None:
         self.profile: model.Profile | None = None
         self.report: Report | None = None
         self.pdf = b""
         self.log = ""
 
     def snapshot(self) -> dict[str, Any]:
-        # Under the lock: the page polls from a request thread while the import
-        # thread finishes, and a half-updated desk reads as "failed" with no
-        # reason, which stops the polling for good.
         with self._lock:
             report, profile = self.report, self.profile
             return {
@@ -206,24 +201,16 @@ class ImportDesk:
                 raise ImportFailed(f"there is no master.tex at {master} to import")
             self._reset()
             self.state = "running"
-        if self.background:
-            threading.Thread(target=self.run, daemon=True, name="jobhunt-cv-import").start()
-        else:
-            self.run()
+        self._launch(self._work, "jobhunt-cv-import")
         return self.snapshot()
 
-    def run(self) -> None:
-        try:
-            old = cvstore.master_path(self.config).read_text(encoding="utf-8")
-            profile = extract(old, self.agent)
-            classic = templates.get(self.config, templates.DEFAULT_ID)
-            new = render.render(profile, classic.text())
-            report = compare(old, new)
-            built = latex.build(new, engine=classic.engine, runner=self.runner)
-        except Exception as exc:  # a background thread has nobody else to tell
-            with self._lock:
-                self.error, self.state = str(exc), "failed"
-            return
+    def _work(self) -> None:
+        old = cvstore.master_path(self.config).read_text(encoding="utf-8")
+        profile = extract(old, self.agent)
+        classic = templates.get(self.config, templates.DEFAULT_ID)
+        new = render.render(profile, classic.text())
+        report = compare(old, new)
+        built = latex.build(new, engine=classic.engine, runner=self.runner)
         with self._lock:
             self.profile, self.report = profile, report
             self.pdf, self.log = built.pdf, "" if built.ok else built.log
@@ -236,9 +223,3 @@ class ImportDesk:
             backup = cvstore.write(self.config, self.profile)
             self._reset()
             return backup
-
-    def discard(self) -> None:
-        with self._lock:
-            if self.state == "running":
-                raise ImportFailed("the import is still running")
-            self._reset()

@@ -10,29 +10,16 @@ import copy
 import json
 
 import pytest
-from conftest import load_fixture
+from conftest import load_fixture, passing
 
 from jobhunt.cv import master, model, templates
 from jobhunt.cv import store as cvstore
-
-
-@pytest.fixture
-def cv_source(tmp_path, cfg):
-    folder = tmp_path / "CV_Source"
-    folder.mkdir()
-    cfg.raw.setdefault("tailoring", {})["master_tex"] = str(folder / "master.tex")
-    return folder
 
 
 def save(cfg, **basics) -> None:
     data = copy.deepcopy(load_fixture("cv/profile.json"))
     data["basics"].update(basics)
     cvstore.write(cfg, model.parse(data))
-
-
-def passing(argv, cwd):
-    (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")
-    return 0, "Output written on cv.pdf (1 page, 13 bytes)."
 
 
 def failing(argv, cwd):

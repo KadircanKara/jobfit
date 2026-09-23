@@ -5,7 +5,7 @@ import pathlib
 import shutil
 
 import pytest
-from conftest import FIXTURES
+from conftest import FIXTURES, LatexRecorder
 
 from jobhunt.cv import builds, latex, sandbox
 
@@ -14,16 +14,6 @@ REAL = pytest.mark.skipif(
     not sandbox.available() or shutil.which("lualatex") is None,
     reason="needs macOS sandbox-exec and lualatex",
 )
-
-
-class Recorder:
-    def __init__(self):
-        self.calls = []
-
-    def __call__(self, argv, cwd):
-        self.calls.append(argv)
-        (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")
-        return 0, "Output written on cv.pdf (1 page, 1 bytes)."
 
 
 def test_the_profile_closes_the_network_and_the_home_folder(tmp_path):
@@ -43,7 +33,7 @@ def test_a_path_with_quotes_cannot_break_out_of_its_rule(tmp_path):
 
 
 def test_a_sandboxed_build_runs_the_engine_inside_sandbox_exec():
-    runner = Recorder()
+    runner = LatexRecorder()
 
     latex.build(DOC, runner=runner, sandboxed=True)
 

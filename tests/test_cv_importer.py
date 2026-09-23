@@ -10,7 +10,7 @@ import copy
 import json
 
 import pytest
-from conftest import FIXTURES, load_fixture
+from conftest import FIXTURES, load_fixture, passing
 
 from jobhunt.config import DEFAULT_CONFIG
 from jobhunt.cv import importer, model, render, templates
@@ -22,14 +22,6 @@ OLD = (
     PRE
     + "\\begin{document}\n\\vspace{-4pt}Hello \\textbf{World}, 10\\% faster\n% a note\n\\end{document}\n"
 )
-
-
-@pytest.fixture
-def cv_source(tmp_path, cfg):
-    folder = tmp_path / "CV_Source"
-    folder.mkdir()
-    cfg.raw.setdefault("tailoring", {})["master_tex"] = str(folder / "master.tex")
-    return folder
 
 
 def without_ids(data):
@@ -55,11 +47,6 @@ def without_ids(data):
 
 def chatty_agent(prompt: str) -> str:
     return "Here is the profile:\n" + json.dumps(without_ids(load_fixture("cv/profile.json"))) + "\nDone."
-
-
-def passing(argv, cwd):
-    (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")
-    return 0, "Output written on cv.pdf (1 page, 13 bytes)."
 
 
 def write_master(cfg, folder) -> str:

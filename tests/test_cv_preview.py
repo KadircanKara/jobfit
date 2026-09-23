@@ -3,19 +3,10 @@ from __future__ import annotations
 
 import copy
 
-import pytest
-from conftest import load_fixture
+from conftest import LatexRecorder, load_fixture
 
-from jobhunt.cv import ats, model, preview, templates
+from jobhunt.cv import model, preview, templates
 from jobhunt.cv import store as cvstore
-
-
-@pytest.fixture
-def cv_source(tmp_path, cfg):
-    folder = tmp_path / "CV_Source"
-    folder.mkdir()
-    cfg.raw.setdefault("tailoring", {})["master_tex"] = str(folder / "master.tex")
-    return folder
 
 
 class Recorder:
@@ -41,7 +32,7 @@ def test_before_a_profile_exists_previews_show_the_sample(cfg, cv_source):
 
 def test_a_preview_is_built_once_and_then_served_from_the_cache(cfg, cv_source):
     save(cfg)
-    runner = Recorder()
+    runner = LatexRecorder()
 
     first = preview.preview(cfg, "classic", runner=runner)
     second = preview.preview(cfg, "classic", runner=runner)
@@ -52,7 +43,7 @@ def test_a_preview_is_built_once_and_then_served_from_the_cache(cfg, cv_source):
 
 def test_changing_the_profile_builds_it_again(cfg, cv_source):
     save(cfg)
-    runner = Recorder()
+    runner = LatexRecorder()
     preview.preview(cfg, "classic", runner=runner)
 
     save(cfg, name="Ada King")
@@ -63,7 +54,7 @@ def test_changing_the_profile_builds_it_again(cfg, cv_source):
 
 def test_a_failed_preview_says_why_and_is_not_cached(cfg, cv_source):
     save(cfg)
-    runner = Recorder(code=1)
+    runner = LatexRecorder(code=1, log="! broken")
 
     result = preview.preview(cfg, "classic", runner=runner)
 
@@ -74,7 +65,7 @@ def test_a_failed_preview_says_why_and_is_not_cached(cfg, cv_source):
 def test_an_uploaded_template_previews_inside_the_sandbox(cfg, cv_source):
     save(cfg)
     added = templates.add(cfg, "Mine", templates.get(cfg, "classic").text(), engine="lualatex")
-    runner = Recorder()
+    runner = LatexRecorder()
 
     preview.preview(cfg, added.id, runner=runner)
 
@@ -87,58 +78,9 @@ def test_no_thumbnail_without_pdftoppm(monkeypatch):
     assert preview.thumbnail(b"%PDF-1.7") is None
 
 
-def test_the_ats_report_is_read_from_the_script_output(cfg, tmp_path):
-    script = tmp_path / "ats_check.py"
-    script.write_text("", encoding="utf-8")
-    cfg.raw.setdefault("tailoring", {})["ats_check"] = str(script)
-
-    def runner(argv, cwd):
-        assert (cwd / "cv.tex").exists() and (cwd / "cv.pdf").exists()
-        return 1, (
-            "[PASS] text layer\n"
-            "[FAIL] text fidelity: 1 of 571 source words are missing:\n"
-            "    band\n"
-            "[PASS] no hidden text\n"
-            "[WARN] links in text: x\n"
-        )
-
-    report = ats.check(cfg, "tex", b"%PDF", runner=runner)
-
-    assert report.ran and report.failures == ["text fidelity: 1 of 571 source words are missing: band"]
-    assert report.warnings == ["links in text: x"]
-
-
-def test_without_the_script_the_ats_check_is_skipped_and_says_so(cfg, tmp_path):
-    cfg.raw.setdefault("tailoring", {})["ats_check"] = str(tmp_path / "missing.py")
-
-    report = ats.check(cfg, "tex", b"%PDF")
-
-    assert not report.ran and "missing.py" in report.note
-
-
-def test_a_timed_out_ats_check_is_not_a_clean_pass(cfg, tmp_path):
-    script = tmp_path / "ats_check.py"
-    script.write_text("", encoding="utf-8")
-    cfg.raw.setdefault("tailoring", {})["ats_check"] = str(script)
-
-    report = ats.check(cfg, "tex", b"%PDF", runner=lambda argv, cwd: (ats.TIMED_OUT, "ran past 120 seconds"))
-
-    assert not report.ran and "did not complete" in report.note
-
-
-def test_a_crashed_ats_check_is_not_a_clean_pass(cfg, tmp_path):
-    script = tmp_path / "ats_check.py"
-    script.write_text("", encoding="utf-8")
-    cfg.raw.setdefault("tailoring", {})["ats_check"] = str(script)
-
-    report = ats.check(cfg, "tex", b"%PDF", runner=lambda argv, cwd: (1, "Traceback\nRuntimeError: bad pdf"))
-
-    assert not report.ran and "bad pdf" in report.note
-
-
 def test_a_half_written_cache_entry_is_never_mistaken_for_a_whole_one(cfg, cv_source):
     save(cfg)
-    runner = Recorder()
+    runner = LatexRecorder()
     preview.preview(cfg, "classic", runner=runner)
     # As if the server died mid-write: a staging folder, never renamed into place.
     home = next(preview.cache_dir(cfg).glob("classic"))

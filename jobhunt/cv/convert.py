@@ -14,12 +14,11 @@ from __future__ import annotations
 
 import pathlib
 import re
-import threading
 from collections.abc import Callable
 from typing import Any
 
 from jobhunt.config import Config
-from jobhunt.cv import ats, latex, preview, templates, validate
+from jobhunt.cv import ats, desk, latex, preview, templates, validate
 from jobhunt.web import agent as agent_module
 
 UPLOAD_LIMIT = 200_000
@@ -134,8 +133,11 @@ def _body(answer: str) -> str | None:
     return answer[start : end + len(_END)].lstrip(" \t") + "\n"
 
 
-class UploadDesk:
+class UploadDesk(desk.Desk):
     """One upload at a time, checked or converted off the request thread."""
+
+    Failure = UploadFailed
+    running_message = "the template is still being checked"
 
     def __init__(
         self,
@@ -153,13 +155,9 @@ class UploadDesk:
         )
         self.runner = runner
         self.ats_runner = ats_runner
-        self.background = background
-        self._lock = threading.Lock()
-        self._reset()
+        super().__init__(background=background)
 
-    def _reset(self) -> None:
-        self.state = "idle"  # idle | running | done | failed
-        self.error: str | None = None
+    def _clear(self) -> None:
         self.filename = ""
         self.mode = ""  # template | convert
         self.source = ""
@@ -200,28 +198,21 @@ class UploadDesk:
             self._reset()
             self.state, self.filename, self.source = "running", filename, text
             self.mode = "template" if is_template(text) else "convert"
-        if self.background:
-            threading.Thread(target=self.run, args=(text,), daemon=True, name="jobhunt-cv-upload").start()
-        else:
-            self.run(text)
+        self._launch(lambda: self._work(text), "jobhunt-cv-upload")
         return self.snapshot()
 
-    def run(self, text: str) -> None:
+    def _work(self, text: str) -> None:
+        profile = preview.profile_for(self.config)
+
         def check(candidate: str) -> validate.Findings:
             return validate.validate(
                 self.config, candidate, profile=profile, runner=self.runner, ats_runner=self.ats_runner
             )
 
-        try:
-            profile = preview.profile_for(self.config)
-            if self.mode == "template":
-                candidate, findings, rounds = text, check(text), 0
-            else:
-                candidate, findings, rounds = convert(text, self.agent, check)
-        except Exception as exc:  # a background thread has nobody else to tell
-            with self._lock:
-                self.error, self.state = str(exc), "failed"
-            return
+        if self.mode == "template":
+            candidate, findings, rounds = text, check(text), 0
+        else:
+            candidate, findings, rounds = convert(text, self.agent, check)
         with self._lock:
             self.candidate, self.findings, self.rounds = candidate, findings, rounds
             self.state = "done"
@@ -240,9 +231,3 @@ class UploadDesk:
             )
             self._reset()
             return added
-
-    def discard(self) -> None:
-        with self._lock:
-            if self.state == "running":
-                raise UploadFailed("the template is still being checked")
-            self._reset()
