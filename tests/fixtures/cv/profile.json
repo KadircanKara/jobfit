@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "basics": {
+    "name": "Ada Lovelace",
+    "headline": "M.Sc. Computer Science",
+    "headline_variants": [
+      {"id": "hv1", "label": "Optimization targeting", "text": "Optimization & Backend Engineer"}
+    ],
+    "email": "ada@example.org",
+    "phone": "+441234567890",
+    "location": "London, UK",
+    "links": [
+      {"label": "LinkedIn", "url": "https://www.linkedin.com/in/ada/"},
+      {"label": "GitHub", "url": "https://github.com/ada"}
+    ]
+  },
+  "extras": [{"id": "x1", "label": "MILITARY STATUS", "value": "Completed"}],
+  "summary": {
+    "text": "Engineer combining **optimization research** with R&D delivery.",
+    "variants": [{"id": "sv1", "label": "VARIANT A - ENERGY", "text": "Energy-first summary.\nSecond line."}]
+  },
+  "experience": [
+    {
+      "id": "e1", "title": "Analytical Engines Ltd", "subtitle": "Engineer",
+      "location": "London, UK", "start": "April 2026", "end": "Present",
+      "notes": "NOTE: lead with the engine work.",
+      "bullets": [
+        {"id": "b1", "text": "Built a **multi-agent** planner, 10% faster."},
+        {"id": "b2", "text": "Retired bullet kept for reference.", "hidden": true}
+      ]
+    },
+    {
+      "id": "e2", "title": "Old Mill", "subtitle": "Intern", "start": "2019", "hidden": true,
+      "bullets": [{"id": "b3", "text": "Counted looms."}]
+    }
+  ],
+  "education": [
+    {
+      "id": "d1", "title": "Özyeğin University", "subtitle": "Master of Science in Computer Science",
+      "gpa": "3.90/4.00", "location": "İstanbul", "start": "Spring 2022", "end": "Fall 2025",
+      "bullets": [
+        {"id": "b4", "text": "**Publications**: [Notes on the Engine](https://example.org/paper#1)"}
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "id": "p1", "title": "Difference Planner", "start": "Jun 2026", "end": "Jul 2026",
+      "url": "https://example.org/planner",
+      "bullets": [
+        {"id": "b5", "text": "Ran 6 models × 36 configurations on *AWS*."},
+        {"id": "b6", "text": "Every bullet here is hidden.", "hidden": true}
+      ]
+    }
+  ],
+  "skills": [
+    {"id": "s1", "category": "Programming Languages", "items": ["Python", "C#", "SQL"]},
+    {"id": "s2", "category": "AI & ML", "items": ["RAG", "Evaluation"]}
+  ],
+  "languages": [{"id": "l1", "name": "English", "level": "C1", "detail": "IELTS: 7.5 Overall - Jan 2026"}],
+  "custom_sections": [
+    {"id": "custom-1", "title": "AWARDS", "entries": [{"id": "a1", "title": "Best Paper", "start": "2025"}]}
+  ],
+  "layout": [
+    {"key": "summary", "title": "PROFESSIONAL SUMMARY"},
+    {"key": "experience", "title": "EXPERIENCE"},
+    {"key": "education", "title": "EDUCATION"},
+    {"key": "skills", "title": "SKILLS"},
+    {"key": "languages", "title": "LANGUAGES"},
+    {"key": "projects", "title": "PROJECTS"},
+    {"key": "custom:custom-1", "title": "AWARDS"}
+  ]
+}
