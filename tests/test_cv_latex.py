@@ -140,3 +140,17 @@ def test_a_real_build_reports_a_character_its_font_lacks():
     result = latex.build(DOC.replace("Hello", "Hello ✓"))
 
     assert result.ok and result.missing == ("✓",)
+
+
+def test_the_log_file_comes_back_on_success_and_on_failure():
+    def writes_a_log(code):
+        def run(argv, cwd):
+            (cwd / "cv.log").write_text("! Undefined control sequence.\nfull transcript\n", encoding="utf-8")
+            if code == 0:
+                (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")
+            return code, "short"
+
+        return run
+
+    assert "full transcript" in latex.build("x", runner=writes_a_log(0)).transcript
+    assert "full transcript" in latex.build("x", runner=writes_a_log(1)).transcript

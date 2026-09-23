@@ -29,8 +29,8 @@ from typing import Any, Protocol
 
 from jobhunt.config import Config
 from jobhunt.cv import latex as cv_latex
+from jobhunt.cv import tailored
 from jobhunt.web import agent as agent_module
-from jobhunt.web.tailor import TailorError
 
 # Two pages is what the batch cuts to. Past that in the studio it is the user's
 # document, so this only ever warns.
@@ -108,6 +108,9 @@ class Session:
     pages: int | None = None
     thinking: bool = False
     error: str | None = None
+    # The master this CV was cut from: the folder's own copy, rendered in the
+    # template picked for the job, or the global one for older folders.
+    master: str = ""
 
     @property
     def ahead(self) -> int:
@@ -159,8 +162,7 @@ class ReviseDesk:
     ) -> None:
         self.config = config
         self.agent = agent or ClaudeAgent(config)
-        self.latex = latex or PdfLatex()
-        self.master = str(config.get("tailoring", "master_tex") or "")
+        self.latex = latex or TailoredLatex(config)
         self._root = pathlib.Path(str(config.data_dir)) / "revise"
         self._sessions: dict[int, Session] = {}
         self._lock = threading.Lock()
@@ -200,6 +202,7 @@ class ReviseDesk:
             title=title,
             company=company,
             fit=fit,
+            master=str(tailored.master_for(self.config, source)),
         )
         _keep_version(draft, 1)
         session.pages = self._pages_of(draft)
@@ -266,7 +269,7 @@ class ReviseDesk:
         tex = draft / TEX_NAME
         before = tex.read_text(encoding="utf-8")
 
-        answer = self.agent.revise(draft=session.draft, message=message, master=self.master)
+        answer = self.agent.revise(draft=session.draft, message=message, master=session.master)
         text = _said(answer)
         changes = [str(item) for item in (answer.get("changes") or [])]
         kind = _kind_of(answer, changes)
@@ -540,23 +543,15 @@ def _json_object(raw: str) -> dict[str, Any]:
         raise ReviseError("the agent did not say what it changed") from exc
 
 
-class PdfLatex:
-    """Builds in place, because a CV folder carries its own assets."""
+class TailoredLatex:
+    """Builds a draft the way every tailored CV is built: in the sandbox, with
+    the engine of the template its master came from. The revise agent has no
+    shell, and a build is the one place its edits run as code."""
+
+    def __init__(self, config: Config, runner: cv_latex.Runner | None = None) -> None:
+        self.config = config
+        self.runner = runner
 
     def build(self, tex: pathlib.Path) -> tuple[bool, str, bytes]:
-        import subprocess
-
-        binary = shutil.which("pdflatex") or shutil.which("xelatex")
-        if binary is None:
-            raise TailorError("no LaTeX toolchain found. install MacTeX or TeX Live.")
-        done = subprocess.run(
-            [binary, "-interaction=nonstopmode", "-halt-on-error",
-             f"-output-directory={tex.parent}", str(tex)],
-            capture_output=True, text=True, timeout=180.0, check=False,
-            cwd=str(tex.parent),
-        )
-        pdf = tex.with_suffix(".pdf")
-        log = done.stdout + done.stderr
-        if done.returncode != 0 or not pdf.exists():
-            return False, log, b""
-        return True, log, pdf.read_bytes()
+        built = tailored.build(self.config, tex, runner=self.runner)
+        return built.ok, built.log, built.pdf

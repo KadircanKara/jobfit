@@ -57,6 +57,9 @@ class Build:
     # Characters the build dropped because the template's font cannot print
     # them. The build still succeeds, so these are said out loud instead.
     missing: tuple[str, ...] = ()
+    # The engine's own .log, whole. `log` is the console output, trimmed for a
+    # person; checks that read the log file (verify_cv.py) need the real one.
+    transcript: str = ""
 
 
 def build(
@@ -95,12 +98,25 @@ def build(
         if code == 0:
             code, log = run(argv, folder)
         pdf = folder / "cv.pdf"
+        transcript = _read(folder / "cv.log")
         if code != 0 or not pdf.exists():
-            return Build(ok=False, log=trim(log))
+            return Build(ok=False, log=trim(log), transcript=transcript)
         data = pdf.read_bytes()
         return Build(
-            ok=True, log=trim(log), pdf=data, pages=page_count(log, data), missing=missing(folder / "cv.log")
+            ok=True,
+            log=trim(log),
+            pdf=data,
+            pages=page_count(log, data),
+            missing=missing(transcript),
+            transcript=transcript,
         )
+
+
+def _read(path: pathlib.Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def _run(argv: list[str], cwd: pathlib.Path) -> tuple[int, str]:
@@ -129,13 +145,9 @@ def environment(*binaries: str) -> dict[str, str]:
     return kept
 
 
-def missing(log_file: pathlib.Path) -> tuple[str, ...]:
+def missing(transcript: str) -> tuple[str, ...]:
     """The characters the log says had no glyph, each once, in order."""
-    try:
-        text = log_file.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ()
-    return tuple(dict.fromkeys(_MISSING.findall(text)))
+    return tuple(dict.fromkeys(_MISSING.findall(transcript)))
 
 
 def known_engine(name: str) -> str:

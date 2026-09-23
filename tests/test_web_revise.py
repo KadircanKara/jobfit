@@ -38,9 +38,11 @@ class FakeAgent:
     def __init__(self, answers=None) -> None:
         self.answers = list(answers or [])
         self.seen: list[str] = []
+        self.masters: list[str] = []
 
     def revise(self, *, draft, message, master):
         self.seen.append(message)
+        self.masters.append(master)
         answer = self.answers.pop(0) if self.answers else {
             "summary": "Done.", "changes": ["SUMMARY > rewrote the opening"],
         }
@@ -517,3 +519,42 @@ def test_the_log_shown_starts_at_the_error_not_the_memory_dump() -> None:
 
     assert shown.startswith("! Undefined control sequence.")
     assert "l.42" in shown
+
+
+# --- which master ---------------------------------------------------------------
+
+
+def test_a_cv_cut_in_a_template_is_revised_against_that_master(cfg, shipped) -> None:
+    (shipped / "master.tex").write_text(TEX, encoding="utf-8")
+    agent = FakeAgent()
+    board, _ = opened(cfg, shipped, agent=agent)
+
+    board.send(7, "tighten the summary")
+    finish(board)
+
+    assert agent.masters == [str(shipped / "master.tex")]
+
+
+def test_a_cv_from_before_templates_is_revised_against_the_global_master(cfg, shipped) -> None:
+    cfg.raw.setdefault("tailoring", {})["master_tex"] = "/somewhere/CV_Source/master.tex"
+    agent = FakeAgent()
+    board, _ = opened(cfg, shipped, agent=agent)
+
+    board.send(7, "tighten the summary")
+    finish(board)
+
+    assert agent.masters == ["/somewhere/CV_Source/master.tex"]
+
+
+def test_the_studio_builds_drafts_in_the_sandbox(cfg, shipped) -> None:
+    calls = []
+
+    def run(argv, cwd):
+        calls.append(argv)
+        (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")
+        return 0, "Output written on cv.pdf (1 page, 13 bytes)."
+
+    ok, log, pdf = revise_module.TailoredLatex(cfg, runner=run).build(shipped / "cv.tex")
+
+    assert ok and pdf.startswith(b"%PDF") and "1 page" in log
+    assert calls and all(argv[0].endswith("sandbox-exec") for argv in calls)
