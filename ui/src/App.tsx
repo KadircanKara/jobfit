@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import "./theme.css";
 import {
   api,
@@ -12,11 +12,52 @@ import {
   type RunSummary,
   type Vocab,
 } from "./api";
-import { FiltersPanel } from "./Filters";
+import { FiltersPanel, SourcePicker } from "./Filters";
 import { GatePanel, Log, PhaseStrip, RankPanel, Shortlist, SourceRail } from "./Run";
 import { TailorBatch } from "./Tailor";
 import { ReviseStudio } from "./Revise";
 import { Profile } from "./Profile";
+
+/* Each section of the app is a page with its own URL, so a tab can be linked,
+   bookmarked, reopened, and walked back through with the browser's own back
+   button. Three routes did not justify a router dependency. */
+const PATHS = {
+  hunt: "/",
+  filters: "/filters",
+  profile: "/profile",
+} as const;
+
+type Screen = keyof typeof PATHS;
+
+function screenFor(path: string): Screen {
+  const found = (Object.keys(PATHS) as Screen[]).find(
+    (screen) => screen !== "hunt" && path.startsWith(PATHS[screen]),
+  );
+  // Anything else is the hunt page. The server only serves the shell for the
+  // three known paths, so an unknown one never reaches this in the first place.
+  return found ?? "hunt";
+}
+
+function useScreen(): [Screen, (next: Screen) => void] {
+  const [screen, setScreen] = useState<Screen>(() => screenFor(window.location.pathname));
+
+  useEffect(() => {
+    const onPop = () => setScreen(screenFor(window.location.pathname));
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  const go = useCallback((next: Screen) => {
+    // Pushed only on a real move, so clicking the current tab twice does not
+    // leave two entries that both go nowhere.
+    if (window.location.pathname !== PATHS[next]) {
+      window.history.pushState(null, "", PATHS[next]);
+    }
+    setScreen(next);
+  }, []);
+
+  return [screen, go];
+}
 
 const EMPTY_RUN: RunState = {
   phase: "idle",
@@ -49,7 +90,7 @@ export default function App() {
   // it starts shut and the phase strip above it carries the run's state.
   const [feedOpen, setFeedOpen] = useState(false);
   const [valid, setValid] = useState(true);
-  const [screen, setScreen] = useState<"hunt" | "profile">("hunt");
+  const [screen, go] = useScreen();
   const [tailor, setTailor] = useState<{ jobs: JobRun[]; running: boolean }>({ jobs: [], running: false });
   const [revisable, setRevisable] = useState<RevisableJob[]>([]);
   const [reviewing, setReviewing] = useState<number | null>(null);
@@ -59,6 +100,11 @@ export default function App() {
   // Which saved run is on screen. Empty means the live one.
   const [viewing, setViewing] = useState("");
   const results = useRef<HTMLDivElement>(null);
+  // Which sources a run fetches from. It sits beside the run controls rather
+  // than in the filters form, so it is owned here and written on the spot -
+  // there is no Save button on this screen to defer it to.
+  const [sources, setSources] = useState<string[]>([]);
+  const [savingSources, setSavingSources] = useState(false);
 
   useEffect(() => {
     document.documentElement.dataset.mode = mode;
@@ -73,6 +119,7 @@ export default function App() {
     api.filters().then((body) => {
       setFilters(body.filters);
       setVocab(body.vocab);
+      setSources(body.filters.sources?.length ? body.filters.sources : ["ats", "linkedin"]);
     });
     api.run().then(setRun);
     // Which jobs are already recorded as sent. Studio and the tailor chat show
@@ -128,7 +175,9 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [run.running, viewing]);
 
-  const sources = useMemo(() => progressFrom(events), [events]);
+  // Per-board sync progress, distinct from the sources a run is allowed to
+  // fetch from: this one is read off the feed while the run is going.
+  const syncSources = useMemo(() => progressFrom(events), [events]);
 
   useEffect(() => {
     api.runs().then((body) => setPast(body.runs));
@@ -183,6 +232,32 @@ export default function App() {
     setTailor(await api.tailorState());
   }, [picked]);
 
+  // Clearing the last source is allowed on screen - the picker says why it is
+  // wrong - but never written, since an empty list would leave the next run
+  // with nothing to fetch and no obvious way to tell it had been emptied.
+  const pickSources = useCallback(
+    async (next: string[]) => {
+      const previous = sources;
+      setSources(next);
+      if (!next.length) return;
+      setSavingSources(true);
+      setNotice(null);
+      try {
+        const body = await api.saveFilters({ sources: next });
+        setFilters(body.filters);
+      } catch {
+        // Nothing on this screen owns an unsaved sources list, so a rejected
+        // write has to put the boxes back rather than leave them lying about
+        // what the next run will fetch.
+        setSources(previous);
+        setNotice("could not save the sources — they are back as they were");
+      } finally {
+        setSavingSources(false);
+      }
+    },
+    [sources],
+  );
+
   const start = useCallback(async () => {
     setNotice(null);
     setEvents([]);
@@ -229,24 +304,6 @@ export default function App() {
         <div className="brand">
           Job<em>hunt</em>
         </div>
-        <div className="tabs" role="tablist">
-          <button
-            className="tab"
-            role="tab"
-            aria-selected={screen === "hunt"}
-            onClick={() => setScreen("hunt")}
-          >
-            Job hunt
-          </button>
-          <button
-            className="tab"
-            role="tab"
-            aria-selected={screen === "profile"}
-            onClick={() => setScreen("profile")}
-          >
-            Profile
-          </button>
-        </div>
         <div className="modesw">
           <button aria-pressed={mode === "light"} onClick={() => setMode("light")}>
             Light
@@ -257,19 +314,40 @@ export default function App() {
         </div>
       </div>
 
-      <main>
+      <div className="shell">
+        <nav className="sidenav" aria-label="Sections">
+          <NavLink screen="hunt" current={screen} go={go}>
+            Job hunt
+          </NavLink>
+          <NavLink screen="filters" current={screen} go={go}>
+            Search filters
+          </NavLink>
+          <NavLink screen="profile" current={screen} go={go}>
+            Profile
+          </NavLink>
+        </nav>
+
+        <main>
         {screen === "profile" && <Profile />}
+
+        {/* Kept mounted whichever screen is up, so an unsaved draft survives a
+            trip to the hunt page and back. */}
+        {filters && vocab && (
+          <div style={{ display: screen === "filters" ? undefined : "none" }}>
+            <FiltersPanel
+              filters={filters}
+              vocab={vocab}
+              onSaved={setFilters}
+              onValidity={setValid}
+              sources={sources}
+            />
+          </div>
+        )}
+
         {screen === "hunt" && (
         <>
+        <div className="runbar">
         <div className="hero">
-          <div>
-            <h1>Run the search</h1>
-            <div className="sub">{subtitle(run)}</div>
-          </div>
-          <div className="runstate" data-state={stateOf(run)}>
-            <span className="pulse" />
-            <span>{statusText(run)}</span>
-          </div>
           <div className="runctl">
             {run.running ? (
               <>
@@ -311,6 +389,13 @@ export default function App() {
               </button>
             )}
           </div>
+          {filters && (
+            <SourcePicker value={sources} onChange={pickSources} saving={savingSources} />
+          )}
+          <div className="runstate" data-state={stateOf(run)}>
+            <span className="pulse" />
+            <span>{statusText(run)}</span>
+          </div>
         </div>
 
         {notice && <div className="err">{notice}</div>}
@@ -344,16 +429,13 @@ export default function App() {
             ))}
           </div>
         )}
+        </div>
 
         {viewing && (
           <div className="fx">
             Showing the run from <b>{stamp(viewing)}</b>, read back from disk. Nothing here is
             live.
           </div>
-        )}
-
-        {filters && vocab && (
-          <FiltersPanel filters={filters} vocab={vocab} onSaved={setFilters} onValidity={setValid} />
         )}
 
         {started && (
@@ -376,7 +458,7 @@ export default function App() {
                   {(run.counters.boards_done ?? 0).toLocaleString()} boards
                 </div>
               </div>
-              <SourceRail sources={sources} />
+              <SourceRail sources={syncSources} />
               {run.degraded.length > 0 && (
                 <div className="hint" style={{ marginTop: 12 }}>
                   degraded this run: {run.degraded.join(", ")} — their jobs stay from the last successful
@@ -528,8 +610,41 @@ export default function App() {
         )}
         </>
         )}
-      </main>
+        </main>
+      </div>
     </>
+  );
+}
+
+/* A real anchor, not a button: the tabs are pages now, so opening one in a new
+   tab or copying its address has to work the way it does anywhere else. Only a
+   plain left click is intercepted. */
+function NavLink({
+  screen,
+  current,
+  go,
+  children,
+}: {
+  screen: Screen;
+  current: Screen;
+  go: (next: Screen) => void;
+  children: ReactNode;
+}) {
+  return (
+    <a
+      className="tab"
+      href={PATHS[screen]}
+      aria-current={current === screen ? "page" : undefined}
+      onClick={(event) => {
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+          return;
+        }
+        event.preventDefault();
+        go(screen);
+      }}
+    >
+      {children}
+    </a>
   );
 }
 
@@ -566,14 +681,6 @@ function statusText(run: RunState) {
   if (run.outcome === "stopped_early") return "Stopped early · partial results kept";
   if (run.outcome === "completed") return "Run complete";
   return "Idle";
-}
-
-function subtitle(run: RunState) {
-  if (run.phase === "paused") return "paused partway · the boards already fetched are kept";
-  if (run.running) return "a run is going · closing this tab will not stop it";
-  if (run.outcome === "restored") return "results read back from the corpus · nothing running";
-  if (run.outcome) return "last run finished · start another when you want";
-  return "filters ready · nothing running";
 }
 
 /** A run id is its start time: "20260822-100000". */

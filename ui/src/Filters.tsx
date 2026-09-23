@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, FieldError, type Filters, type Vocab } from "./api";
 import { TagField } from "./TagField";
 import { TitlePresets } from "./TitlePresets";
@@ -42,6 +42,10 @@ type Props = {
   vocab: Vocab;
   onSaved: (filters: Filters) => void;
   onValidity: (ok: boolean) => void;
+  /* Which sources are on. Owned by App, which draws the picker beside the run
+     controls and saves a toggle straight away, so this panel only reads it -
+     to say whether the Upwork settings are live and to gate its own save. */
+  sources: string[];
 };
 
 type Draft = {
@@ -98,10 +102,110 @@ function draftFrom(filters: Filters): Draft {
   };
 }
 
-export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
+/** What a save writes: one section, or the whole form. */
+type Scope = "boards" | "upwork" | "all";
+
+function boardsPayload(draft: Draft, sources: string[]) {
+  return {
+    titles: draft.titles,
+    locations: draft.locations,
+    work_model: draft.work_model,
+    job_types: draft.job_types,
+    sources,
+    experience_min: draft.experience_min,
+    experience_max: draft.experience_max === "none" ? null : draft.experience_max,
+    min_salary: draft.min_salary || null,
+    currency: draft.currency,
+    max_age: { value: Number(draft.age_value), unit: draft.age_unit },
+    top_n: Number(draft.top_n),
+  };
+}
+
+function upworkPayload(draft: Draft) {
+  return {
+    queries: draft.upwork.queries,
+    job_types: draft.upwork.job_types,
+    min_hourly: draft.upwork.min_hourly || null,
+    min_fixed: draft.upwork.min_fixed || null,
+    experience_level: draft.upwork.experience_level,
+    sort: draft.upwork.sort,
+    verified_payment_only: draft.upwork.verified_payment_only,
+    require_verified_client: draft.upwork.require_verified_client,
+    require_client_spend: draft.upwork.require_client_spend,
+  };
+}
+
+/* Every value in a Draft is a string, a boolean, or a list of strings, and the
+   keys are written in one place, so serialising is a sound way to compare. */
+function same(a: unknown, b: unknown) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** Save and revert for one section, or for the form as a whole. */
+function Acts({
+  scope,
+  dirty,
+  ok,
+  saved,
+  saving,
+  onSave,
+  onRevert,
+  global: whole,
+}: {
+  scope: Scope;
+  dirty: boolean;
+  ok: boolean;
+  saved: Scope | null;
+  saving: Scope | null;
+  onSave: (scope: Scope) => void;
+  onRevert: (scope: Scope) => void;
+  global?: boolean;
+}) {
+  const inFlight = saving === scope;
+  // Any save in flight locks every row, not just its own: the reply rewrites
+  // the whole draft baseline, so a second write started meanwhile would be
+  // measured against the wrong one.
+  const locked = saving !== null;
+  return (
+    <div className={whole ? "formacts whole" : "formacts"}>
+      <button
+        className="btn ghost"
+        onClick={() => onRevert(scope)}
+        disabled={!dirty || locked}
+      >
+        Revert
+      </button>
+      <button
+        className={whole ? "btn" : "btn ghost"}
+        onClick={() => onSave(scope)}
+        disabled={!ok || !dirty || locked}
+        aria-busy={inFlight}
+      >
+        {inFlight ? (
+          <>
+            <span className="spin" aria-hidden="true" />
+            Saving
+          </>
+        ) : saved === scope ? (
+          "Saved"
+        ) : whole ? (
+          "Save all"
+        ) : (
+          "Save"
+        )}
+      </button>
+    </div>
+  );
+}
+
+export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources }: Props) {
   const [draft, setDraft] = useState<Draft>(() => draftFrom(filters));
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [saved, setSaved] = useState(false);
+  // Which scope just saved, so only the button that was pressed says so.
+  const [saved, setSaved] = useState<Scope | null>(null);
+  // Which scope is being written. Also what locks the other rows: two saves in
+  // flight would race, and the later reply would overwrite the earlier one.
+  const [saving, setSaving] = useState<Scope | null>(null);
   const [impact, setImpact] = useState<{ matched: number; total: number } | null>(null);
   // Bumped after a save so the feeds section refetches: its proposals are
   // scored against the titles that were just written, not the old ones.
@@ -109,6 +213,10 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
   // Presets live beside the titles in filters.yaml, so they arrive with the
   // filters and are re-read from whatever the group endpoints return.
   const [groups, setGroups] = useState<Record<string, string[]>>(filters.title_groups ?? {});
+  // One section at a time, and neither to begin with: the clutter this page was
+  // split up to fix came from the Upwork block and the board feeds being on
+  // screen together, so the page opens as a choice between the two.
+  const [open, setOpen] = useState<"boards" | "upwork" | null>(null);
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
@@ -121,44 +229,51 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
   const valid = Object.keys(local).length === 0;
   onValidity(valid);
 
+  // Every Upwork setting is keyed under the same prefix, in the validator and
+  // in the errors the API tags, so one test splits both maps by section.
+  const upworkOk = !Object.keys(local).some((key) => key.startsWith("upwork."));
+  const boardsOk = !Object.keys(local).some((key) => !key.startsWith("upwork."));
+  const onFile = useMemo(() => draftFrom(filters), [filters]);
+  const upworkDirty = !same(draft.upwork, onFile.upwork);
+  const boardsDirty = !same({ ...draft, upwork: null }, { ...onFile, upwork: null });
+
   const salary = parseSalary(draft.min_salary);
 
-  async function save() {
+  // The API takes a partial payload - `_updates_from` keys off which fields are
+  // present - so a section can be written without touching the other one.
+  async function save(scope: Scope) {
     setErrors({});
+    setSaving(scope);
     try {
       const body = await api.saveFilters({
-        titles: draft.titles,
-        locations: draft.locations,
-        work_model: draft.work_model,
-        job_types: draft.job_types,
-        sources: draft.sources,
-        experience_min: draft.experience_min,
-        experience_max: draft.experience_max === "none" ? null : draft.experience_max,
-        min_salary: draft.min_salary || null,
-        currency: draft.currency,
-        max_age: { value: Number(draft.age_value), unit: draft.age_unit },
-        top_n: Number(draft.top_n),
-        upwork: {
-          queries: draft.upwork.queries,
-          job_types: draft.upwork.job_types,
-          min_hourly: draft.upwork.min_hourly || null,
-          min_fixed: draft.upwork.min_fixed || null,
-          experience_level: draft.upwork.experience_level,
-          sort: draft.upwork.sort,
-          verified_payment_only: draft.upwork.verified_payment_only,
-          require_verified_client: draft.upwork.require_verified_client,
-          require_client_spend: draft.upwork.require_client_spend,
-        },
+        ...(scope === "upwork" ? {} : boardsPayload(draft, sources)),
+        ...(scope === "boards" ? {} : { upwork: upworkPayload(draft) }),
       });
       onSaved(body.filters);
       setImpact(body.title_impact);
-      setSaved(true);
+      setSaved(scope);
       setFeedsReload((n) => n + 1);
-      window.setTimeout(() => setSaved(false), 1400);
+      window.setTimeout(() => setSaved(null), 1400);
     } catch (error) {
-      if (error instanceof FieldError) setErrors({ [error.field]: error.message });
-      else setErrors({ filters: String(error) });
+      if (error instanceof FieldError) {
+        setErrors({ [error.field]: error.message });
+        // The rejected field renders inside one of the two sections, so a save
+        // that fails against a collapsed one would report nothing.
+        setOpen(error.field.startsWith("upwork.") ? "upwork" : "boards");
+      } else setErrors({ filters: String(error) });
+    } finally {
+      setSaving(null);
     }
+  }
+
+  /** Throw away unsaved edits in `scope`, back to what is on file. */
+  function revert(scope: Scope) {
+    const fromFile = draftFrom(filters);
+    setDraft((current) => ({
+      ...(scope === "upwork" ? current : fromFile),
+      upwork: scope === "boards" ? current.upwork : fromFile.upwork,
+    }));
+    setErrors({});
   }
 
   const titleCount = impact
@@ -170,12 +285,17 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
 
   return (
     <>
-      <div className="panel">
-        <div className="panel-head">
-          <h2>Search filters</h2>
-          <div className="note">{vocab.active_jobs.toLocaleString()} active jobs in the corpus</div>
-        </div>
+      <div className="pagehead">
+        <h1>Search filters</h1>
+        <div className="note">{vocab.active_jobs.toLocaleString()} active jobs in the corpus</div>
+      </div>
 
+      <Accordion
+        title="Job boards"
+        note="what to search for, and which feeds to search"
+        open={open === "boards"}
+        onToggle={() => setOpen((current) => (current === "boards" ? null : "boards"))}
+      >
         <div className="fields">
           <TagField
             label="Titles"
@@ -331,7 +451,6 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
             {messages.experience_max && <div className="err">{messages.experience_max}</div>}
             {messages.min_salary && <div className="err">{messages.min_salary}</div>}
             {messages.locations && <div className="err">{messages.locations}</div>}
-            {messages.filters && <div className="err">{messages.filters}</div>}
             {salary !== null && !messages.min_salary && (
               <div className="fx">
                 At or above <b>{salary.toLocaleString("en-US")}</b> {draft.currency} — matched as{" "}
@@ -392,18 +511,139 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity }: Props) {
           </div>
         </div>
 
-        <SourcePicker value={draft.sources} onChange={(next) => set("sources", next)} />
+        <FeedsPanel reloadToken={feedsReload} />
 
-        {draft.sources.includes("upwork") && (
-          <UpworkPanel value={draft.upwork} onChange={setUpwork} messages={messages} />
-        )}
+        <Acts
+          scope="boards"
+          dirty={boardsDirty}
+          ok={boardsOk && sources.length > 0}
+          saved={saved}
+          saving={saving}
+          onSave={save}
+          onRevert={revert}
+        />
+      </Accordion>
 
-        <button className="btn ghost" onClick={save} disabled={!valid || draft.sources.length === 0}>
-          {saved ? "Saved" : "Save filters"}
-        </button>
-      </div>
-      <FeedsPanel reloadToken={feedsReload} />
+      <Accordion
+        title="Upwork"
+        note={
+          sources.includes("upwork")
+            ? "how the Upwork search is run"
+            : "Upwork is not one of the selected sources — these sit idle"
+        }
+        open={open === "upwork"}
+        onToggle={() => setOpen((current) => (current === "upwork" ? null : "upwork"))}
+      >
+        <UpworkPanel value={draft.upwork} onChange={setUpwork} messages={messages} />
+
+        <Acts
+          scope="upwork"
+          dirty={upworkDirty}
+          ok={upworkOk}
+          saved={saved}
+          saving={saving}
+          onSave={save}
+          onRevert={revert}
+        />
+      </Accordion>
+
+      <Acts
+        global
+        scope="all"
+        dirty={boardsDirty || upworkDirty}
+        ok={valid && sources.length > 0}
+        saved={saved}
+        saving={saving}
+        onSave={save}
+        onRevert={revert}
+      />
+      {messages.filters && <div className="err">{messages.filters}</div>}
     </>
+  );
+}
+
+// Mirrors the `height` transition on .acc-body. The listener is what normally
+// ends a slide; this only has to cover the case where no transition runs at
+// all - reduced motion switches them off globally - and transitionend with it.
+const SLIDE_MS = 220;
+
+function Accordion({
+  title,
+  note,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  note: string;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  const body = useRef<HTMLDivElement>(null);
+  // A section stays in the tree until its closing slide has finished, so there
+  // is a box left to animate. One never opened renders nothing at all.
+  const [mounted, setMounted] = useState(open);
+  if (open && !mounted) setMounted(true);
+  const wasOpen = useRef(open);
+
+  useLayoutEffect(() => {
+    const el = body.current;
+    if (!el) return;
+    const changed = wasOpen.current !== open;
+    wasOpen.current = open;
+    // Nothing to slide from on the very first render of the element: settle it
+    // open and let the layout have its height back.
+    if (!changed) {
+      if (open) {
+        el.style.height = "auto";
+        el.style.overflow = "visible";
+      }
+      return;
+    }
+
+    el.style.overflow = "hidden";
+    el.style.height = `${open ? 0 : el.scrollHeight}px`;
+    // Read back, so the two writes are two frames and not one computed style.
+    void el.offsetHeight;
+    el.style.height = open ? `${el.scrollHeight}px` : "0px";
+
+    const settle = () => {
+      if (!open) {
+        setMounted(false);
+        return;
+      }
+      // Handed back to the layout once open, so a field that grows later - or
+      // a suggestion list hanging past the bottom - is never clipped.
+      el.style.height = "auto";
+      el.style.overflow = "visible";
+    };
+    // Scoped to this box's own height: transitionend bubbles, and a button
+    // inside the section fading under the cursor would otherwise end the slide.
+    const onEnd = (event: TransitionEvent) => {
+      if (event.target === el && event.propertyName === "height") settle();
+    };
+    el.addEventListener("transitionend", onEnd);
+    const timer = window.setTimeout(settle, SLIDE_MS + 40);
+    return () => {
+      el.removeEventListener("transitionend", onEnd);
+      window.clearTimeout(timer);
+    };
+  }, [open, mounted]);
+
+  return (
+    <div className="acc" data-open={open}>
+      <button className="acc-head" type="button" aria-expanded={open} onClick={onToggle}>
+        <span className="chev" aria-hidden="true" />
+        <h2>{title}</h2>
+        <span className="note">{note}</span>
+      </button>
+      {mounted && (
+        <div className="acc-body" ref={body}>
+          <div className="acc-inner">{children}</div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -569,15 +809,19 @@ function UpworkPanel({
   );
 }
 
-function SourcePicker({
+export function SourcePicker({
   value,
   onChange,
+  saving,
 }: {
   value: string[];
   onChange: (next: string[]) => void;
+  /* A toggle here writes on the spot - there is no Save button beside the run
+     controls to defer it to - so the write has to say it is happening. */
+  saving?: boolean;
 }) {
   return (
-    <div className="sources">
+    <div className="sources" aria-busy={saving}>
       <span className="lbl">Sources</span>
       {SOURCES.map((source) => (
         <label key={source.id} className={source.enabled ? "src" : "src off"} title={source.hint}>
@@ -594,6 +838,7 @@ function SourcePicker({
           {source.label}
         </label>
       ))}
+      {saving && <span className="spin" aria-hidden="true" />}
       {value.length === 0 && (
         <span className="why warn">Pick at least one source — nothing can be found otherwise.</span>
       )}

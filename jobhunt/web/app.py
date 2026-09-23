@@ -40,6 +40,10 @@ from jobhunt.web.runs import DEFAULT_GATE_ROUNDS, RunSupervisor
 
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
 
+# Addresses the built interface routes to itself. Mirrors PATHS in ui/src/App.tsx;
+# a page added there without a line here 404s on refresh but works when clicked.
+SPA_PAGES = frozenset({"filters", "profile"})
+
 
 class _BadFeedRequest(Exception):
     """The `approve`/`retire` payload could not be turned into board selections.
@@ -742,8 +746,7 @@ def create_app(*, config: Config | None = None) -> FastAPI:
     if (STATIC_DIR / "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
-    @app.get("/")
-    def index() -> Any:
+    def shell() -> Any:
         page = STATIC_DIR / "index.html"
         if not page.exists():
             return JSONResponse(
@@ -751,5 +754,19 @@ def create_app(*, config: Config | None = None) -> FastAPI:
                 content={"message": "the interface is not built yet. run: npm --prefix ui run build"},
             )
         return FileResponse(page)
+
+    @app.get("/")
+    def index() -> Any:
+        return shell()
+
+    # The interface is one bundle across several addresses, so every page it
+    # routes needs a server route too - otherwise a refresh or a pasted link on
+    # anything but "/" is a 404 before the app ever loads. Named rather than a
+    # catch-all: a mistyped path should still say it does not exist.
+    @app.get("/{page}")
+    def spa_page(page: str) -> Any:
+        if page not in SPA_PAGES:
+            raise HTTPException(status_code=404, detail=f"no page at /{page}")
+        return shell()
 
     return app

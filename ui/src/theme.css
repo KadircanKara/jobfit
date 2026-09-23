@@ -35,6 +35,8 @@
   --small: 13px;
   --label-sp: 0.1em;
   --shell: 1240px;
+  --topbar-h: 59px;
+  --sidenav-w: 190px;
 }
 
 :root[data-mode="light"] {
@@ -123,11 +125,31 @@ button {
   color: var(--accent);
 }
 
-.tabs {
+/* The sections live in a rail down the left so the topbar carries only
+   identity, and the rail rides along as the page scrolls. */
+.shell {
   display: flex;
-  gap: 2px;
+  align-items: flex-start;
 }
+
+.sidenav {
+  position: sticky;
+  top: var(--topbar-h);
+  flex: 0 0 var(--sidenav-w);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 26px 14px;
+  min-height: calc(100vh - var(--topbar-h));
+  border-right: 1px solid var(--line);
+}
+.sidenav .tab {
+  width: 100%;
+  text-align: left;
+}
+
 .tab {
+  display: block;
   background: none;
   border: 1px solid transparent;
   border-radius: var(--rad);
@@ -136,8 +158,12 @@ button {
   font-size: var(--small);
   letter-spacing: var(--label-sp);
   text-transform: uppercase;
+  text-decoration: none;
 }
-.tab[aria-selected="true"] {
+.tab:hover {
+  color: var(--ink);
+}
+.tab[aria-current="page"] {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--on-accent);
@@ -163,9 +189,28 @@ button {
 }
 
 main {
+  flex: 1 1 auto;
+  min-width: 0;
   max-width: var(--shell);
   margin: 0 auto;
   padding: 26px 22px 70px;
+}
+
+@media (max-width: 860px) {
+  .shell {
+    display: block;
+  }
+  .sidenav {
+    position: static;
+    flex-direction: row;
+    min-height: 0;
+    padding: 10px 22px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .sidenav .tab {
+    width: auto;
+  }
 }
 
 /* ---------------- shared ---------------- */
@@ -199,22 +244,29 @@ main {
   color: var(--ink-faint);
 }
 
+/* The run controls and the run picker stay put while the filters scroll past
+   under them, so starting a run - or switching to a saved one - never means
+   scrolling back to the top of the page. */
+.runbar {
+  position: sticky;
+  top: var(--topbar-h);
+  z-index: 15;
+  margin: -26px -22px 18px;
+  padding: 14px 22px 0;
+  background: var(--ground);
+  border-bottom: 1px solid var(--line);
+}
 .hero {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 20px;
   flex-wrap: wrap;
-  margin-bottom: 24px;
+  margin-bottom: 14px;
 }
-.hero h1 {
-  font-family: var(--lead);
-  font-size: var(--h1);
-  letter-spacing: -0.01em;
-}
-.hero .sub {
-  font-family: var(--data);
-  font-size: var(--small);
-  color: var(--ink-dim);
+
+/* Last child in the bar, whatever it is, sits on the bar's own bottom pad. */
+.runbar > *:last-child {
+  margin-bottom: 14px;
 }
 
 .runstate {
@@ -259,6 +311,34 @@ main {
 .runstate[data-state="failed"] .pulse {
   background: var(--crit);
   animation: none;
+}
+
+/* Sits inside a button while its write is in flight, so a slow save reads as
+   working rather than as a press that did nothing. */
+.spin {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 7px;
+  vertical-align: -1px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  opacity: 0.85;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* Reduced motion kills the animation globally; a still ring would read as an
+   unexplained circle, so it pulses in place instead. */
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    border-right-color: currentColor;
+    opacity: 0.5;
+  }
 }
 
 .btn {
@@ -307,6 +387,115 @@ main {
 
 /* ---------------- filters ---------------- */
 
+.pagehead {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: var(--gap);
+}
+.pagehead h1 {
+  font-family: var(--lead);
+  font-size: var(--h1);
+  letter-spacing: -0.01em;
+}
+.pagehead .note {
+  font-family: var(--data);
+  font-size: var(--small);
+  color: var(--ink-faint);
+}
+
+/* One section per source family, so the Upwork settings and the board feeds
+   are never on screen at the same time. */
+.acc {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--rad);
+}
+.acc + .acc {
+  margin-top: var(--gap);
+}
+.acc-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  width: 100%;
+  padding: var(--pad);
+  background: none;
+  border: 0;
+  text-align: left;
+}
+.acc-head h2 {
+  font-family: var(--lead);
+  font-size: var(--h2);
+  letter-spacing: var(--label-sp);
+  text-transform: uppercase;
+}
+.acc-head .note {
+  margin-left: auto;
+  font-family: var(--data);
+  font-size: var(--small);
+  color: var(--ink-faint);
+  text-align: right;
+}
+/* A caret drawn from a rotated square, so the open state needs no second glyph. */
+.chev {
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--ink-dim);
+  border-bottom: 2px solid var(--ink-dim);
+  transform: rotate(-45deg);
+  transition: transform 0.15s;
+}
+.acc[data-open="true"] .chev {
+  transform: rotate(45deg);
+  border-color: var(--accent);
+}
+.acc[data-open="true"] .acc-head h2 {
+  color: var(--accent);
+}
+/* Height is driven from the component, which hands it back to `auto` once the
+   slide is done - the padding lives on the inner box so a collapsed section
+   measures zero. */
+.acc-body {
+  transition: height 0.22s ease;
+}
+.acc-inner {
+  padding: 0 var(--pad) var(--pad);
+}
+/* The feed picker keeps its own panel inside the section, but not a second
+   border on top of the one the section already draws. */
+.acc-body .panel {
+  padding: 0;
+  background: none;
+  border: 0;
+}
+.acc-body .panel + .panel,
+.acc-body .fields + .panel {
+  margin-top: var(--pad);
+  padding-top: var(--pad);
+  border-top: 1px solid var(--line);
+}
+
+/* Save and revert, per section and for the form as a whole. Deliberately not
+   .saverow: that is the dashed box the title-group namer draws. */
+.formacts {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: var(--pad);
+  padding-top: var(--pad);
+  border-top: 1px solid var(--line);
+}
+.formacts.whole {
+  margin-top: var(--gap);
+  padding-top: 0;
+  border-top: 0;
+}
+
 .fields {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -319,9 +508,7 @@ main {
    above it: it only appears once Upwork is ticked, so a seam marks where the
    settings stop being about every source and start being about one of them. */
 .fields.upwork {
-  margin-top: 4px;
-  padding-top: 14px;
-  border-top: 1px dashed var(--line);
+  margin-top: 0;
 }
 .notes {
   grid-column: 1 / -1;
@@ -2493,7 +2680,7 @@ tr.drawer > td {
   flex-wrap: wrap;
   gap: 12px;
   align-items: center;
-  margin: 14px 0;
+  margin: 0;
 }
 .sources .lbl {
   margin-right: 3px;
@@ -2515,6 +2702,10 @@ tr.drawer > td {
 .sources .src.off {
   opacity: 0.5;
   cursor: not-allowed;
+}
+.sources .spin {
+  margin-right: 0;
+  color: var(--ink-dim);
 }
 .sources .why {
   font-size: var(--small);
