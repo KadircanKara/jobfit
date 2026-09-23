@@ -31,7 +31,11 @@ CONTRACT = templates.BUILTIN_DIR / "CONTRACT.md"
 Agent = Callable[[str], str]
 Check = Callable[[str], validate.Findings]
 
-_BODY = re.compile(r"\\begin\{document\}.*\\end\{document\}", re.DOTALL)
+# A body starts at a \\begin{document} on a line of its own and ends at the first
+# \\end{document} after it. Prose that mentions both ("the body, from
+# \\begin{document} to \\end{document}") must not be read as the document.
+_BEGIN = re.compile(r"^[ \t]*\\begin\{document\}", re.MULTILINE)
+_END = "\\end{document}"
 
 
 class UploadRefused(ValueError):
@@ -121,8 +125,14 @@ def _prompt(source: str, feedback: list[str]) -> str:
 
 
 def _body(answer: str) -> str | None:
-    match = _BODY.search(answer)
-    return match.group() + "\n" if match else None
+    starts = list(_BEGIN.finditer(answer))
+    if not starts:
+        return None
+    start = starts[-1].start()
+    end = answer.find(_END, start)
+    if end < 0:
+        return None
+    return answer[start : end + len(_END)].lstrip(" \t") + "\n"
 
 
 class UploadDesk:
@@ -198,15 +208,14 @@ class UploadDesk:
         return self.snapshot()
 
     def run(self, text: str) -> None:
-        profile = preview.profile_for(self.config)
-
         def check(candidate: str) -> validate.Findings:
             return validate.validate(
                 self.config, candidate, profile=profile, runner=self.runner, ats_runner=self.ats_runner
             )
 
         try:
-            if is_template(text):
+            profile = preview.profile_for(self.config)
+            if self.mode == "template":
                 candidate, findings, rounds = text, check(text), 0
             else:
                 candidate, findings, rounds = convert(text, self.agent, check)

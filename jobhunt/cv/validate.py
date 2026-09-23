@@ -33,9 +33,12 @@ _INCLUDES = re.compile(
     r"\\(input|include|includegraphics|includepdf|includesvg|lstinputlisting|verbatiminput|import|subimport)"
     r"\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}"
 )
-_COMMENTS = re.compile(r"(?<!\\)%.*$", re.MULTILINE)
 # Commands that reach outside the page: Lua, and TeX's own file and shell access.
-_REACHING = re.compile(r"\\(directlua|latelua|luaexec|luacode|openin|openout|write18|immediate\\write)\b")
+_REACHING = re.compile(
+    r"\\(directlua|latelua|luaexec|luadirect|luafunction|openin|openout|write18|immediate\\write)\b"
+    r"|\\begin\{(luacode)\*?\}"
+)
+_END = "\\end{document}"
 _MAGIC = re.compile(r"^%\s*!TEX\s+(?:TS-)?program\s*=\s*(\w+)", re.MULTILINE | re.IGNORECASE)
 
 
@@ -81,7 +84,8 @@ def validate(
         problems.append("it does not compile:\n" + built.log[-2000:])
         return Findings(problems, [], tex)
     warnings = []
-    reaching = sorted(set(_REACHING.findall(_COMMENTS.sub("", source))))
+    code = split_comments(source)[0]
+    reaching = sorted({name for match in _REACHING.findall(code) for name in match if name})
     if reaching:
         warnings.append(
             "it runs Lua or opens files (" + ", ".join(f"\\{name}" for name in reaching) + "). "
@@ -91,6 +95,7 @@ def validate(
         warnings.append("its font cannot print " + " ".join(built.missing))
     report = ats.check(config, tex, built.pdf, runner=ats_runner)
     warnings += [f"ATS check: {failure}" for failure in report.failures]
+    warnings += [f"ATS note: {note}" for note in report.warnings]
     return Findings(problems, warnings, tex, built.pdf, report)
 
 
@@ -103,7 +108,7 @@ def engine_of(source: str) -> str:
 
 def self_contained(source: str) -> list[str]:
     problems = []
-    for command, target in _INCLUDES.findall(_COMMENTS.sub("", source)):
+    for command, target in _INCLUDES.findall(split_comments(source)[0]):
         if command in ("input", "include") and _ships_with_tex(target.strip()):
             continue
         problems.append(
@@ -144,17 +149,45 @@ def probe_profile() -> model.Profile:
         }
     )
     data["skills"][0]["notes"] = f"{SENTINEL} skills note"
+    # Every kind of section, because a template can honour `hidden` in one loop
+    # and forget it in the next.
+    for key in ("education", "projects"):
+        data[key][0]["bullets"].append(
+            {"id": f"probe-{key}-bullet", "text": f"{SENTINEL} {key} bullet", "hidden": True}
+        )
+        data[key].append({"id": f"probe-{key}", "title": f"{SENTINEL} hidden {key}", "hidden": True})
+    data["skills"].append(
+        {"id": "probe-skills", "category": f"{SENTINEL} skills", "items": ["x"], "hidden": True}
+    )
+    data["custom_sections"] = [
+        {
+            "id": "probe-custom",
+            "title": "PROBE",
+            "entries": [
+                {"id": "probe-custom-shown", "title": "Shown", "bullets": [
+                    {"id": "probe-custom-bullet", "text": f"{SENTINEL} custom bullet", "hidden": True}]},
+                {"id": "probe-custom-hidden", "title": f"{SENTINEL} hidden custom", "hidden": True},
+            ],
+        }
+    ]
+    data["layout"].append({"key": "custom:probe-custom", "title": "PROBE"})
     return model.parse(data)
 
 
 def leaks(tex: str) -> bool:
-    visible, _ = split_comments(latex.split_preamble(tex)[1])
-    return SENTINEL in visible
+    return SENTINEL in _typeset(tex)
 
 
 def missing_content(profile: model.Profile, tex: str) -> list[str]:
-    visible, _ = split_comments(latex.split_preamble(tex)[1])
-    return sorted(expected_words(profile) - set(words(visible)))
+    return sorted(expected_words(profile) - set(words(_typeset(tex))))
+
+
+def _typeset(tex: str) -> str:
+    """What TeX prints: the body up to the first \\end{document}, comments removed.
+    Anything after that line is never typeset, whatever it says."""
+    body = latex.split_preamble(tex)[1]
+    end = body.find(_END)
+    return split_comments(body if end < 0 else body[:end])[0]
 
 
 def expected_words(profile: model.Profile) -> set[str]:
@@ -164,6 +197,10 @@ def expected_words(profile: model.Profile) -> set[str]:
     for extra in profile.extras:
         texts += [extra.label, extra.value]
     for section in render.sections(profile):
+        # A section whose every item is hidden is commented out whole, heading
+        # included, so its title is not something a reader should see.
+        if section.items and all(getattr(item, "hidden", False) for item in section.items):
+            continue
         texts.append(section.title)
         for item in section.items:
             if getattr(item, "hidden", False):

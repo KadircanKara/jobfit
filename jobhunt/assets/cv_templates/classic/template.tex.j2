@@ -151,12 +151,14 @@
     % \textbf{\Huge \VAR{basics.name} - \VAR{v.text|rich}} \\ \vspace{5pt}
 \BLOCK{endfor}
     \textbf{\Huge \VAR{basics.name}\BLOCK{if basics.headline} - \VAR{basics.headline|rich}\BLOCK{endif}} \\ \vspace{5pt}
+\BLOCK{if contacts}
     \small
 \BLOCK{for c in contacts}
     \hspace{1pt} \hspace{2pt}\texttt{\BLOCK{if c.url}\href{\VAR{c.url|url}}{\VAR{c.label}}\BLOCK{else}\VAR{c.label}\BLOCK{endif}}\BLOCK{if not loop.last} \hspace{1pt} $|$\BLOCK{endif}
 
 \BLOCK{endfor}
     \\ \vspace{-3pt}
+\BLOCK{endif}
 \end{center}
 
 \BLOCK{for x in extras}

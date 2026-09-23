@@ -159,3 +159,22 @@ def test_the_conversion_agent_gets_no_tools(cfg, cv_source, monkeypatch):
     convert.UploadDesk(cfg, runner=passing, background=False).start("cv.tex", FINISHED.encode())
 
     assert seen == {"phase": "template", "tools": ""}
+
+
+def test_an_answer_that_mentions_the_document_markers_in_prose_still_yields_the_real_body():
+    echo = "Here is the body, from \\begin{document} to \\end{document}:\n```latex\n" + GOOD_BODY + "```\n"
+    candidate, _, _ = convert.convert(FINISHED, scripted(echo), lambda c: validate.Findings([], []))
+
+    assert candidate.count("\\begin{document}") == 1 and "\\VAR{basics.name}" in candidate
+    assert "Here is the body" not in candidate
+
+
+def test_a_broken_profile_fails_the_upload_instead_of_hanging_it(cfg, cv_source):
+    (cv_source / "profile.json").write_text("{ broken", encoding="utf-8")
+    uploading = desk(cfg)
+
+    snapshot = uploading.start("mine.tex", GOOD.encode())
+
+    assert snapshot["state"] == "failed" and "profile.json" in snapshot["error"]
+    uploading.discard()
+    assert uploading.snapshot()["state"] == "idle"

@@ -20,6 +20,7 @@ from jobhunt.config import Config
 
 DEFAULT_SCRIPT = pathlib.Path.home() / ".claude/skills/tailoring-cv/scripts/ats_check.py"
 TIMEOUT = 120.0
+TIMED_OUT = 124
 _FINDING = re.compile(r"^\[(FAIL|WARN)\]\s*(.+)$")
 
 Runner = Callable[[list[str], pathlib.Path], tuple[int, str]]
@@ -42,8 +43,13 @@ def check(config: Config, tex: str, pdf: bytes, *, runner: Runner | None = None)
         folder = pathlib.Path(raw)
         (folder / "cv.tex").write_text(tex, encoding="utf-8")
         (folder / "cv.pdf").write_bytes(pdf)
-        _, output = (runner or _run)([python, str(script), str(folder / "cv.pdf")], folder)
+        code, output = (runner or _run)([python, str(script), str(folder / "cv.pdf")], folder)
     found = _findings(output)
+    # A script that timed out or crashed says nothing about the CV. Reporting it
+    # as a clean pass would be the one wrong answer.
+    if code == TIMED_OUT or (code != 0 and not found):
+        last = output.strip().splitlines()[-1] if output.strip() else f"exit code {code}"
+        return Report(False, [], [], f"the ATS check did not complete: {last}")
     return Report(
         True,
         [text for level, text in found if level == "FAIL"],
@@ -73,5 +79,5 @@ def _run(argv: list[str], cwd: pathlib.Path) -> tuple[int, str]:
             errors="replace", timeout=TIMEOUT, check=False,
         )
     except subprocess.TimeoutExpired:
-        return 124, "[WARN] the ATS check did not finish"
+        return TIMED_OUT, f"ran past {int(TIMEOUT)} seconds"
     return done.returncode, done.stdout + done.stderr

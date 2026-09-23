@@ -7,7 +7,7 @@ import shutil
 import pytest
 from conftest import FIXTURES, load_fixture
 
-from jobhunt.cv import model, templates, validate
+from jobhunt.cv import builds, model, templates, validate
 
 GOOD = (FIXTURES / "cv" / "upload_template.tex").read_text(encoding="utf-8")
 LEAKY = (FIXTURES / "cv" / "upload_leaky.tex").read_text(encoding="utf-8")
@@ -128,3 +128,65 @@ def test_a_template_that_runs_lua_is_flagged_but_not_refused(cfg, cv_source):
 
     assert findings.ok
     assert any("\\directlua" in warning and "sandbox" in warning for warning in findings.warnings)
+
+
+def test_a_template_that_forgets_hidden_in_skills_is_caught():
+    line = "\\textbf{\\VAR{g.category}}: \\VAR{g.items|join(', ')}\\par\n"
+    careless = GOOD.replace("\\BLOCK{call hidable(g)}\n" + line + "\\BLOCK{endcall}\n", line)
+    assert careless != GOOD
+
+    assert validate.leaks(fill(careless, validate.probe_profile()))
+
+
+def test_the_probe_reaches_every_kind_of_section():
+    probe = validate.probe_profile()
+
+    assert probe.education[-1].hidden and probe.projects[-1].hidden and probe.skills[-1].hidden
+    assert probe.custom_sections[0].entries[-1].hidden
+    assert "custom:probe-custom" in [ref.key for ref in probe.layout]
+
+
+def test_text_after_the_end_of_the_document_counts_for_nothing(cfg):
+    profile_ = profile()
+    tex = fill(templates.get(cfg, "classic").text(), profile_)
+    # Everything the profile needs is still there, but after an \\end{document}
+    # TeX stops at, so none of it is ever typeset.
+    cut = tex.replace("\\begin{document}", "\\begin{document}\nonly this\n\\end{document}\n", 1)
+
+    assert "ada" in validate.missing_content(profile_, cut)
+    assert not validate.leaks(tex + "\n" + validate.SENTINEL + " after the end\n")
+
+
+def test_a_section_with_every_item_hidden_is_not_expected_on_the_page(cfg, cv_source):
+    data = copy.deepcopy(load_fixture("cv/profile.json"))
+    for entry in data["projects"]:
+        entry["hidden"] = True
+    classic = templates.get(cfg, "classic").text()
+
+    findings = validate.validate(
+        cfg, classic, profile=model.parse(data), runner=passing, ats_runner=clean_ats
+    )
+
+    assert findings.ok, findings.problems
+
+
+@pytest.mark.parametrize(
+    "snippet", ["\\begin{luacode}x\\end{luacode}", "\\luadirect{x}", "\\begin{luacode*}x\\end{luacode*}"]
+)
+def test_every_way_of_running_lua_is_flagged(cfg, cv_source, snippet):
+    findings = check(cfg, GOOD.replace("\\begin{document}\n", "\\begin{document}\n" + snippet + "\n", 1))
+
+    assert any("runs Lua" in warning for warning in findings.warnings)
+
+
+def test_ats_notes_reach_the_person_too(cfg, cv_source):
+    def columns(argv, cwd):
+        return 0, "[WARN] single column: side-by-side text blocks\n"
+
+    findings = check(cfg, GOOD, ats_runner=columns)
+
+    assert findings.warnings == ["ATS note: single column: side-by-side text blocks"]
+
+
+def fill(source, profile_):
+    return builds.fill(source, profile_, trusted=True)

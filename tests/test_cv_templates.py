@@ -207,3 +207,13 @@ def test_the_default_template_cannot_be_removed(cfg):
     with pytest.raises(templates.TemplateError) as caught:
         templates.remove(cfg, added.id)
     assert "default" in str(caught.value)
+
+
+@pytest.mark.skipif(shutil.which("lualatex") is None, reason="lualatex is not installed")
+@pytest.mark.parametrize("template_id", ["classic", "modern"])
+def test_a_profile_with_nothing_but_a_name_still_builds(cfg, template_id):
+    bare = model.parse({"basics": {"name": "Ada Lovelace"}})
+
+    built = latex.build(render.render(bare, templates.get(cfg, template_id).text()))
+
+    assert built.ok, built.log
