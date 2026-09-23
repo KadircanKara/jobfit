@@ -3225,3 +3225,100 @@ tr.drawer > td {
 .cv label.btn {
   cursor: pointer;
 }
+
+/* --- the template step before a tailoring batch ------------------------- */
+
+.tpl-step {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--rad);
+  background: var(--surface);
+  padding: 16px 18px;
+  margin-bottom: 14px;
+}
+.tpl-step-head {
+  display: grid;
+  gap: 4px;
+}
+.tpl-step .acts {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.tpl-strip {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 112px;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.tpl-pick {
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--rad);
+  background: var(--paper);
+  overflow: hidden;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.tpl-pick[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.tpl-pick img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 210 / 297;
+  object-fit: cover;
+  object-position: top;
+}
+.tpl-pick span {
+  padding: 0 8px 8px;
+  font-size: var(--small);
+  color: var(--paper-ink);
+}
+.tpl-pick em {
+  font-style: normal;
+  opacity: 0.6;
+}
+.tpl-jobs {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.tpl-jobs li {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-width: 0;
+}
+.tpl-jobs .who {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.tpl-jobs .at {
+  color: var(--ink-dim);
+  font-size: var(--small);
+}
+.tpl-jobs select {
+  margin-left: auto;
+  max-width: 100%;
+}
+.job .tpl {
+  font-family: var(--data);
+  font-size: var(--small);
+  color: var(--ink-dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 8px;
+}

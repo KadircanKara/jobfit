@@ -210,6 +210,9 @@ export type JobRun = {
   title: string;
   company: string;
   url: string | null;
+  /** Null when the batch started with no profile, and the CV was cut from master.tex. */
+  template_id: string | null;
+  template_name: string;
 };
 
 /** A job the studio can open, plus how far its draft has drifted.
@@ -387,11 +390,13 @@ export const api = {
   async tailorState(): Promise<{ jobs: JobRun[]; running: boolean }> {
     return json(await fetch("/api/tailor"));
   },
-  async startTailoring(jobIds: number[]) {
+  /** `templates` maps a job id to the template its CV is cut in. Leave it out
+   *  when there is no profile yet: every CV is then cut from master.tex. */
+  async startTailoring(jobIds: number[], templates?: Record<number, string>) {
     const response = await fetch("/api/tailor", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ job_ids: jobIds }),
+      body: JSON.stringify(templates ? { job_ids: jobIds, templates } : { job_ids: jobIds }),
     });
     if (response.status === 409) return response.json();
     return json<{ started: boolean; jobs: JobRun[] }>(response);

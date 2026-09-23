@@ -48,6 +48,7 @@ export function TailorBatch({
           <div className="top">
             <span className="who">{job.title ?? `job ${job.job_id}`}</span>
             {job.company && <span className="at">{job.company}</span>}
+            {job.template_name && <span className="tpl">{job.template_name}</span>}
             {/* The posting, not the folder: checking what the CV is aimed at is
                 the one thing you cannot do from the files on disk. */}
             {job.url && (

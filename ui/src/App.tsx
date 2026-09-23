@@ -18,6 +18,7 @@ import { TailorBatch } from "./Tailor";
 import { ReviseStudio } from "./Revise";
 import { Profile } from "./Profile";
 import { Templates } from "./Templates";
+import { TemplateStep } from "./cv/TemplateStep";
 
 /* Each section of the app is a page with its own URL, so a tab can be linked,
    bookmarked, reopened, and walked back through with the browser's own back
@@ -85,6 +86,8 @@ export default function App() {
   const [run, setRun] = useState<RunState>(EMPTY_RUN);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [picked, setPicked] = useState<Set<number>>(new Set());
+  // "Tailor selected" first asks which template each CV is cut in.
+  const [choosing, setChoosing] = useState(false);
   const [applied, setApplied] = useState<Set<number>>(new Set());
   const [outreachBudget, setOutreachBudget] = useState<OutreachBudget | null>(null);
   const [outreachStates, setOutreachStates] = useState<OutreachStates>({});
@@ -227,12 +230,17 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [awaitingCv]);
 
-  const startTailoring = useCallback(async () => {
-    const ids = [...picked];
-    if (!ids.length) return;
-    await api.startTailoring(ids);
-    setTailor(await api.tailorState());
-  }, [picked]);
+  const startTailoring = useCallback(
+    async (templates?: Record<number, string>) => {
+      const ids = [...picked];
+      if (!ids.length) return;
+      const body = await api.startTailoring(ids, templates);
+      if (body.started === false) throw new Error(body.message ?? "tailoring did not start");
+      setChoosing(false);
+      setTailor(await api.tailorState());
+    },
+    [picked],
+  );
 
   // Clearing the last source is allowed on screen - the picker says why it is
   // wrong - but never written, since an empty list would leave the next run
@@ -539,11 +547,22 @@ export default function App() {
                     <button className="btn ghost" onClick={() => setPicked(new Set())}>
                       Clear
                     </button>
-                    <button className="btn" onClick={startTailoring} disabled={tailor.running}>
+                    <button className="btn" onClick={() => setChoosing(true)} disabled={tailor.running || choosing}>
                       Tailor selected
                     </button>
                   </span>
                 </div>
+              )}
+
+              {choosing && picked.size > 0 && (
+                <TemplateStep
+                  jobs={[...picked].map((id) => {
+                    const row = run.results.find((result) => result.job_id === id);
+                    return { job_id: id, title: row?.title ?? "", company: row?.company ?? "" };
+                  })}
+                  onStart={startTailoring}
+                  onCancel={() => setChoosing(false)}
+                />
               )}
 
               <Shortlist
