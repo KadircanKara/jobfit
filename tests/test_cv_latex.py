@@ -69,6 +69,12 @@ def test_a_missing_binary_is_a_failed_build_not_a_crash(monkeypatch):
     assert not result.ok and "not found" in result.log
 
 
+def test_pages_come_from_the_last_pass_in_the_log():
+    log = "Output written on cv.pdf (3 pages, 9).\nOutput written on cv.pdf (2 pages, 9)."
+
+    assert latex.page_count(log, b"") == 2
+
+
 def test_pages_fall_back_to_counting_page_objects():
     pdf = b"<< /Type /Pages >> << /Type /Page /X 1 >> << /Type /Page >>"
 

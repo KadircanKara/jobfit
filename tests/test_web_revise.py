@@ -329,13 +329,6 @@ def test_the_payload_never_carries_the_tex(cfg, shipped) -> None:
     assert "documentclass" not in repr(body)
 
 
-def test_page_count_falls_back_to_the_pdf_when_the_log_is_silent() -> None:
-    pdf = b"%PDF-1.4\n" + b"/Type /Page\n" * 3
-
-    assert revise_module._page_count("no page line here", pdf) == 3
-    assert revise_module._page_count("Output written on cv.pdf (2 pages, 9)", pdf) == 2
-
-
 # --- questions, not just edits --------------------------------------------------
 
 

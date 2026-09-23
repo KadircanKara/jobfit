@@ -98,6 +98,26 @@ def run(
     return text_of(done.stdout)
 
 
+class NotJson(ValueError):
+    """An answer with no JSON object in it, or one that does not parse."""
+
+    def __init__(self, found: bool) -> None:
+        super().__init__("unreadable JSON" if found else "no JSON object")
+        self.found = found
+
+
+def json_object(raw: str) -> Any:
+    """The JSON object in a model's answer. Models wrap it in prose often
+    enough that "from the first brace to the last" is the reliable reading."""
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end <= start:
+        raise NotJson(found=False)
+    try:
+        return json.loads(raw[start : end + 1])
+    except json.JSONDecodeError as exc:
+        raise NotJson(found=True) from exc
+
+
 def text_of(raw: str) -> str:
     """The answer inside a `--output-format json` envelope, or the raw output."""
     try:

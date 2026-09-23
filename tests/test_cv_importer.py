@@ -215,3 +215,18 @@ def test_an_agent_that_fails_leaves_a_failed_import_with_the_reason(cfg, cv_sour
     snapshot = desk(cfg, broken).start()
 
     assert snapshot["state"] == "failed" and "claude exited 1" in snapshot["error"]
+
+
+def test_the_import_agent_gets_no_tools(cfg, cv_source, monkeypatch):
+    write_master(cfg, cv_source)
+    seen = {}
+
+    def fake_run(config, phase, prompt, *, tools, timeout):
+        seen.update(phase=phase, tools=tools)
+        return chatty_agent(prompt)
+
+    monkeypatch.setattr(agent, "run", fake_run)
+    importing = importer.ImportDesk(cfg, runner=passing, background=False)
+
+    assert importing.start()["state"] == "done"
+    assert seen == {"phase": "import", "tools": ""}

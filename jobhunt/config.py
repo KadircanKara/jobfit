@@ -69,8 +69,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # model nor the effort `tailor`/`review` might warrant.
         "upwork": {"model": None, "effort": None},
         # Reads master.tex once and writes it out as a profile. Runs once per
-        # install, but it is the document every tailored CV is checked against,
-        # so it gets whatever the tailoring phase would.
+        # install, but it is the document every tailored CV is checked against:
+        # worth the same model you give `tailor`. Unset inherits the CLI default.
         "import": {"model": None, "effort": None},
     },
     "digest": {

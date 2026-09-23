@@ -14,7 +14,6 @@ This module never contacts an employer. It writes files into a folder.
 from __future__ import annotations
 
 import dataclasses
-import json
 import pathlib
 import threading
 from typing import Any, Protocol
@@ -285,20 +284,20 @@ class ClaudeSteps:
         csv_export.set_cv_status(csv_export.csv_path(self.config), job_id, status)
 
     def pages(self, folder: str) -> int | None:
+        from jobhunt.cv import latex as cv_latex
         from jobhunt.web import revise as revise_module
 
         tex = pathlib.Path(folder) / revise_module.TEX_NAME
         if not tex.exists():
             return None
         ok, log, pdf = revise_module.PdfLatex().build(tex)
-        return revise_module._page_count(log, pdf) if ok else None
+        return cv_latex.page_count(log, pdf) if ok else None
 
 
 def _json_object(raw: str) -> dict[str, Any]:
-    start, end = raw.find("{"), raw.rfind("}")
-    if start < 0 or end <= start:
-        raise TailorError("the reviewer did not return a verdict")
     try:
-        return json.loads(raw[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise TailorError("the reviewer's verdict was not readable") from exc
+        return agent.json_object(raw)
+    except agent.NotJson as exc:
+        if exc.found:
+            raise TailorError("the reviewer's verdict was not readable") from exc
+        raise TailorError("the reviewer did not return a verdict") from exc

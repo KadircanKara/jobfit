@@ -104,21 +104,14 @@ def extract(master_text: str, agent: Agent) -> model.Profile:
     prompt = PROMPT.replace("<<SCHEMA>>", json.dumps(model.Profile.model_json_schema())).replace(
         "<<MASTER>>", master_text
     )
-    data = _json_object(agent(prompt))
+    try:
+        data = agent_module.json_object(agent(prompt))
+    except agent_module.NotJson as exc:
+        raise ImportFailed("the agent did not return a profile that could be read") from exc
     try:
         return model.parse(_with_ids(data))
     except model.ProfileInvalid as exc:
         raise ImportFailed(f"the profile the agent wrote was refused at {exc.field}: {exc.message}") from exc
-
-
-def _json_object(raw: str) -> Any:
-    start, end = raw.find("{"), raw.rfind("}")
-    if start < 0 or end <= start:
-        raise ImportFailed("the agent did not return a profile")
-    try:
-        return json.loads(raw[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise ImportFailed("the agent did not return a profile it could be read as") from exc
 
 
 def _with_ids(data: Any) -> Any:
@@ -193,7 +186,9 @@ class ImportDesk:
     ) -> None:
         self.config = config
         self.agent = agent or (
-            lambda prompt: agent_module.run(config, "import", prompt, tools="Read", timeout=AGENT_TIMEOUT)
+            # No tools: the whole master is in the prompt, and a Read tool would let
+            # instructions planted in a downloaded template pull other files in.
+            lambda prompt: agent_module.run(config, "import", prompt, tools="", timeout=AGENT_TIMEOUT)
         )
         self.runner = runner
         self.background = background
@@ -209,14 +204,19 @@ class ImportDesk:
         self.log = ""
 
     def snapshot(self) -> dict[str, Any]:
-        return {
-            "state": self.state,
-            "error": self.error,
-            "report": self.report.as_dict() if self.report else None,
-            "profile": self.profile.model_dump(mode="json") if self.profile else None,
-            "has_preview": bool(self.pdf),
-            "log": self.log,
-        }
+        # Under the lock: the page polls from a request thread while the import
+        # thread finishes, and a half-updated desk reads as "failed" with no
+        # reason, which stops the polling for good.
+        with self._lock:
+            report, profile = self.report, self.profile
+            return {
+                "state": self.state,
+                "error": self.error,
+                "report": report.as_dict() if report else None,
+                "profile": profile.model_dump(mode="json") if profile else None,
+                "has_preview": bool(self.pdf),
+                "log": self.log,
+            }
 
     def start(self) -> dict[str, Any]:
         with self._lock:
@@ -244,20 +244,24 @@ class ImportDesk:
             report = compare(old, new)
             built = latex.build(new, engine=classic.engine, runner=self.runner)
         except Exception as exc:  # a background thread has nobody else to tell
-            self.state, self.error = "failed", str(exc)
+            with self._lock:
+                self.error, self.state = str(exc), "failed"
             return
-        self.profile, self.report = profile, report
-        self.pdf, self.log = built.pdf, "" if built.ok else built.log
-        self.state = "done"
+        with self._lock:
+            self.profile, self.report = profile, report
+            self.pdf, self.log = built.pdf, "" if built.ok else built.log
+            self.state = "done"
 
     def accept(self) -> cvstore.Backup | None:
-        if self.state != "done" or self.profile is None:
-            raise ImportFailed("there is no finished import to accept")
-        backup = cvstore.write(self.config, self.profile)
-        self._reset()
-        return backup
+        with self._lock:
+            if self.state != "done" or self.profile is None:
+                raise ImportFailed("there is no finished import to accept")
+            backup = cvstore.write(self.config, self.profile)
+            self._reset()
+            return backup
 
     def discard(self) -> None:
-        if self.state == "running":
-            raise ImportFailed("the import is still running")
-        self._reset()
+        with self._lock:
+            if self.state == "running":
+                raise ImportFailed("the import is still running")
+            self._reset()

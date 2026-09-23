@@ -112,10 +112,11 @@ def missing(log_file: pathlib.Path) -> tuple[str, ...]:
 
 
 def page_count(log: str, pdf: bytes) -> int | None:
-    found = _PAGES_IN_LOG.findall(log)
+    # The last line, because a two-pass build logs one per pass.
+    found = _PAGES_IN_LOG.findall(log or "")
     if found:
         return int(found[-1])
-    return len(_PAGE_OBJECT.findall(pdf)) or None
+    return len(_PAGE_OBJECT.findall(pdf or b"")) or None
 
 
 def trim(log: str, keep: int = LOG_KEEP) -> str:

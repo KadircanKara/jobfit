@@ -22,14 +22,13 @@ from __future__ import annotations
 
 import base64
 import dataclasses
-import json
 import pathlib
-import re
 import shutil
 import threading
 from typing import Any, Protocol
 
 from jobhunt.config import Config
+from jobhunt.cv import latex as cv_latex
 from jobhunt.web import agent as agent_module
 from jobhunt.web.tailor import TailorError
 
@@ -43,8 +42,6 @@ MAX_PAGES = 2
 TEX_NAME = "cv.tex"
 PDF_NAME = "cv.pdf"
 
-_PAGES_IN_LOG = re.compile(r"Output written on .*?\((\d+) pages?", re.S)
-_PAGE_OBJECT = re.compile(rb"/Type\s*/Page[^s]")
 
 
 class ReviseError(RuntimeError):
@@ -319,7 +316,7 @@ class ReviseDesk:
 
         session.version += 1
         _keep_version(draft, session.version)
-        session.pages = _page_count(log, pdf)
+        session.pages = cv_latex.page_count(log, pdf)
         session.turns.append(
             Turn(
                 role="agent",
@@ -357,7 +354,7 @@ class ReviseDesk:
             named.write_bytes(pdf)
 
         session.synced_version = session.version
-        session.pages = _page_count(log, pdf)
+        session.pages = cv_latex.page_count(log, pdf)
         return session
 
     def discard(self, job_id: int) -> Session:
@@ -384,7 +381,7 @@ class ReviseDesk:
         ok, log, pdf = self.latex.build(pathlib.Path(session.draft) / TEX_NAME)
         if not ok:
             return {"ok": False, "log": _tail(log), "pdf": None, "pages": session.pages}
-        session.pages = _page_count(log, pdf)
+        session.pages = cv_latex.page_count(log, pdf)
         return {
             "ok": True,
             "log": "",
@@ -405,7 +402,7 @@ class ReviseDesk:
 
     def _pages_of(self, draft: pathlib.Path) -> int | None:
         ok, log, pdf = self.latex.build(draft / TEX_NAME)
-        return _page_count(log, pdf) if ok else None
+        return cv_latex.page_count(log, pdf) if ok else None
 
 
 # --- helpers ----------------------------------------------------------------
@@ -452,15 +449,6 @@ def _kind_of(answer: dict[str, Any], changes: list[str]) -> str:
     if answer.get("refused"):
         return "refusal"
     return "edit" if changes else "answer"
-
-
-def _page_count(log: str, pdf: bytes) -> int | None:
-    """Pages in the built PDF, from the log if it says, else from the file."""
-    found = _PAGES_IN_LOG.search(log or "")
-    if found:
-        return int(found.group(1))
-    pages = len(_PAGE_OBJECT.findall(pdf or b""))
-    return pages or None
 
 
 def _tail(log: str, lines: int = 12) -> str:
@@ -544,13 +532,12 @@ class ClaudeAgent:
 
 
 def _json_object(raw: str) -> dict[str, Any]:
-    start, end = raw.find("{"), raw.rfind("}")
-    if start < 0 or end <= start:
-        raise ReviseError("the agent did not say what it changed")
     try:
-        return json.loads(raw[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise ReviseError("the agent's answer was not readable") from exc
+        return agent_module.json_object(raw)
+    except agent_module.NotJson as exc:
+        if exc.found:
+            raise ReviseError("the agent's answer was not readable") from exc
+        raise ReviseError("the agent did not say what it changed") from exc
 
 
 class PdfLatex:
