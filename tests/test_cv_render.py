@@ -137,3 +137,38 @@ def test_a_hidden_line_after_a_carriage_return_or_odd_whitespace_is_still_commen
     out = render.hidable(type("Item", (), {"hidden": True, "notes": ""})(), lambda: body)
 
     assert out == "  % \\item{a\n% b}\n% \u2009tail\n"
+
+
+def test_a_string_blown_up_by_multiplication_is_refused():
+    with pytest.raises(render.RenderError) as caught:
+        render.render(profile(), "\\VAR{'x' * 1000000000}")
+    assert "too large" in str(caught.value)
+
+
+def test_a_huge_power_is_refused():
+    with pytest.raises(render.RenderError):
+        render.render(profile(), "\\VAR{9 ** 9999999}")
+
+
+def test_ordinary_arithmetic_still_works():
+    assert render.render(profile(), "\\VAR{'ab' * 3} \\VAR{2 ** 10}") == "ababab 1024"
+
+
+def test_an_isolated_render_matches_an_in_process_one():
+    source = "\\VAR{basics.name} \\VAR{summary.text|rich}"
+
+    assert render.render_isolated(profile(), source) == render.render(profile(), source)
+
+
+def test_an_isolated_render_reports_the_template_error():
+    with pytest.raises(render.RenderError) as caught:
+        render.render_isolated(profile(), "\\VAR{basics.nmae}")
+    assert "nmae" in str(caught.value)
+
+
+def test_a_template_that_never_finishes_is_stopped():
+    endless = "\\BLOCK{for a in range(100000)}\\BLOCK{for b in range(100000)}x\\BLOCK{endfor}\\BLOCK{endfor}"
+
+    with pytest.raises(render.RenderError) as caught:
+        render.render_isolated(profile(), endless, timeout=2)
+    assert "longer than 2 seconds" in str(caught.value)

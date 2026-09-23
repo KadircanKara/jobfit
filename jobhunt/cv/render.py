@@ -16,7 +16,11 @@ what `hidable` and `hidable_group` do.
 from __future__ import annotations
 
 import dataclasses
+import json
+import os
 import re
+import subprocess
+import sys
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -88,8 +92,34 @@ def _finalize(value: Any) -> Any:
     return markup.escape(str(value))
 
 
+# Uploaded templates are filled in a child process with a time limit: the
+# sandbox stops a template reaching into Python, but not a loop that never ends.
+ISOLATED_TIMEOUT = 20.0
+_RESULT_LIMIT = 100_000
+
+
+class _Guarded(SandboxedEnvironment):
+    """The sandbox, plus a cap on the two operators that build huge values from
+    tiny templates: `'x' * 10**9` would otherwise exhaust memory."""
+
+    intercepted_binops = frozenset({"*", "**"})
+
+    def call_binop(self, context: Any, operator: str, left: Any, right: Any) -> Any:
+        if operator == "**" and isinstance(right, (int, float)) and abs(right) > 64:
+            raise SecurityError("the template raises a number to a power too large to compute")
+        if operator == "*":
+            for sequence, count in ((left, right), (right, left)):
+                if (
+                    isinstance(sequence, (str, list, tuple))
+                    and isinstance(count, int)
+                    and len(sequence) * count > _RESULT_LIMIT
+                ):
+                    raise SecurityError("the template builds a value too large to print")
+        return super().call_binop(context, operator, left, right)
+
+
 def environment() -> SandboxedEnvironment:
-    env = SandboxedEnvironment(
+    env = _Guarded(
         block_start_string="\\BLOCK{",
         block_end_string="}",
         variable_start_string="\\VAR{",
@@ -179,3 +209,38 @@ def render(profile: Profile, source: str) -> str:
         raise RenderError(f"the template tried something templates may not do: {exc}") from exc
     except TemplateError as exc:
         raise RenderError(f"the template could not be filled: {exc}") from exc
+
+
+def render_isolated(profile: Profile, source: str, *, timeout: float = ISOLATED_TIMEOUT) -> str:
+    """`render`, in a child process that is stopped after `timeout` seconds."""
+    payload = json.dumps({"profile": profile.model_dump(mode="json"), "source": source})
+    try:
+        done = subprocess.run(
+            [sys.executable, "-m", "jobhunt.cv.render"],
+            input=payload, capture_output=True, text=True, encoding="utf-8",
+            timeout=timeout, check=False, env=os.environ | {"PYTHONIOENCODING": "utf-8"},
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RenderError(
+            f"the template took longer than {int(timeout)} seconds to fill, and was stopped"
+        ) from exc
+    if done.returncode != 0:
+        raise RenderError(done.stderr.strip() or "the template could not be filled")
+    return done.stdout
+
+
+def _main() -> int:
+    from jobhunt.cv import model
+
+    request = json.loads(sys.stdin.read())
+    try:
+        out = render(model.parse(request["profile"]), request["source"])
+    except (RenderError, model.ProfileInvalid) as exc:
+        sys.stderr.write(str(exc))
+        return 2
+    sys.stdout.write(out)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
