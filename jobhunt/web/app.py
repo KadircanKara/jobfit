@@ -27,6 +27,7 @@ from jobhunt.outreach import poller as outreach_poller
 from jobhunt.outreach import unipile as outreach_unipile
 from jobhunt.web import agent as agent_module
 from jobhunt.web import applied as applied_module
+from jobhunt.web import cv as cv_routes
 from jobhunt.web import filters as webfilters
 from jobhunt.web import history as history_module
 from jobhunt.web import idle as idle_module
@@ -374,6 +375,8 @@ def create_app(*, config: Config | None = None) -> FastAPI:
     outreach_sender = outreach_unipile.build_sender(cfg)
     app.state.outreach_sender = outreach_sender
     outreach_routes.register(app, cfg, outreach_sender)
+    # The CV builder: profile, master CV, and the one-time import of master.tex.
+    cv_routes.register(app, cfg)
     # The event is kept so the thread can be stopped: a `create_app` per test, or
     # per reload, would otherwise leave a daemon thread polling behind it.
     app.state.outreach_stop = threading.Event()
