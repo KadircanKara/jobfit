@@ -2776,3 +2776,343 @@ tr.drawer > td {
 .saverow .why.warn {
   color: var(--warn);
 }
+
+/* ---------------- cv builder ---------------- */
+
+/* The form scrolls; the master CV stays beside it, so the effect of a generate
+   is always in view. On narrow screens it drops under the form. */
+.cv-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 460px);
+  gap: var(--gap);
+  align-items: start;
+}
+.cv-side {
+  position: sticky;
+  top: calc(var(--topbar-h) + var(--gap));
+}
+.cv-preview {
+  height: 640px;
+}
+@media (max-width: 1080px) {
+  .cv-layout {
+    grid-template-columns: 1fr;
+  }
+  .cv-side {
+    position: static;
+  }
+}
+.cv .btn.sm {
+  padding: 6px 12px;
+  font-size: var(--small);
+}
+.cv-lede {
+  color: var(--ink-dim);
+  font-size: var(--small);
+  line-height: 1.6;
+  max-width: 70ch;
+  margin: 0 0 14px;
+}
+.cv-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.cv-off {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.cv-section-head {
+  align-items: center;
+}
+.cv-section-title {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--ink);
+  font-family: var(--lead);
+  font-size: var(--h2);
+  letter-spacing: var(--label-sp);
+  text-transform: uppercase;
+  padding: 4px 6px;
+}
+.cv-section-title:hover {
+  border-color: var(--line);
+}
+.cv-addsection {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: var(--gap) 0;
+}
+
+.cv-entry {
+  border: 1px solid var(--line);
+  border-radius: var(--rad);
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.cv-entry[data-hidden="true"] {
+  border-style: dashed;
+  opacity: 0.6;
+}
+.cv-entry-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.cv-entry-name {
+  font-weight: 600;
+}
+.cv-flag {
+  font-family: var(--data);
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+.cv-tools {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.cv-tool {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: var(--small);
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.cv-tool:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--ink-faint);
+}
+.cv-tool:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.cv-tool[aria-pressed="true"] {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.cv-tool.danger:hover {
+  color: var(--crit);
+  border-color: var(--crit);
+}
+
+.cv-bullets {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.cv-bullet {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+}
+.cv-bullet[data-hidden="true"] .cv-area {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+.cv-dot {
+  color: var(--ink-faint);
+  padding-top: 8px;
+}
+.cv-area {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--line);
+  border-radius: var(--rad);
+  color: var(--ink);
+  padding: 9px 11px;
+  font: inherit;
+  font-size: var(--small);
+  line-height: 1.5;
+  resize: vertical;
+}
+.cv-area:focus,
+.cv-section-title:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.cv-area.bad {
+  border-color: var(--crit);
+}
+.cv-bad {
+  color: var(--crit);
+}
+.cv-notes {
+  margin-top: 6px;
+}
+.cv-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin-top: 4px;
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: var(--small);
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+
+.cv-list {
+  margin-top: 6px;
+}
+.cv-list-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin: 12px 0 8px;
+  font-size: 11px;
+  letter-spacing: var(--label-sp);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.cv-list-head .hint {
+  text-transform: none;
+  letter-spacing: 0;
+}
+.cv-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+}
+.cv-row .field {
+  flex: 1;
+}
+.cv-row .field.wide {
+  flex: 2;
+}
+.cv-row .cv-tools {
+  margin-bottom: 14px;
+}
+.cv-end {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.cv-chips {
+  flex: 3;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-height: 40px;
+  margin-bottom: 14px;
+  padding: 6px 8px;
+  background: var(--surface2);
+  border: 1px solid var(--line);
+  border-radius: var(--rad);
+}
+.cv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 4px 2px 10px;
+  font-size: var(--small);
+}
+.cv-chip button {
+  background: none;
+  border: 0;
+  color: var(--ink-faint);
+  font-size: 11px;
+  cursor: pointer;
+}
+.cv-chips input {
+  flex: 1;
+  min-width: 120px;
+  background: none;
+  border: 0;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--small);
+  padding: 4px;
+}
+.cv-chips input:focus {
+  outline: none;
+}
+
+.cv-state {
+  font-family: var(--data);
+  font-size: 11px;
+  letter-spacing: var(--label-sp);
+  text-transform: uppercase;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 10px;
+  color: var(--ink-faint);
+}
+.cv-state[data-state="ready"] {
+  color: var(--good);
+  border-color: var(--good);
+}
+.cv-state[data-state="stale"] {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.cv-reason {
+  margin-bottom: 10px;
+  font-size: var(--small);
+  color: var(--warn);
+}
+.cv-when {
+  margin-top: 8px;
+}
+
+.cv-review {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--gap);
+  align-items: start;
+}
+@media (max-width: 1080px) {
+  .cv-review {
+    grid-template-columns: 1fr;
+  }
+}
+.cv-check {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: var(--small);
+}
+.cv-mark {
+  width: 14px;
+  font-family: var(--data);
+  font-weight: 700;
+}
+.cv-check[data-ok="true"] .cv-mark {
+  color: var(--good);
+}
+.cv-check[data-ok="false"] .cv-mark {
+  color: var(--crit);
+}
+.cv-words {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.cv-words code {
+  font-family: var(--data);
+  font-size: 12px;
+  background: var(--surface2);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+.cv-comments {
+  margin: 6px 0 14px;
+  font-size: var(--small);
+  color: var(--ink-dim);
+}
