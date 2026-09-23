@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { BackupRow } from "./api";
 import { cvApi, ProfileRefused, type CvProfile, type MasterStatus, type ProfileBody } from "./cv/api";
 import { BackupsPanel } from "./cv/BackupsPanel";
 import { blankProfile } from "./cv/blank";
 import type { Errors } from "./cv/Controls";
+import { stillApplies } from "./cv/errors";
 import { ImportPanel } from "./cv/ImportPanel";
 import { MasterPanel } from "./cv/MasterPanel";
 import { ProfileForm } from "./cv/ProfileForm";
@@ -18,20 +19,31 @@ export function Profile() {
   const [profile, setProfile] = useState<CvProfile | null>(null);
   const [saved, setSaved] = useState("");
   const [errors, setErrors] = useState<Errors>({});
+  // The profile as it was when the server refused it: errors are positional,
+  // and only shown while their position still holds the same item.
+  const [refused, setRefused] = useState<CvProfile | null>(null);
   const [status, setStatus] = useState<MasterStatus | null>(null);
   const [backups, setBackups] = useState<BackupRow[]>([]);
   const [busy, setBusy] = useState<null | "saving" | "generating" | "restoring">(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [log, setLog] = useState<string | null>(null);
+  const [missing, setMissing] = useState<string[]>([]);
   const [version, setVersion] = useState(0);
 
   const dirty = profile !== null && JSON.stringify(profile) !== saved;
+  const shown = useMemo(() => (refused ? stillApplies(errors, refused, profile) : errors), [errors, refused, profile]);
+
+  function clearErrors() {
+    setErrors({});
+    setRefused(null);
+  }
 
   const reload = useCallback(async () => {
     const next = await cvApi.profile();
     setBody(next);
     setProfile(next.profile);
     setSaved(next.profile ? JSON.stringify(next.profile) : "");
+    clearErrors();
     setStatus(next.profile ? await cvApi.master() : null);
     setBackups((await cvApi.backups()).backups);
   }, []);
@@ -58,13 +70,14 @@ export function Profile() {
     try {
       const result = await cvApi.save(profile);
       setSaved(JSON.stringify(profile));
-      setErrors({});
+      clearErrors();
       setStatus(result.master);
       setBackups((await cvApi.backups()).backups);
       return true;
     } catch (error) {
       if (error instanceof ProfileRefused) {
         setErrors(Object.fromEntries(error.problems.map((p) => [p.field, p.message])));
+        setRefused(profile);
         const first = error.problems[0];
         setProblem(
           `Not saved: ${error.problems.length} ${error.problems.length === 1 ? "field needs" : "fields need"} attention, starting with ${first.field} (${first.message}).`,
@@ -85,6 +98,7 @@ export function Profile() {
     try {
       const result = await cvApi.generate();
       setLog(result.ok ? null : result.log);
+      setMissing(result.ok ? result.missing : []);
       setStatus(result.master);
       setVersion((current) => current + 1);
     } catch (error) {
@@ -149,14 +163,15 @@ export function Profile() {
       {profile && (
         <div className="cv-layout">
           <div>
-            <ProfileForm profile={profile} errors={errors} onChange={setProfile} />
+            <ProfileForm profile={profile} errors={shown} onChange={setProfile} />
           </div>
           <aside className="cv-side">
             <MasterPanel
               status={status}
               dirty={dirty}
-              busy={busy === "generating" || busy === "saving"}
+              busy={busy !== null}
               log={log}
+              missing={missing}
               version={version}
               onGenerate={generate}
             />

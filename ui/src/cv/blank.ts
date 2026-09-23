@@ -1,4 +1,4 @@
-import type { Bullet, CvProfile, Entry, Variant } from "./api";
+import type { Bullet, CvProfile, Entry, Extra, Language, SkillGroup, Variant } from "./api";
 
 export const FIXED_KEYS = ["summary", "experience", "education", "skills", "languages", "projects"] as const;
 export const FIXED_TITLES: Record<string, string> = {
@@ -37,6 +37,18 @@ export function blankEntry(): Entry {
 
 export function blankVariant(): Variant {
   return { id: newId(), label: "", text: "" };
+}
+
+export function blankExtra(): Extra {
+  return { id: newId(), label: "", value: "" };
+}
+
+export function blankSkillGroup(): SkillGroup {
+  return { id: newId(), category: "", items: [], hidden: false, notes: "" };
+}
+
+export function blankLanguage(): Language {
+  return { id: newId(), name: "", level: "", detail: "" };
 }
 
 export function blankProfile(): CvProfile {

@@ -537,38 +537,4 @@ export const api = {
   async discardRevision(jobId: number): Promise<ReviseSession> {
     return json(await fetch(`/api/revise/${jobId}/discard`, { method: "POST" }));
   },
-
-  async profile(): Promise<{ path: string; text: string; modified_at: string }> {
-    return json(await fetch("/api/profile"));
-  },
-  async saveProfile(text: string) {
-    return json<{ saved: boolean; backup: string | null }>(
-      await fetch("/api/profile", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      }),
-    );
-  },
-  async backups(): Promise<{ backups: BackupRow[] }> {
-    return json(await fetch("/api/profile/backups"));
-  },
-  async restoreBackup(name: string) {
-    return json<{ restored: boolean }>(
-      await fetch("/api/profile/restore", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      }),
-    );
-  },
-  async compileProfile(text: string): Promise<{ ok: boolean; log: string; pdf: string | null }> {
-    return json(
-      await fetch("/api/profile/compile", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      }),
-    );
-  },
 };

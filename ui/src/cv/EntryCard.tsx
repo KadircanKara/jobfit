@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { Bullet, Entry } from "./api";
 import { blankBullet, blankEntry, move, removeAt, replaceAt } from "./blank";
 import { Notes, RowTools, Text, type Errors } from "./Controls";
@@ -77,6 +78,8 @@ export function EntryCard({
   const set = <K extends keyof Entry>(key: K, value: Entry[K]) => onChange({ ...entry, [key]: value });
   const labels = LABELS[kind];
   const present = entry.end === "Present";
+  // Ticking Present by mistake must not cost the end date: unticking puts it back.
+  const endBeforePresent = useRef(present ? "" : entry.end);
 
   return (
     <div className="cv-entry" data-hidden={entry.hidden}>
@@ -126,7 +129,18 @@ export function EntryCard({
               onChange={(event) => set("end", event.target.value)}
             />
             <label className="checkline">
-              <input type="checkbox" checked={present} onChange={(event) => set("end", event.target.checked ? "Present" : "")} />
+              <input
+                type="checkbox"
+                checked={present}
+                onChange={(event) => {
+                  if (event.target.checked) {
+                    endBeforePresent.current = entry.end;
+                    set("end", "Present");
+                  } else {
+                    set("end", endBeforePresent.current);
+                  }
+                }}
+              />
               <span>Present</span>
             </label>
           </div>

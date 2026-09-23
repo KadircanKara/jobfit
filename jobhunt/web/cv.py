@@ -92,6 +92,7 @@ def register(app: FastAPI, config: Config) -> None:
             "ok": outcome.ok,
             "log": outcome.log,
             "pages": outcome.pages,
+            "missing": list(outcome.missing),
             "master": outcome.status.as_dict(),
         }
 

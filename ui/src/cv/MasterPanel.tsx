@@ -12,6 +12,7 @@ export function MasterPanel({
   dirty,
   busy,
   log,
+  missing,
   version,
   onGenerate,
 }: {
@@ -19,6 +20,7 @@ export function MasterPanel({
   dirty: boolean;
   busy: boolean;
   log: string | null;
+  missing: string[];
   version: number;
   onGenerate: () => void;
 }) {
@@ -42,11 +44,24 @@ export function MasterPanel({
         <Download href="/api/cv/master.tex" enabled={available} label=".tex" />
       </div>
       {available && status?.reason && <div className="cv-reason">{status.reason}</div>}
+      {available && missing.length > 0 && (
+        <div className="cv-reason">
+          This template's font cannot print {missing.join(" ")}, so {missing.length === 1 ? "it was" : "they were"} left
+          out of the PDF.
+        </div>
+      )}
       <div className="preview cv-preview">
         {log ? (
           <div className="failbox">{log}</div>
         ) : available ? (
-          <object data={`/api/cv/master.pdf?v=${version}`} type="application/pdf" aria-label="Master CV preview" />
+          // Keyed as well as cache-busted: a browser may keep an embedded PDF when
+          // only its data attribute changes.
+          <object
+            key={version}
+            data={`/api/cv/master.pdf?v=${version}`}
+            type="application/pdf"
+            aria-label="Master CV preview"
+          />
         ) : (
           <div className="empty">{status?.reason ?? "Generate to see your CV here."}</div>
         )}

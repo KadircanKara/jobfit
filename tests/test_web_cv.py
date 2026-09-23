@@ -97,6 +97,7 @@ def test_generate_then_download_both_files(client, cv_source):
 
     generated = client.post("/api/cv/master").json()
     assert generated["ok"] and generated["master"]["state"] == "ready"
+    assert generated["missing"] == []
 
     inline = client.get("/api/cv/master.pdf")
     assert inline.status_code == 200 and inline.content == b"%PDF-1.7 fake"

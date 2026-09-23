@@ -19,7 +19,7 @@ export type Entry = {
 };
 export type Link = { label: string; url: string };
 export type Extra = { id: string; label: string; value: string };
-export type SkillGroup = { id: string; category: string; items: string[] };
+export type SkillGroup = { id: string; category: string; items: string[]; hidden: boolean; notes: string };
 export type Language = { id: string; name: string; level: string; detail: string };
 export type CustomSection = { id: string; title: string; entries: Entry[] };
 export type SectionRef = { key: string; title: string };
@@ -140,7 +140,7 @@ export const cvApi = {
     return read(await fetch("/api/cv/master"));
   },
   async generate() {
-    return read<{ ok: boolean; log: string; pages: number | null; master: MasterStatus }>(
+    return read<{ ok: boolean; log: string; pages: number | null; missing: string[]; master: MasterStatus }>(
       await send("/api/cv/master", "POST"),
     );
   },

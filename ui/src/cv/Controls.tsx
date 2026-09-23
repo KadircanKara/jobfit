@@ -57,7 +57,10 @@ export function Area({ label, value, path, errors, onChange, placeholder, rows =
  * the tailoring agent reads the notes above an entry.
  */
 export function Notes({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  const [open, setOpen] = useState(Boolean(value));
+  // Derived, not remembered: a restore can bring a note into a card that was
+  // already on screen with none.
+  const [opened, setOpen] = useState(false);
+  const open = opened || Boolean(value);
   if (!open) {
     return (
       <button type="button" className="cv-link" onClick={() => setOpen(true)}>

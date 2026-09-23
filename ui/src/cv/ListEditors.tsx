@@ -1,6 +1,6 @@
 import type { Extra, Language, Link, SkillGroup, Variant } from "./api";
-import { blankVariant, move, newId, removeAt, replaceAt } from "./blank";
-import { Area, ChipInput, RowTools, Text, type Errors } from "./Controls";
+import { blankExtra, blankLanguage, blankSkillGroup, blankVariant, move, removeAt, replaceAt } from "./blank";
+import { Area, ChipInput, Notes, RowTools, Text, type Errors } from "./Controls";
 
 export function LinksEditor({ links, errors, onChange }: { links: Link[]; errors: Errors; onChange: (next: Link[]) => void }) {
   return (
@@ -79,7 +79,7 @@ export function ExtrasEditor({ extras, errors, onChange }: { extras: Extra[]; er
       <button
         type="button"
         className="btn ghost sm"
-        onClick={() => onChange([...extras, { id: newId(), label: "", value: "" }])}
+        onClick={() => onChange([...extras, blankExtra()])}
       >
         Add a labelled line
       </button>
@@ -157,34 +157,35 @@ export function SkillsEditor({ groups, errors, onChange }: { groups: SkillGroup[
   return (
     <div className="cv-list">
       {groups.map((group, i) => (
-        <div className="cv-row" key={group.id}>
-          <Text
-            label="Category"
-            value={group.category}
-            path={`skills.${i}.category`}
-            errors={errors}
-            placeholder="Programming Languages"
-            onChange={(category) => onChange(replaceAt(groups, i, { ...group, category }))}
-          />
-          <ChipInput
-            items={group.items}
-            placeholder="Type a skill, press Enter"
-            onChange={(items) => onChange(replaceAt(groups, i, { ...group, items }))}
-          />
-          <RowTools
-            index={i}
-            count={groups.length}
-            label={group.category || "category"}
-            onMove={(delta) => onChange(move(groups, i, delta))}
-            onRemove={() => onChange(removeAt(groups, i))}
-          />
+        <div className="cv-skill" data-hidden={group.hidden} key={group.id}>
+          <div className="cv-row">
+            <Text
+              label="Category"
+              value={group.category}
+              path={`skills.${i}.category`}
+              errors={errors}
+              placeholder="Programming Languages"
+              onChange={(category) => onChange(replaceAt(groups, i, { ...group, category }))}
+            />
+            <ChipInput
+              items={group.items}
+              placeholder="Type a skill, press Enter"
+              onChange={(items) => onChange(replaceAt(groups, i, { ...group, items }))}
+            />
+            <RowTools
+              index={i}
+              count={groups.length}
+              label={group.category || "category"}
+              onMove={(delta) => onChange(move(groups, i, delta))}
+              onRemove={() => onChange(removeAt(groups, i))}
+              hidden={group.hidden}
+              onHide={() => onChange(replaceAt(groups, i, { ...group, hidden: !group.hidden }))}
+            />
+          </div>
+          <Notes value={group.notes} onChange={(notes) => onChange(replaceAt(groups, i, { ...group, notes }))} />
         </div>
       ))}
-      <button
-        type="button"
-        className="btn ghost sm"
-        onClick={() => onChange([...groups, { id: newId(), category: "", items: [] }])}
-      >
+      <button type="button" className="btn ghost sm" onClick={() => onChange([...groups, blankSkillGroup()])}>
         Add a category
       </button>
     </div>
@@ -241,7 +242,7 @@ export function LanguagesEditor({
       <button
         type="button"
         className="btn ghost sm"
-        onClick={() => onChange([...languages, { id: newId(), name: "", level: "", detail: "" }])}
+        onClick={() => onChange([...languages, blankLanguage()])}
       >
         Add a language
       </button>
