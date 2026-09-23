@@ -9,10 +9,13 @@ export type UpworkFilters = {
   sort: string;
   verified_payment_only: boolean;
   require_verified_client: boolean;
-  require_client_spend: boolean;
+  client_min_spend: number | null;
   workload: string[];
   proposals_max: number | null;
   client_min_hires: number | null;
+  client_max_hires: number | null;
+  client_locations: string[];
+  recommended_feed: boolean;
   max_pages: number;
 };
 

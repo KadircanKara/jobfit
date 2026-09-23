@@ -7,6 +7,9 @@ type Props = {
   wide?: boolean;
   tags: string[];
   vocab: VocabRow[];
+  // False for a fixed list of suggestions with no corpus behind it, where a
+  // "0 jobs" beside every choice would read as a warning rather than a fact.
+  counts?: boolean;
   placeholder: string;
   freeNote: string;
   emptyNote: string;
@@ -27,6 +30,7 @@ export function TagField({
   wide,
   tags,
   vocab,
+  counts = true,
   placeholder,
   freeNote,
   emptyNote,
@@ -168,7 +172,7 @@ export function TagField({
                 >
                   {highlight(row.value)}
                   {row.label && <span className="co">{row.label}</span>}
-                  <span className="n">{row.count.toLocaleString()} jobs</span>
+                  {counts && <span className="n">{row.count.toLocaleString()} jobs</span>}
                 </li>
               );
             })}

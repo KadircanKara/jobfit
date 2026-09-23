@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Check, ChevronDown, TriangleAlert } from "lucide-react";
-import { api, FieldError, type Filters, type Vocab } from "./api";
+import { api, FieldError, type Filters, type Vocab, type VocabRow } from "./api";
 import { TagField } from "./TagField";
 import { TitlePresets } from "./TitlePresets";
 import { FeedsPanel } from "./Feeds";
@@ -33,6 +33,17 @@ const UPWORK_JOB_TYPES: [string, string][] = [
   ["fixed", "fixed price"],
 ];
 const UPWORK_EXPERIENCE = ["entry_level", "intermediate", "expert"];
+
+// Suggestions only: Upwork takes countries and regions by name, and a value it
+// does not know comes back as a fetch error naming the accepted spelling.
+const UPWORK_LOCATIONS: VocabRow[] = [
+  "United States",
+  "Canada",
+  "United Kingdom",
+  "Australia",
+  "Germany",
+  "Europe",
+].map((value) => ({ value, label: "", count: 0 }));
 
 // Sample rates until the server reports the snapshot it fetched for the run.
 // Shown with their timestamp so nobody reads a stale number as live.
@@ -71,9 +82,19 @@ type Draft = {
     sort: string;
     verified_payment_only: boolean;
     require_verified_client: boolean;
-    require_client_spend: boolean;
+    client_min_spend: string;
+    client_locations: string[];
+    client_min_hires: string;
+    client_max_hires: string;
+    proposals_max: string;
+    recommended_feed: boolean;
   };
 };
+
+/** A stored count as the text box shows it. 0 is a real value here, not "any". */
+function countText(value: number | null | undefined): string {
+  return value == null ? "" : String(value);
+}
 
 function draftFrom(filters: Filters): Draft {
   return {
@@ -98,7 +119,12 @@ function draftFrom(filters: Filters): Draft {
       sort: filters.upwork?.sort ?? "relevance",
       verified_payment_only: filters.upwork?.verified_payment_only ?? true,
       require_verified_client: filters.upwork?.require_verified_client ?? false,
-      require_client_spend: filters.upwork?.require_client_spend ?? false,
+      client_min_spend: filters.upwork?.client_min_spend ? String(filters.upwork.client_min_spend) : "",
+      client_locations: filters.upwork?.client_locations ?? [],
+      client_min_hires: countText(filters.upwork?.client_min_hires),
+      client_max_hires: countText(filters.upwork?.client_max_hires),
+      proposals_max: countText(filters.upwork?.proposals_max),
+      recommended_feed: filters.upwork?.recommended_feed ?? false,
     },
   };
 }
@@ -132,7 +158,12 @@ function upworkPayload(draft: Draft) {
     sort: draft.upwork.sort,
     verified_payment_only: draft.upwork.verified_payment_only,
     require_verified_client: draft.upwork.require_verified_client,
-    require_client_spend: draft.upwork.require_client_spend,
+    client_min_spend: draft.upwork.client_min_spend.trim() || null,
+    client_locations: draft.upwork.client_locations,
+    client_min_hires: draft.upwork.client_min_hires.trim() || null,
+    client_max_hires: draft.upwork.client_max_hires.trim() || null,
+    proposals_max: draft.upwork.proposals_max.trim() || null,
+    recommended_feed: draft.upwork.recommended_feed,
   };
 }
 
@@ -628,6 +659,21 @@ function UpworkPanel({
         hint={<>searched against the posting itself, not matched against the titles above</>}
       />
 
+      <div className="field wide">
+        <label className="checkline">
+          <input
+            type="checkbox"
+            checked={value.recommended_feed}
+            onChange={(e) => onChange("recommended_feed", e.target.checked)}
+          />
+          <span>Also read Upwork's Most Recent feed</span>
+        </label>
+        <div className="hint">
+          Upwork's own feed, matched to your profile. The only Upwork search that honours
+          Posted within.
+        </div>
+      </div>
+
       <div className="field">
         <label>
           <span>Job type</span>
@@ -733,18 +779,72 @@ function UpworkPanel({
         </div>
       </div>
 
-      <div className="field">
-        <label className="checkline">
-          <input
-            type="checkbox"
-            checked={value.require_client_spend}
-            onChange={(e) => onChange("require_client_spend", e.target.checked)}
-          />
-          <span>Drop clients who have never spent</span>
+      <TagField
+        label="Client locations"
+        wide
+        tags={value.client_locations}
+        vocab={UPWORK_LOCATIONS}
+        counts={false}
+        placeholder="Add a country or region, press Enter"
+        freeNote="as Upwork spells it"
+        emptyNote="Type a country or region the way Upwork spells it."
+        onChange={(tags) => onChange("client_locations", tags)}
+        hint={<>one search per location, so each adds searches to every run · empty means anywhere</>}
+      />
+
+      <div
+        className={
+          messages["upwork.client_min_hires"] || messages["upwork.client_max_hires"] ? "field bad" : "field"
+        }
+      >
+        <label>
+          <span>Client hires</span>
         </label>
+        <div className="minmax">
+          <input
+            inputMode="numeric"
+            placeholder="any"
+            aria-label="Fewest past hires"
+            value={value.client_min_hires}
+            onChange={(e) => onChange("client_min_hires", e.target.value)}
+          />
+          <span className="to">to</span>
+          <input
+            inputMode="numeric"
+            placeholder="any"
+            aria-label="Most past hires"
+            value={value.client_max_hires}
+            onChange={(e) => onChange("client_max_hires", e.target.value)}
+          />
+        </div>
+        <div className="hint">past hires on Upwork · 0 to 0 is clients who have never hired</div>
+      </div>
+
+      <div className={messages["upwork.proposals_max"] ? "field bad" : "field"}>
+        <label>
+          <span>Max proposals</span>
+        </label>
+        <input
+          inputMode="numeric"
+          placeholder="any"
+          value={value.proposals_max}
+          onChange={(e) => onChange("proposals_max", e.target.value)}
+        />
+        <div className="hint">skip postings that already have more</div>
+      </div>
+
+      <div className={messages["upwork.client_min_spend"] ? "field bad" : "field"}>
+        <label>
+          <span>Min client spend</span>
+        </label>
+        <input
+          inputMode="numeric"
+          placeholder="any"
+          value={value.client_min_spend}
+          onChange={(e) => onChange("client_min_spend", e.target.value)}
+        />
         <div className="hint">
-          A different signal from payment verification: in the first real run every client was
-          verified, yet 14 of 40 had spent $0.00. A card on file is not a hiring history.
+          $ spent on Upwork, checked after the fetch · a client whose spend is unknown is kept
         </div>
       </div>
 
@@ -758,6 +858,22 @@ function UpworkPanel({
         )}
         {messages["upwork.verified_payment_only"] && (
           <div className="err">{messages["upwork.verified_payment_only"]}</div>
+        )}
+        {(
+          [
+            "client_locations",
+            "client_min_hires",
+            "client_max_hires",
+            "proposals_max",
+            "client_min_spend",
+            "recommended_feed",
+          ] as const
+        ).map((key) =>
+          messages[`upwork.${key}`] ? (
+            <div className="err" key={key}>
+              {messages[`upwork.${key}`]}
+            </div>
+          ) : null,
         )}
       </div>
     </div>
@@ -848,6 +964,20 @@ function validate(draft: Draft): Record<string, string> {
   }
   if (draft.upwork.min_fixed.trim() && !(Number(draft.upwork.min_fixed) > 0)) {
     out["upwork.min_fixed"] = "Numbers only, above zero.";
+  }
+
+  const counts = ["client_min_hires", "client_max_hires", "proposals_max"] as const;
+  for (const key of counts) {
+    const raw = draft.upwork[key].trim();
+    if (raw && !/^\d+$/.test(raw)) out[`upwork.${key}`] = "Whole numbers only, 0 or more.";
+  }
+  const minHires = draft.upwork.client_min_hires.trim();
+  const maxHires = draft.upwork.client_max_hires.trim();
+  if (/^\d+$/.test(minHires) && /^\d+$/.test(maxHires) && Number(minHires) > Number(maxHires)) {
+    out["upwork.client_max_hires"] = "The maximum sits below the minimum, so no client can match.";
+  }
+  if (draft.upwork.client_min_spend.trim() && parseSalary(draft.upwork.client_min_spend) === null) {
+    out["upwork.client_min_spend"] = "Numbers only. 500, $1,000 and 1k all work.";
   }
 
   return out;

@@ -1042,6 +1042,21 @@ textarea.bad {
   flex: 0 0 auto;
 }
 
+.minmax {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.minmax > input {
+  flex: 1;
+  min-width: 0;
+}
+.minmax .to {
+  flex: 0 0 auto;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+
 .checkline {
   display: flex;
   align-items: flex-start;
