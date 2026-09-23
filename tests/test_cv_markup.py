@@ -8,9 +8,8 @@ from __future__ import annotations
 import shutil
 
 import pytest
-from conftest import FIXTURES
 
-from jobhunt.cv import latex, markup
+from jobhunt.cv import latex, markup, templates
 
 
 def test_every_latex_special_is_escaped():
@@ -109,10 +108,12 @@ def test_every_line_break_becomes_a_newline_and_controls_are_dropped():
 
 
 @pytest.mark.skipif(shutil.which("lualatex") is None, reason="lualatex is not installed")
-def test_every_mapping_prints_under_the_classic_preamble():
-    """A command that does not exist in T1/TS1 would fail the build, and one that
-    exists but has no glyph would be logged as missing: both are caught here."""
-    preamble = (FIXTURES / "cv" / "master_preamble.tex").read_text(encoding="utf-8")
+@pytest.mark.parametrize("template_id", ["classic", "modern"])
+def test_every_mapping_prints_under_every_builtin_preamble(cfg, template_id):
+    """A command that does not exist in the font's encoding would fail the build,
+    and one that exists but has no glyph would be logged as missing: both are
+    caught here, for the 8-bit Classic and the Unicode Modern alike."""
+    preamble = latex.split_preamble(templates.get(cfg, template_id).text())[0]
     sample = " ".join(markup.escape(char) for char in markup._SYMBOLS)
     sample += " " + markup.escape("ÀÉÎÕÜÇŞĞİıçşğöüñ Ǎǎ Ő ű Ą ę")
 

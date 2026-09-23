@@ -1,0 +1,125 @@
+% !TEX program = lualatex
+%-------------------------
+% Modern - a jobhunt built-in template.
+% Single column, A4, Libertinus Serif, small-caps section heads in one accent
+% colour. Uses the same macro names as Classic (\resumeSubheading, \resumeItem,
+% \resumeProjectHeading) so the tailoring skill's cut order reads the same.
+%-------------------------
+\documentclass[a4paper,11pt]{article}
+
+\usepackage[a4paper,left=1.9cm,right=1.9cm,top=1.6cm,bottom=1.6cm]{geometry}
+\usepackage{fontspec}
+% Common ligatures off: an "fi" glyph extracts as one character no ATS search matches.
+\setmainfont{Libertinus Serif}[Ligatures={NoCommon}]
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{accent}{HTML}{1F4E79}
+\definecolor{muted}{gray}{0.35}
+
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+\raggedright
+
+\titleformat{\section}{\color{accent}\large\scshape}{}{0em}{}[\vspace{-7pt}{\color{accent!40}\rule{\linewidth}{0.5pt}}]
+\titlespacing*{\section}{0pt}{9pt}{5pt}
+
+\setlist[itemize]{leftmargin=1.1em, itemsep=1pt, topsep=2pt, parsep=0pt, label={\color{accent}\textbullet}}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0pt, label={}, itemsep=5pt]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}}
+\newcommand{\resumeItem}[1]{\item #1}
+\newcommand{\resumeSubheading}[4]{%
+  \item \textbf{#1}\hfill{\color{muted}#2}\\
+  \textit{#3}\hfill{\color{muted}\small #4}}
+\newcommand{\resumeProjectHeading}[2]{\item #1\hfill{\color{muted}#2}}
+% Colour lives in commands, never in the body: an ATS check reads the body's
+% words, and "accent" or "muted" are not words on a CV.
+\newcommand{\cvname}[1]{{\Huge #1}\\[2pt]}
+\newcommand{\cvheadline}[1]{{\large\color{accent} #1}\\[4pt]}
+\newcommand{\cvsep}{\enspace{\color{muted}|}\enspace}
+
+\begin{document}
+
+\begin{center}
+  % Optimization targeting
+  % \cvname{Ada Lovelace} \cvheadline{Optimization \& Backend Engineer}
+  \cvname{Ada Lovelace}
+  \cvheadline{M.Sc. Computer Science}
+  \small
++441234567890\cvsep
+\href{mailto:ada@example.org}{ada@example.org}\cvsep
+\href{https://www.linkedin.com/in/ada/}{LinkedIn}\cvsep
+\href{https://github.com/ada}{GitHub}\cvsep
+London, UK
+\end{center}
+
+\textbf{MILITARY STATUS:} Completed\par
+
+\section{PROFESSIONAL SUMMARY}
+Engineer combining \textbf{optimization research} with R\&D delivery.
+%
+% VARIANT A - ENERGY
+% Energy-first summary.
+% Second line.
+
+\section{EXPERIENCE}
+\resumeSubHeadingListStart
+  % NOTE: lead with the engine work.
+  \resumeSubheading
+    {Analytical Engines Ltd}{April 2026 - Present}
+    {Engineer}{London, UK}
+    \resumeItemListStart
+      \resumeItem{Built a \textbf{multi-agent} planner, 10\% faster.}
+      % \resumeItem{Retired bullet kept for reference.}
+    \resumeItemListEnd
+  % \resumeSubheading
+    % {Old Mill}{2019}
+    % {Intern}{}
+    % \resumeItemListStart
+      % \resumeItem{Counted looms.}
+    % \resumeItemListEnd
+\resumeSubHeadingListEnd
+
+\section{EDUCATION}
+\resumeSubHeadingListStart
+  \resumeSubheading
+    {\"{O}zye\u{g}in University}{Spring 2022 - Fall 2025}
+    {Master of Science in Computer Science (GPA: 3.90/4.00)}{\.{I}stanbul}
+    \resumeItemListStart
+      \resumeItem{\textbf{Publications}: \href{https://example.org/paper\#1}{Notes on the Engine}}
+    \resumeItemListEnd
+\resumeSubHeadingListEnd
+
+\section{SKILLS}
+\begin{itemize}[leftmargin=0pt, label={}, itemsep=2pt]
+  \item \textbf{Programming Languages:} Python, C\#, SQL
+  % ADDED: only claim what you can defend in an interview.
+  \item \textbf{AI \& ML:} RAG, Evaluation
+\end{itemize}
+
+\section{LANGUAGES}
+English: C1 (IELTS: 7.5 Overall - Jan 2026)\par
+
+\section{PROJECTS}
+\resumeSubHeadingListStart
+  \resumeProjectHeading
+    {\href{https://example.org/planner}{\textbf{Difference Planner}}}{Jun 2026 - Jul 2026}
+    \resumeItemListStart
+      \resumeItem{Ran 6 models $\times$ 36 configurations on \textit{AWS}.}
+      % \resumeItem{Every bullet here is hidden.}
+    \resumeItemListEnd
+\resumeSubHeadingListEnd
+
+\section{AWARDS}
+\resumeSubHeadingListStart
+  \resumeProjectHeading
+    {\textbf{Best Paper}}{2025}
+\resumeSubHeadingListEnd
+
+\end{document}

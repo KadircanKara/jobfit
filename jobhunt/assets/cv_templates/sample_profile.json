@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "basics": {
+    "name": "Alex Morgan",
+    "headline": "Backend Engineer",
+    "email": "alex.morgan@example.com",
+    "phone": "+44 20 7946 0000",
+    "location": "London, UK",
+    "links": [{"label": "LinkedIn", "url": "https://www.linkedin.com/in/example"},
+              {"label": "GitHub", "url": "https://github.com/example"}]
+  },
+  "extras": [{"id": "x1", "label": "Work authorisation", "value": "UK"}],
+  "summary": {"text": "Backend engineer who builds **reliable APIs** and data pipelines, from design to production."},
+  "experience": [
+    {"id": "e1", "title": "Northwind Analytics", "subtitle": "Senior Backend Engineer", "location": "London, UK",
+     "start": "Mar 2022", "end": "Present",
+     "bullets": [{"id": "b1", "text": "Cut p95 API latency from 480 ms to 120 ms by redesigning the **PostgreSQL** query layer."},
+                 {"id": "b2", "text": "Led the move of 14 services to **Kubernetes**, with zero-downtime deploys."}]},
+    {"id": "e2", "title": "Contoso Retail", "subtitle": "Software Engineer", "location": "Manchester, UK",
+     "start": "Jul 2018", "end": "Feb 2022",
+     "bullets": [{"id": "b3", "text": "Built the order-events pipeline in **Python** and Kafka, handling 2M events a day."}]}
+  ],
+  "education": [
+    {"id": "d1", "title": "University of Leeds", "subtitle": "B.Sc. Computer Science", "gpa": "First Class",
+     "location": "Leeds, UK", "start": "2014", "end": "2018"}
+  ],
+  "projects": [
+    {"id": "p1", "title": "queue-lens", "start": "2024", "url": "https://github.com/example/queue-lens",
+     "bullets": [{"id": "b4", "text": "Open-source dashboard for Kafka consumer lag, 1.2k GitHub stars."}]}
+  ],
+  "skills": [
+    {"id": "s1", "category": "Languages", "items": ["Python", "Go", "SQL"]},
+    {"id": "s2", "category": "Infrastructure", "items": ["PostgreSQL", "Kafka", "Kubernetes", "AWS"]}
+  ],
+  "languages": [{"id": "l1", "name": "English", "level": "Native"}]
+}
