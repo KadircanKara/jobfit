@@ -285,6 +285,10 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources }: P
         ...(scope === "boards" ? {} : { upwork: upworkPayload(draft) }),
       });
       onSaved(body.filters);
+      // Take back what the server stored, not what was typed: "$1,000" is
+      // saved as 1000, and a draft still reading "$1,000" would mark the
+      // section unsaved the moment the save succeeded.
+      adopt(scope, draftFrom(body.filters));
       setImpact(body.title_impact);
       setSaved(scope);
       setFeedsReload((n) => n + 1);
@@ -301,13 +305,17 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources }: P
     }
   }
 
-  /** Throw away unsaved edits in `scope`, back to what is on file. */
-  function revert(scope: Scope) {
-    const fromFile = draftFrom(filters);
+  /** Replace the `scope` part of the draft, leaving the other section's edits alone. */
+  function adopt(scope: Scope, fromFile: Draft) {
     setDraft((current) => ({
       ...(scope === "upwork" ? current : fromFile),
       upwork: scope === "boards" ? current.upwork : fromFile.upwork,
     }));
+  }
+
+  /** Throw away unsaved edits in `scope`, back to what is on file. */
+  function revert(scope: Scope) {
+    adopt(scope, draftFrom(filters));
     setErrors({});
   }
 
