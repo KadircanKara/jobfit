@@ -124,7 +124,10 @@ function statusOf(job: JobRun) {
   if (job.state === "approved")
     return `Approved · ${job.rounds} round${job.rounds > 1 ? "s" : ""}${job.fit ? ` · fit ${job.fit.toFixed(2)}` : ""}`;
   if (job.pages != null && job.pages > 2) return `Round ${job.rounds} · trimming to 2 pages`;
-  if (job.state === "failed") return job.error ? "Skipped" : `Not approved after ${job.rounds} rounds`;
+  if (job.state === "failed") {
+    if (!job.error) return `Not approved after ${job.rounds} rounds`;
+    return job.rounds ? "Stopped" : "Skipped";
+  }
   return `Round ${job.rounds || 1}`;
 }
 

@@ -23,8 +23,12 @@ from jobhunt.web.events import EventLog
 class FakeSteps:
     """Stands in for `apply`, the tailoring agent, and the reviewer."""
 
-    def __init__(self, *, verdicts=None, apply_fails=False, page_counts=None):
+    def __init__(
+        self, *, verdicts=None, apply_fails=False, page_counts=None, verifier=None, delivers=True
+    ):
         self.verdicts = verdicts or ["approve"]
+        self.verifier = verifier or "verifier: ALL HARD CHECKS PASSED"
+        self.delivers = delivers
         self.apply_fails = apply_fails
         # One entry per measurement, so a trim round can come back shorter.
         self.page_counts = list(page_counts or [2])
@@ -44,7 +48,10 @@ class FakeSteps:
 
     def tailor(self, folder, findings):
         self.tailored.append(folder)
-        return "verifier: ALL HARD CHECKS PASSED"
+        return self.verifier
+
+    def delivered(self, folder):
+        return self.delivers
 
     def review(self, folder, verifier):
         index = min(self.reviewed, len(self.verdicts) - 1)
@@ -433,3 +440,46 @@ def test_a_batch_with_no_profile_runs_as_it_always_has(client):
 
     assert body["started"] is True
     assert body["jobs"][0]["template_id"] is None
+
+
+# --- a run that stops before the CV exists ------------------------------------
+
+
+def test_a_run_that_stops_before_writing_the_cv_is_not_approved():
+    steps = FakeSteps(
+        verdicts=["approve"],
+        delivers=False,
+        verifier="[PASS] preamble frozen\n[FAIL] text fidelity: 1 of 321 source words are missing\n",
+    )
+
+    rows = batch(steps).run()
+
+    assert rows[0].state == "failed"
+    assert "text fidelity" in rows[0].error
+    assert steps.reviewed == 0, "there is nothing for the reviewer to read"
+    assert steps.marked == [(1, "cv_failed")]
+
+
+def delivery_folder(tmp_path):
+    folder = tmp_path / "Acme - Engineer"
+    folder.mkdir()
+    (folder / "cv.pdf").write_bytes(b"%PDF-1.7 round two")
+    return folder
+
+
+def test_a_cv_is_delivered_when_the_named_pdf_is_the_last_build(cfg, tmp_path):
+    folder = delivery_folder(tmp_path)
+    (folder / "Kadircan_Kara-CV.pdf").write_bytes(b"%PDF-1.7 round two")
+
+    assert tailor_module.ClaudeSteps(cfg).delivered(str(folder))
+
+
+def test_a_named_pdf_from_an_earlier_round_is_not_a_delivery(cfg, tmp_path):
+    folder = delivery_folder(tmp_path)
+    (folder / "Kadircan_Kara-CV.pdf").write_bytes(b"%PDF-1.7 round one")
+
+    assert not tailor_module.ClaudeSteps(cfg).delivered(str(folder))
+
+
+def test_no_named_pdf_is_no_delivery(cfg, tmp_path):
+    assert not tailor_module.ClaudeSteps(cfg).delivered(str(delivery_folder(tmp_path)))

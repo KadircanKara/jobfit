@@ -77,6 +77,7 @@ class JobRun:
 class Steps(Protocol):
     def prepare(self, job_id: int, template_id: str | None) -> str: ...
     def tailor(self, folder: str, findings: list[str]) -> str: ...
+    def delivered(self, folder: str) -> bool: ...
     def review(self, folder: str, verifier: str) -> dict[str, Any]: ...
     def mark(self, job_id: int, status: str) -> None: ...
     def pages(self, folder: str) -> int | None: ...
@@ -171,6 +172,13 @@ class TailorBatch:
             self._say(row, f"cutting the CV · round {row.rounds}")
             try:
                 verifier = self.steps.tailor(row.folder, row.findings)
+                if not self.steps.delivered(row.folder):
+                    # The skill stops before the deliverable on a check it
+                    # cannot fix by cutting (an ATS parse failure is the usual
+                    # one, and it lives in the template). Another round would
+                    # stop in the same place, and an approval would ship nothing.
+                    self._stopped(row, verifier)
+                    return
                 verdict = self.steps.review(row.folder, verifier)
             except Exception as exc:
                 row.state = "failed"
@@ -215,6 +223,15 @@ class TailorBatch:
             f"not approved after {self.max_rounds} rounds · folder kept for you to finish",
             level="warning",
         )
+
+    def _stopped(self, row: JobRun, verifier: str) -> None:
+        failed = [line.strip() for line in verifier.splitlines() if "[FAIL]" in line]
+        row.state = "failed"
+        row.error = "the tailoring run stopped before it wrote the CV" + (
+            f" · {'; '.join(failed[:3])}" if failed else ""
+        )
+        self.steps.mark(row.job_id, "cv_failed")
+        self._say(row, row.error, level="warning")
 
     def _runs_long(self, row: JobRun) -> bool:
         return bool(row.pages and row.pages > self.max_pages)
@@ -333,6 +350,16 @@ class ClaudeSteps:
             self.config, "review", prompt, tools="Read Glob Grep", timeout=STEP_TIMEOUT
         )
         return _json_object(raw)
+
+    def delivered(self, folder: str) -> bool:
+        """Whether the CV named for sending is the one this round built. The
+        skill copies cv.pdf to it last, so a round that stopped early leaves
+        either no named PDF or the previous round's."""
+        from jobhunt import applications
+
+        named = applications.tailored_cv(folder)
+        built = pathlib.Path(folder) / "cv.pdf"
+        return named is not None and built.is_file() and named.read_bytes() == built.read_bytes()
 
     def mark(self, job_id: int, status: str) -> None:
         from jobhunt.render import csv_export
