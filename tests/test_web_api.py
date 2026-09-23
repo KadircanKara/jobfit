@@ -503,3 +503,32 @@ def test_a_finished_run_reflects_scores_written_after_it(cfg, client) -> None:
 
     titles = [row["title"] for row in client.get("/api/runs/current").json()["results"]]
     assert "AI Engineer" in titles
+
+
+# --- pages ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/",
+        "/shortlist",
+        "/tailoring",
+        "/tailoring/79273",
+        "/runs/20260923-170200",
+        "/search",
+        "/cv",
+        "/cv/templates",
+        "/filters",
+        "/profile",
+        "/templates",
+    ],
+)
+def test_every_page_the_interface_routes_is_served(client, path):
+    """A refresh or a pasted link on any page must load the app, not a 404."""
+    assert client.get(path).status_code in (200, 503)
+
+
+@pytest.mark.parametrize("path", ["/nowhere", "/tailoring/abc", "/cv/nothing", "/runs/a/b"])
+def test_a_mistyped_path_still_says_it_does_not_exist(client, path):
+    assert client.get(path).status_code == 404

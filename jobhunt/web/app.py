@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import pathlib
+import re
 import threading
 from typing import Any
 
@@ -42,7 +43,11 @@ STATIC_DIR = pathlib.Path(__file__).parent / "static"
 
 # Addresses the built interface routes to itself. Mirrors PATHS in ui/src/App.tsx;
 # a page added there without a line here 404s on refresh but works when clicked.
-SPA_PAGES = frozenset({"filters", "profile", "templates"})
+# Every address the interface routes, mirroring ui/src/app/router.ts, plus the
+# paths from before the redesign, which the interface redirects.
+SPA_PATHS = re.compile(
+    r"^/(shortlist|tailoring(/\d+)?|runs/[\w-]+|search|cv(/templates)?|filters|profile|templates)$"
+)
 
 
 class _BadFeedRequest(Exception):
@@ -719,9 +724,9 @@ def create_app(*, config: Config | None = None) -> FastAPI:
     # routes needs a server route too - otherwise a refresh or a pasted link on
     # anything but "/" is a 404 before the app ever loads. Named rather than a
     # catch-all: a mistyped path should still say it does not exist.
-    @app.get("/{page}")
+    @app.get("/{page:path}")
     def spa_page(page: str) -> Any:
-        if page not in SPA_PAGES:
+        if not SPA_PATHS.match(f"/{page}"):
             raise HTTPException(status_code=404, detail=f"no page at /{page}")
         return shell()
 
