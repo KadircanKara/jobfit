@@ -125,3 +125,11 @@ def test_classic_compiles_and_prints_only_what_is_visible(cfg):
     text = subprocess.run(["pdftotext", str(pdf), "-"], capture_output=True, text=True).stdout
     assert "Özyeğin University" in text and "6 models × 36" in text
     assert "Retired bullet" not in text and "Old Mill" not in text
+
+
+def test_classic_prints_a_skills_note_above_its_line(cfg):
+    out = classic_render(cfg)
+
+    assert (
+        "     % ADDED: only claim what you can defend in an interview.\n     \\textbf{AI \\& ML}" in out
+    )

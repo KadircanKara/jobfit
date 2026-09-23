@@ -130,3 +130,44 @@ def test_the_fingerprint_ignores_key_order_and_sees_content():
 
     assert model.parse(data).fingerprint() == model.parse(shuffled).fingerprint()
     assert model.parse(data).fingerprint() != model.parse(changed).fingerprint()
+
+
+def test_a_line_break_in_a_one_line_field_is_joined_back_up():
+    data = fixture()
+    data["experience"][0]["bullets"][0]["text"] = "Built a planner\r\n  that ships."
+    data["basics"]["headline_variants"][0]["text"] = "Optimization\nEngineer"
+
+    profile = model.parse(data)
+
+    assert profile.experience[0].bullets[0].text == "Built a planner that ships."
+    assert profile.basics.headline_variants[0].text == "Optimization Engineer"
+
+
+def test_a_summary_and_its_variants_keep_their_line_breaks():
+    profile = model.parse(fixture())
+
+    assert profile.summary.variants[0].text == "Energy-first summary.\nSecond line."
+
+
+def test_an_email_that_would_break_the_build_is_refused():
+    data = fixture()
+    data["basics"]["email"] = "ada}@example.org"
+
+    assert problem(data) == ("basics.email", "does not look like an email address")
+
+
+def test_a_url_with_a_caret_is_refused():
+    data = fixture()
+    data["projects"][0]["url"] = "https://example.org/^^5c"
+
+    field, message = problem(data)
+    assert field == "projects.0.url" and "carets" in message
+
+
+def test_a_skills_line_can_carry_notes_and_be_hidden():
+    data = fixture()
+    data["skills"][0] |= {"hidden": True, "notes": "Only claim what you can defend."}
+
+    group = model.parse(data).skills[0]
+
+    assert group.hidden and group.notes == "Only claim what you can defend."

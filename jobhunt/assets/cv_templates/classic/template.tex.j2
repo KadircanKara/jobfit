@@ -177,15 +177,19 @@
 \BLOCK{endfor}
 
 \BLOCK{elif s.kind == 'skills'}
+\BLOCK{call hidable_group(s.items)}
 %-----------\VAR{s.title}-----------
 \section{\VAR{s.title}}
  \begin{itemize}[leftmargin=0in, label={}]
     \small{\item{
 \BLOCK{for g in s.items}
+\BLOCK{call hidable(g)}
      \textbf{\VAR{g.category}} {: \VAR{g.items|join(', ')}} \\
+\BLOCK{endcall}
 \BLOCK{endfor}
      }}
 \end{itemize}
+\BLOCK{endcall}
 
 \BLOCK{elif s.kind == 'languages'}
 %-----------\VAR{s.title}-----------

@@ -55,7 +55,8 @@
   ],
   "skills": [
     {"id": "s1", "category": "Programming Languages", "items": ["Python", "C#", "SQL"]},
-    {"id": "s2", "category": "AI & ML", "items": ["RAG", "Evaluation"]}
+    {"id": "s2", "category": "AI & ML", "items": ["RAG", "Evaluation"],
+     "notes": "ADDED: only claim what you can defend in an interview."}
   ],
   "languages": [{"id": "l1", "name": "English", "level": "C1", "detail": "IELTS: 7.5 Overall - Jan 2026"}],
   "custom_sections": [

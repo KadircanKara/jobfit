@@ -21,12 +21,15 @@ from typing import Annotated, Any
 from pydantic import (
     AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     ValidationError,
     field_validator,
     model_validator,
 )
+
+from jobhunt.cv import markup
 
 SCHEMA_VERSION = 1
 
@@ -43,7 +46,9 @@ DEFAULT_TITLES = {
     "projects": "PROJECTS",
 }
 
-_URL = re.compile(r"^(https?://|mailto:)[^\s{}\\]+$")
+_URL = re.compile(rf"^(https?://|mailto:)[{markup.URL_CHARS}]+$")
+_EMAIL = re.compile(r"^[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+_BREAK = re.compile(r"[\r\n\u2028\u2029\x85]+")
 
 
 class ProfileInvalid(ValueError):
@@ -64,19 +69,34 @@ class ProfileInvalid(ValueError):
 
 def _url(value: str) -> str:
     if value and not _URL.match(value):
-        raise ValueError("must start with http://, https:// or mailto: and contain no spaces or braces")
+        raise ValueError(
+            "must start with http://, https:// or mailto: and use only URL characters "
+            "(no spaces, carets or braces)"
+        )
     return value
 
 
 def _email(value: str) -> str:
-    if value and "@" not in value:
+    if value and not _EMAIL.match(value):
         raise ValueError("does not look like an email address")
+    return value
+
+
+def _one_line(value: Any) -> Any:
+    # Most fields print inside one macro argument or one comment line, where a
+    # line break either ends the paragraph mid-argument (\resumeItem is not a
+    # long macro, so the build stops) or lets a hidden line out of its comment.
+    # An accidental Enter in the form is joined back up rather than refused.
+    if isinstance(value, str):
+        return " ".join(part.strip() for part in _BREAK.split(value) if part.strip())
     return value
 
 
 Url = Annotated[str, AfterValidator(_url)]
 Id = Annotated[str, Field(min_length=1)]
 Required = Annotated[str, Field(min_length=1)]
+Line = Annotated[str, BeforeValidator(_one_line)]
+RequiredLine = Annotated[str, BeforeValidator(_one_line), Field(min_length=1)]
 
 
 class _Model(BaseModel):
@@ -85,26 +105,32 @@ class _Model(BaseModel):
 
 class Variant(_Model):
     id: Id
-    label: str = ""
+    label: Line = ""
     text: Required
+
+
+class LineVariant(Variant):
+    """A variant printed on one line, like a headline."""
+
+    text: RequiredLine
 
 
 class Bullet(_Model):
     id: Id
-    text: Required
+    text: RequiredLine
     hidden: bool = False
     notes: str = ""
 
 
 class Entry(_Model):
     id: Id
-    title: str = ""
-    subtitle: str = ""
-    location: str = ""
-    start: str = ""
-    end: str = ""
+    title: Line = ""
+    subtitle: Line = ""
+    location: Line = ""
+    start: Line = ""
+    end: Line = ""
     url: Url = ""
-    gpa: str = ""
+    gpa: Line = ""
     hidden: bool = False
     notes: str = ""
     bullets: list[Bullet] = Field(default_factory=list)
@@ -121,47 +147,51 @@ class Entry(_Model):
 
 
 class Link(_Model):
-    label: Required
+    label: RequiredLine
     url: Annotated[Url, Field(min_length=1)]
 
 
 class Extra(_Model):
     id: Id
-    label: Required
-    value: Required
+    label: RequiredLine
+    value: RequiredLine
 
 
 class SkillGroup(_Model):
     id: Id
-    category: Required
-    items: list[Required] = Field(default_factory=list)
+    category: RequiredLine
+    items: list[RequiredLine] = Field(default_factory=list)
+    # A skills line carries notes and can be hidden like any bullet: the master
+    # keeps guidance above its skills lines too, and the import must not drop it.
+    hidden: bool = False
+    notes: str = ""
 
 
 class Language(_Model):
     id: Id
-    name: Required
-    level: str = ""
-    detail: str = ""
+    name: RequiredLine
+    level: Line = ""
+    detail: Line = ""
 
 
 class CustomSection(_Model):
     id: Id
-    title: Required
+    title: RequiredLine
     entries: list[Entry] = Field(default_factory=list)
 
 
 class SectionRef(_Model):
     key: Required
-    title: Required
+    title: RequiredLine
 
 
 class Basics(_Model):
-    name: Required
-    headline: str = ""
-    headline_variants: list[Variant] = Field(default_factory=list)
+    name: RequiredLine
+    headline: Line = ""
+    headline_variants: list[LineVariant] = Field(default_factory=list)
     email: Annotated[str, AfterValidator(_email)] = ""
-    phone: str = ""
-    location: str = ""
+    phone: Line = ""
+    location: Line = ""
     links: list[Link] = Field(default_factory=list)
 
 
@@ -217,6 +247,7 @@ def parse(data: Any) -> Profile:
 _MESSAGES = {
     "missing": "is required",
     "string_too_short": "cannot be empty",
+    "too_short": "cannot be empty",
     "extra_forbidden": "is not a field a profile has",
 }
 

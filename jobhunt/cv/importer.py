@@ -85,6 +85,9 @@ Mapping rules:
   headlines go to basics.headline_variants and commented alternative summaries
   to summary.variants, each with the label written above it. Decorative rules
   such as "%-----------EXPERIENCE-----------" are dropped.
+- A skills line works the same way: commented prose above it goes into that
+  skills group's notes, and a commented-out skills line is kept with
+  "hidden": true.
 - Keep every entry, bullet and skill in the order the resume has them. layout
   lists the sections in the order they appear, with each title exactly as
   printed.

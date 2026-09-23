@@ -46,14 +46,16 @@ class Section:
     items: list[Any]
 
 
-_LINE_START = re.compile(r"^([ \t]*)(?=\S)", re.MULTILINE)
+# Every line with anything on it but spaces and tabs. Not `\S`: a line that
+# starts with some other whitespace is still a line TeX reads.
+_LINE_START = re.compile(r"^([ \t]*)(?=[^ \t\n])", re.MULTILINE)
 _INDENT = re.compile(r"[ \t]*")
 
 
 def _comment_out(body: str) -> str:
     # After the indentation, so a commented block still lines up with the code
     # around it, the way the master was always edited by hand.
-    return _LINE_START.sub(r"\1% ", body)
+    return _LINE_START.sub(r"\1% ", body.replace("\r\n", "\n").replace("\r", "\n"))
 
 
 def hidable(item: Any, caller: Callable[[], str]) -> Latex:

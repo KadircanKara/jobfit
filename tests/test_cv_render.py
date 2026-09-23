@@ -129,3 +129,11 @@ def test_contacts_come_in_header_order():
     labels = [c.label for c in found]
     assert labels == ["+441234567890", "ada@example.org", "LinkedIn", "GitHub", "London, UK"]
     assert found[1].url == "mailto:ada@example.org"
+
+
+def test_a_hidden_line_after_a_carriage_return_or_odd_whitespace_is_still_commented():
+    body = "  \\item{a\rb}\n\u2009tail\n"
+
+    out = render.hidable(type("Item", (), {"hidden": True, "notes": ""})(), lambda: body)
+
+    assert out == "  % \\item{a\n% b}\n% \u2009tail\n"
