@@ -1,0 +1,239 @@
+%-------------------------
+% Resume in Latex
+% Author : Harshibar
+% Based off of: https://github.com/jakeryang/resume
+% License : MIT
+%------------------------
+
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+% \usepackage[hidelinks]{hyperref}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=blue}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+% only for pdflatex
+% \input{glyphtounicode}
+
+% fontawesome
+\usepackage{fontawesome5}
+
+% fixed width
+\usepackage[scale=0.90,lf]{FiraMono}
+
+% light-grey
+\definecolor{light-grey}{gray}{0.83}
+\definecolor{dark-grey}{gray}{0.3}
+\definecolor{text-grey}{gray}{.08}
+
+\DeclareRobustCommand{\ebseries}{\fontseries{eb}\selectfont}
+\DeclareTextFontCommand{\texteb}{\ebseries}
+
+% custom underilne
+\usepackage{contour}
+\usepackage[normalem]{ulem}
+\renewcommand{\ULdepth}{1.8pt}
+\contourlength{0.8pt}
+\newcommand{\myuline}[1]{%
+  \uline{\phantom{#1}}%
+  \llap{\contour{white}{#1}}%
+}
+
+
+% custom font: helvetica-style
+\usepackage{tgheros}
+\renewcommand*\familydefault{\sfdefault}
+%% Only if the base font of the document is to be sans serif
+\usepackage[T1]{fontenc}
+
+% An f-ligature is one glyph with no ASCII mapping in the PDF text layer: "workflow"
+% extracts as "work<U+FB02>ow" and matches no keyword search an ATS runs. Turning the
+% f-ligatures off costs nothing visible at 11pt sans. Protrusion and expansion stay off -
+% they would reflow the page, and the page fit is load-bearing here.
+\usepackage[protrusion=false,expansion=false]{microtype}
+\DisableLigatures[f]{encoding = T1}
+
+
+\pagestyle{fancy}
+\fancyhf{} % clear all header and footer fields
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% Adjust margins
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{0in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+
+\urlstyle{same}
+
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+% Sections formatting - serif
+% \titleformat{\section}{
+%   \vspace{2pt} \scshape \raggedright\large % header section
+% }{}{0em}{}[\color{black} \titlerule \vspace{-5pt}]
+
+% TODO EBSERIES
+% sans serif sections
+\titleformat {\section}{
+    \bfseries \vspace{2pt} \raggedright \large % header section
+}{}{0em}{}[\color{light-grey} {\titlerule[2pt]} \vspace{-4pt}]
+
+% only for pdflatex
+% Ensure that generate pdf is machine readable/ATS parsable
+% \pdfgentounicode=1
+
+%-------------------------
+% Custom commands
+\newcommand{\resumeItem}[1]{
+  \item\small{
+    {#1 \vspace{-1pt}}
+  }
+}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-1pt}\item
+    \begin{tabular*}{\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & {\color{dark-grey}\small #2}\vspace{1pt}\\ % top row of resume entry
+      \textit{#3} & {\color{dark-grey} \small #4}\\ % second row of resume entry
+    \end{tabular*}\vspace{-4pt}
+}
+
+\newcommand{\resumeSubSubheading}[2]{
+    \item
+    \begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}
+      \textit{\small#1} & \textit{\small #2} \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}
+      #1 & {\color{dark-grey}\small #2} \\ % #2 is the date - dropping it left every project undated
+    \end{tabular*}\vspace{-4pt}
+}
+
+\newcommand{\resumeSubItem}[1]{\resumeItem{#1}\vspace{-4pt}}
+
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+
+% CHANGED default leftmargin  0.15 in
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{0pt}}
+
+\color{text-grey}
+
+%-------------------------------------------
+%%%%%%  RESUME STARTS HERE  %%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+\begin{document}
+
+%----------HEADING----------
+\begin{center}
+    % Optimization targeting
+    % \textbf{\Huge Ada Lovelace - Optimization \& Backend Engineer} \\ \vspace{5pt}
+    \textbf{\Huge Ada Lovelace - M.Sc. Computer Science} \\ \vspace{5pt}
+    \small
+    \hspace{1pt} \hspace{2pt}\texttt{+441234567890} \hspace{1pt} $|$
+    \hspace{1pt} \hspace{2pt}\texttt{\href{mailto:ada@example.org}{ada@example.org}} \hspace{1pt} $|$
+    \hspace{1pt} \hspace{2pt}\texttt{\href{https://www.linkedin.com/in/ada/}{LinkedIn}} \hspace{1pt} $|$
+    \hspace{1pt} \hspace{2pt}\texttt{\href{https://github.com/ada}{GitHub}} \hspace{1pt} $|$
+    \hspace{1pt} \hspace{2pt}\texttt{London, UK}
+    \\ \vspace{-3pt}
+\end{center}
+
+\textbf{MILITARY STATUS} : Completed
+
+%-----------PROFESSIONAL SUMMARY-----------
+\section{PROFESSIONAL SUMMARY}
+\small{
+Engineer combining \textbf{optimization research} with R\&D delivery.
+}
+%
+% VARIANT A - ENERGY
+% Energy-first summary.
+% Second line.
+
+%-----------EXPERIENCE-----------
+\section{EXPERIENCE}
+  \resumeSubHeadingListStart
+    % NOTE: lead with the engine work.
+    \resumeSubheading
+      {Analytical Engines Ltd}{April 2026 - Present}
+      {Engineer}{London, UK}
+      \resumeItemListStart
+        \resumeItem{Built a \textbf{multi-agent} planner, 10\% faster.}
+        % \resumeItem{Retired bullet kept for reference.}
+      \resumeItemListEnd
+    % \resumeSubheading
+      % {Old Mill}{2019}
+      % {Intern}{}
+      % \resumeItemListStart
+        % \resumeItem{Counted looms.}
+      % \resumeItemListEnd
+  \resumeSubHeadingListEnd
+
+%-----------EDUCATION-----------
+\section{EDUCATION}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {\"{O}zye\u{g}in University}{Spring 2022 - Fall 2025}
+      {Master of Science in Computer Science (GPA: 3.90/4.00)}{\.{I}stanbul}
+      \resumeItemListStart
+        \resumeItem{\textbf{Publications}: \href{https://example.org/paper\#1}{Notes on the Engine}}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+
+%-----------SKILLS-----------
+\section{SKILLS}
+ \begin{itemize}[leftmargin=0in, label={}]
+    \small{\item{
+     \textbf{Programming Languages} {: Python, C\#, SQL} \\
+     \textbf{AI \& ML} {: RAG, Evaluation} \\
+     }}
+\end{itemize}
+
+%-----------LANGUAGES-----------
+\section{LANGUAGES}
+\begin{itemize}[leftmargin=0in, label={}]
+    \small{\item{
+     English: C1 (IELTS: 7.5 Overall - Jan 2026) \\
+     }}
+\end{itemize}
+
+%-----------PROJECTS-----------
+\section{PROJECTS}
+    \resumeSubHeadingListStart
+    \resumeProjectHeading
+        {\href{https://example.org/planner}{\textbf{Difference Planner}}}{Jun 2026 - Jul 2026}
+            \resumeItemListStart
+                \resumeItem{Ran 6 models $\times$ 36 configurations on \textit{AWS}.}
+                % \resumeItem{Every bullet here is hidden.}
+            \resumeItemListEnd
+    \resumeSubHeadingListEnd
+
+%-----------AWARDS-----------
+\section{AWARDS}
+    \resumeSubHeadingListStart
+    \resumeProjectHeading
+        {\textbf{Best Paper}}{2025}
+    \resumeSubHeadingListEnd
+
+%-------------------------------------------
+\end{document}
