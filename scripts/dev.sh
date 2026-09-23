@@ -19,6 +19,16 @@ if [ -f "$root/.env" ]; then
   set +a
 fi
 
+# Vite 5 needs crypto.getRandomValues, missing on the Node 16 that sits on the
+# bare PATH here. Prefer the newest nvm-installed Node when the default is too old.
+if ! node -e 'process.exit(parseInt(process.versions.node) >= 18 ? 0 : 1)' 2>/dev/null; then
+  newest="$(ls -1 "$HOME/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)"
+  if [ -n "$newest" ]; then
+    PATH="$HOME/.nvm/versions/node/$newest/bin:$PATH"
+    export PATH
+  fi
+fi
+
 idle="${JOBHUNT_IDLE_TIMEOUT:-3600}"
 api_port="${JOBHUNT_PORT:-8765}"
 
