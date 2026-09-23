@@ -65,6 +65,7 @@ def build(
     runner: Runner | None = None,
     sandboxed: bool = False,
     deny: Iterable[pathlib.Path] = (),
+    cache: pathlib.Path | None = None,
 ) -> Build:
     """Build in a scratch directory. Nothing outside it is read or written."""
     if engine not in ENGINES:
@@ -84,7 +85,10 @@ def build(
                     log="uploaded templates only build inside the macOS sandbox (sandbox-exec), "
                     "which is not available here, so this one was not run.",
                 )
-            argv = sandbox.wrap(argv, folder, deny)
+            # TeX must be able to write a font cache, and the shared one is
+            # read-only in the sandbox. Without a private cache to reuse, this
+            # build gets a throwaway one: correct, only slower.
+            argv = sandbox.wrap(argv, folder, deny, cache or folder / "texmf-var")
         # A CV usually needs a second pass for its own references to settle.
         code, log = run(argv, folder)
         if code == 0:

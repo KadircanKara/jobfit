@@ -3,9 +3,10 @@
 lualatex cannot be confined from the inside: `--safer` breaks luaotfload and
 `openin_any=p` stops it from starting (both checked on 2026-09-23). So an uploaded
 template builds under macOS's sandbox-exec, with a profile that denies the
-network and every read or write under the home folder, except TeX's own
-per-user folders and the scratch directory the build runs in. Built-in
-templates ship with the package and build without it.
+network and every read or write under the home folder. TeX's own per-user
+folders are readable but never writable, the font cache it needs to write is a
+private copy, and only the scratch directory the build runs in is writable.
+Built-in templates ship with the package and build without it.
 """
 from __future__ import annotations
 
@@ -24,14 +25,25 @@ def available() -> bool:
     return sys.platform == "darwin" and os.access(SANDBOX_EXEC, os.X_OK)
 
 
-def wrap(argv: list[str], workdir: pathlib.Path, deny: Iterable[pathlib.Path] = ()) -> list[str]:
+def wrap(
+    argv: list[str],
+    workdir: pathlib.Path,
+    deny: Iterable[pathlib.Path] = (),
+    cache: pathlib.Path | None = None,
+) -> list[str]:
     """`argv` run inside the sandbox. The program is resolved to an absolute path
-    first, because sandbox-exec runs it without searching PATH."""
+    first, because sandbox-exec runs it without searching PATH. With `cache`, TeX
+    keeps its font cache there instead of in the shared per-user folder."""
     program = shutil.which(argv[0]) or argv[0]
-    return [str(SANDBOX_EXEC), "-p", profile(workdir, deny), program, *argv[1:]]
+    command = [program, *argv[1:]]
+    if cache is not None:
+        command = ["/usr/bin/env", f"TEXMFVAR={cache.resolve()}", *command]
+    return [str(SANDBOX_EXEC), "-p", profile(workdir, deny, cache), *command]
 
 
-def profile(workdir: pathlib.Path, deny: Iterable[pathlib.Path] = ()) -> str:
+def profile(
+    workdir: pathlib.Path, deny: Iterable[pathlib.Path] = (), cache: pathlib.Path | None = None
+) -> str:
     home = pathlib.Path.home().resolve()
     rules = [
         "(version 1)",
@@ -40,28 +52,43 @@ def profile(workdir: pathlib.Path, deny: Iterable[pathlib.Path] = ()) -> str:
         f"(deny file-read* file-write* (subpath {_quote(home)}))",
     ]
     rules += [f"(deny file-read* file-write* (subpath {_quote(path.resolve())}))" for path in deny]
-    # Later rules win: TeX's per-user folders (font caches, TEXMFHOME) and the
-    # build directory are opened back up after everything else is closed.
-    rules += [f"(allow file-read* file-write* (subpath {_quote(path)}))" for path in _tex_user_dirs()]
+    # Later rules win. TeX's own per-user folders are opened for reading only:
+    # the built-in templates build outside the sandbox and load from them, so a
+    # file an upload wrote there would run unconfined on the next Classic build.
+    rules += [f"(allow file-read* (subpath {_quote(path)}))" for path in tex_user_dirs()]
+    if cache is not None:
+        rules.append(f"(allow file-read* file-write* (subpath {_quote(cache.resolve())}))")
     rules.append(f"(allow file-read* file-write* (subpath {_quote(workdir.resolve())}))")
     return "\n".join(rules)
 
 
+def texmf_var() -> pathlib.Path | None:
+    """The shared font-cache folder, which an upload's private cache is seeded from."""
+    value = _kpse("TEXMFVAR")
+    return pathlib.Path(value).expanduser().resolve() if value else None
+
+
 @functools.lru_cache(maxsize=1)
-def _tex_user_dirs() -> tuple[pathlib.Path, ...]:
-    found: list[pathlib.Path] = []
-    kpsewhich = shutil.which("kpsewhich")
-    for variable in ("TEXMFHOME", "TEXMFVAR", "TEXMFCONFIG"):
-        if kpsewhich is None:
-            break
-        done = subprocess.run(
-            [kpsewhich, "-var-value", variable], capture_output=True, text=True, check=False, timeout=10
-        )
-        if done.stdout.strip():
-            found.append(pathlib.Path(done.stdout.strip()).expanduser().resolve())
+def tex_user_dirs() -> tuple[pathlib.Path, ...]:
+    found = [
+        pathlib.Path(value).expanduser().resolve()
+        for value in (_kpse(variable) for variable in ("TEXMFHOME", "TEXMFVAR", "TEXMFCONFIG"))
+        if value
+    ]
     home = pathlib.Path.home()
     found += [(home / "Library" / "texlive").resolve(), (home / "Library" / "texmf").resolve()]
     return tuple(dict.fromkeys(found))
+
+
+@functools.lru_cache(maxsize=8)
+def _kpse(variable: str) -> str:
+    kpsewhich = shutil.which("kpsewhich")
+    if kpsewhich is None:
+        return ""
+    done = subprocess.run(
+        [kpsewhich, "-var-value", variable], capture_output=True, text=True, check=False, timeout=10
+    )
+    return done.stdout.strip()
 
 
 def _quote(path: pathlib.Path) -> str:

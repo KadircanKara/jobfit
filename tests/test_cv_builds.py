@@ -55,6 +55,8 @@ def test_an_untrusted_build_is_sandboxed_with_the_private_folders_closed(cfg, cv
     argv = runner.calls[0]
     assert argv[0].endswith("sandbox-exec")
     assert str(cv_source.resolve()) in argv[2] and str(cfg.db_path.parent.resolve()) in argv[2]
+    private = (cfg.db_path.parent / "cv_sandbox" / "texmf-var").resolve()
+    assert f"TEXMFVAR={private}" in argv and private.is_dir()
 
 
 def test_a_trusted_build_is_not_sandboxed(cfg, cv_source):
@@ -66,4 +68,6 @@ def test_a_trusted_build_is_not_sandboxed(cfg, cv_source):
 
 
 def test_built_ins_are_trusted_and_uploads_are_not(cfg):
-    assert templates.get(cfg, "classic").trusted
+    added = templates.add(cfg, "Mine", "x", engine="lualatex")
+
+    assert templates.get(cfg, "classic").trusted and not added.trusted
