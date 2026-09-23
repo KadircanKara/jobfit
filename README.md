@@ -61,6 +61,7 @@ jobhunt status <job_id> screening
 jobhunt list --source greenhouse --limit 20
 jobhunt show <job_id>
 jobhunt stats
+jobhunt serve                         # the web app, on 127.0.0.1:8765
 ```
 
 ## The automated flow
@@ -79,7 +80,8 @@ one thing it cannot do without an API key: scoring the fit gate.
 5. `jobhunt csv mark-applied <ids> --cv-status cv_ready`.
 
 The reviewer checks two things and only one of them is a gate. **Fabrication is
-a hard fail:** every claim in the CV must trace to a line in `master.tex`. That
+a hard fail:** every claim in the CV must trace to a line in the master it was
+cut from. That
 replaces the skill's own approval step, which exists for exactly this, and it is
 a stronger check than a human skimming a diff, because a reworded overclaim uses
 only words that are already in the master and passes the token verifier. Fit is
@@ -191,6 +193,38 @@ Acting on any row of a duplicate cluster covers the whole cluster, so a job
 applied to through Ashby does not resurface from Himalayas tomorrow.
 
 Every command prints one line or one table. Payloads go to disk, never to stdout.
+
+## Your CV
+
+The CV is data, not LaTeX. The Profile page in `jobhunt serve` edits
+`profile.json` next to `master.tex` in `CV_Source`: one form per section, with
+bullets, hidden items and notes. **Generate** renders it through a template into
+`master.tex` and `Master_CV.pdf`, and those files are only ever replaced by a
+generate that compiled. A `master.tex` you already have is imported once, by an
+agent, and the page shows every word it would lose before you accept it.
+
+Templates live on the Templates page. Two ship with the app, Classic and Modern.
+You can upload your own `.tex`: a finished CV is converted by an agent that
+rewrites only the body and keeps the preamble, which holds the look, byte for
+byte. Nothing is added until it compiles with your details, hides what you hid,
+and prints everything else. Changing the default template empties the master CV
+until you generate again, because a PDF in the old template is not the master any
+more.
+
+Tailoring picks a template per job. Each application folder gets its own
+`master.tex`, rendered from the profile in that job's template, and the tailoring
+agent, the verifier, the reviewer and the revise studio all read that copy. With
+no profile saved, tailoring cuts from the global `master.tex` as it always did.
+
+**Uploaded templates are not trusted.** An upload is filled in a child process
+with a time limit and built under macOS `sandbox-exec`, with no network and no
+access to your home folder. Every tailored CV is built the same way, whatever its
+template: its preamble may be an upload's, and its body was written by an agent
+that read a posting from the internet. The tailoring agent compiles through
+`python -m jobhunt.cv.tailored`, is refused TeX engines in its own shell, and a
+CV only ships when the PDF named for sending is that command's build of the
+final `cv.tex`. Each sandboxed build gets a throwaway copy of TeX's font cache,
+so nothing one build writes is seen by the next.
 
 ## How a sync works
 
@@ -322,7 +356,7 @@ earliest-seen member, so `review` can show a single card with an "also on" line.
 ## Development
 
 ```bash
-.venv/bin/pytest tests -q      # 392 tests, no network
+.venv/bin/pytest tests -q      # no network
 .venv/bin/ruff check jobhunt tests scripts
 ```
 
