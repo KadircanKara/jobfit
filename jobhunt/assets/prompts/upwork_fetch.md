@@ -14,17 +14,21 @@ Call `find_jobs` with exactly this call object, unchanged:
 ```
 
 `action`, `org_uid`, and `params` are the three top-level keys `find_jobs`
-expects for a search - `org_uid` sits beside `params`, never inside it, and
-`params` itself carries the actual search filters (`query`, `job_type`,
-`sort`, `limit`, and so on).
+expects - `org_uid` sits beside `params`, never inside it, and `params` itself
+carries the actual filters (`query` or `mode`, `job_type`, `limit`, and so on).
+The `action` is either `search` (a keyword search) or `smart_search` (Upwork's
+Most Recent feed); both page the same way.
 
-Read the `cursor` in the response and call `find_jobs` again with the same
-`action` and `org_uid`, the same `params`, plus that `cursor` added inside
-`params`, to fetch the next page. Do this at most {max_pages} times in total
-(the first call above counts as one of them). Stop paginating early, before
-reaching {max_pages}, the moment either of these happens:
+Each response carries a `next_cursor`. To fetch the next page, call `find_jobs`
+again with the same `action` and `org_uid`, the same `params`, plus
+`"cursor": "<that next_cursor>"` added inside `params`. Do this at most
+{max_pages} times in total (the first call above counts as one of them). Stop
+paginating early, before reaching {max_pages}, the moment either of these
+happens:
 
-- a response comes back with no `cursor` - there is no next page.
+- a response comes back without a `next_cursor` - there is no next page;
+- a response says there is nothing more: `hasMore` is false, or
+  `pageInfo.hasNextPage` is false.
 
 Do not stop early on a result's age, and do not leave a result out because of
 its `created_date`. The results are not ordered by date, so an old posting on
@@ -82,6 +86,13 @@ you collected nothing), with a top-level `"error"` key holding a short string
 describing what went wrong. A partial, honestly-labelled result is always the
 right answer here - never silence instead of it.
 
+If a response carries `filters_rejected`, Upwork refused one of the filters in
+the call - a client location it does not recognise, for example - and the page
+is empty for that reason, not because nothing matched. Stop calling
+`find_jobs` and return the JSON object below with an `"error"` that names the
+rejected filter, the value that was sent, and the accepted spelling the
+response suggests.
+
 ## Output
 
 Return exactly one JSON object and nothing else - no prose before it, none
@@ -94,7 +105,8 @@ after it, in a single fenced code block, shaped exactly like this:
 ```
 
 - `pages` is a list with one entry per search page you fetched, each holding
-  that page's `results` array exactly as `find_jobs` returned it, unmodified.
+  that page's jobs (the response's `jobs` array) under `results`, exactly as
+  `find_jobs` returned them, unmodified.
 - `details` maps each id you fetched a detail for, as a string key, to the
   three-key projection described above - `content` (with `title` and the full
   `description`), `contractTerms`, and `clientCompanyPublic` - taken from that

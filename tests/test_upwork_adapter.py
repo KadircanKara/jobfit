@@ -526,3 +526,90 @@ def test_a_spelled_out_region_survives_unchanged() -> None:
 
 def test_no_detail_means_no_region() -> None:
     assert next(UpworkAdapter().normalize(_envelope({}), _ref())).client_region is None
+
+
+# --- the feed, locations, and budgets over a thousand ---------------------------
+
+
+def _call(cfg, monkeypatch, token: str) -> dict:
+    """The call object the prompt asks the agent to make, for one ref."""
+    seen = {}
+
+    def fake_run(config, phase, prompt, *, tools, timeout=0):
+        seen["prompt"] = prompt
+        return "{}"
+
+    monkeypatch.setattr("jobhunt.sources.upwork.agent.run", fake_run)
+    UpworkAdapter(config=cfg).fetch(BoardRef(provider="upwork", token=token, market="upwork"), None)
+    return json.loads(seen["prompt"].split("```json\n", 1)[1].split("\n```", 1)[0])
+
+
+def test_a_feed_ref_reads_the_most_recent_feed(cfg, monkeypatch) -> None:
+    from jobhunt import preferences
+
+    prefs, _ = preferences.load(cfg)
+    call = _call(cfg, monkeypatch, "@feed|hourly|United States")
+    assert call["action"] == "smart_search"
+    assert call["params"]["mode"] == "most_recent"
+    assert call["params"]["days_posted"] == prefs.max_age_days
+    assert call["params"]["location"] == "United States"
+    assert "query" not in call["params"]
+
+
+def test_a_keyword_ref_with_a_location_searches_that_location(cfg, monkeypatch) -> None:
+    call = _call(cfg, monkeypatch, "rag|fixed|Canada")
+    assert call["action"] == "search"
+    assert call["params"]["query"] == "rag"
+    assert call["params"]["job_type"] == "fixed"
+    assert call["params"]["location"] == "Canada"
+
+
+def test_board_refs_put_the_feed_first_and_fan_out_by_location() -> None:
+    prefs = UpworkPreferences(
+        queries=["rag"], job_types=["hourly"],
+        client_locations=["United States", "Canada"], recommended_feed=True,
+    )
+    assert [ref.token for ref in UpworkAdapter().board_refs(prefs)] == [
+        "@feed|hourly|United States", "@feed|hourly|Canada",
+        "rag|hourly|United States", "rag|hourly|Canada",
+    ]
+
+
+def test_a_fixed_budget_over_a_thousand_is_read() -> None:
+    """Search sends "1,500.00". `float` refused the comma, so every fixed job of
+    $1,000 or more was stored as unstated and slipped past the budget floor."""
+    envelope = _envelope({})
+    envelope["pages"][0]["results"][0]["budget"] = "1,500.00"
+    posting = next(UpworkAdapter().normalize(envelope, _ref()))
+    assert posting.salary_min == 1500 and posting.salary_is_stated is True
+
+
+def test_a_feed_result_becomes_a_posting() -> None:
+    """Shape copied from a live `smart_search mode=most_recent` response on
+    2026-09-23: a capitalised experience level, a `$` in the budget, and a hire
+    count on the client block that search results do not carry."""
+    envelope = {"pages": [{"results": [{
+        "id": "2102835592985772593", "title": "AI Agent to Find Bid Opportunities",
+        "job_type": "fixed", "budget": "$1,500.00", "experience_level": "Intermediate",
+        "created_date": "2026-09-23T19:00:49.275Z", "description_snippet": "short teaser",
+        "client": {"country": "United States", "total_hires": 6,
+                   "total_spent": "$1,990.02", "verification_status": "VERIFIED"},
+    }]}], "details": {}}
+    feed_ref = BoardRef(provider="upwork", token="@feed|fixed", market="upwork")
+    posting = next(UpworkAdapter().normalize(envelope, feed_ref))
+    assert posting.salary_min == 1500 and posting.salary_period == "fixed"
+    assert posting.client_total_spent == 1990.02
+    assert posting.client_verified is True
+
+
+def test_the_prompt_names_the_real_paging_markers() -> None:
+    from jobhunt.sources.upwork import _PACKAGED_PROMPT
+
+    text = _PACKAGED_PROMPT.read_text(encoding="utf-8")
+    assert "next_cursor" in text and "hasMore" in text and "hasNextPage" in text
+
+
+def test_the_prompt_turns_a_rejected_filter_into_an_error() -> None:
+    from jobhunt.sources.upwork import _PACKAGED_PROMPT
+
+    assert "filters_rejected" in _PACKAGED_PROMPT.read_text(encoding="utf-8")

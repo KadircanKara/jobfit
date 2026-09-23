@@ -47,3 +47,19 @@ def test_the_refusal_says_which_limit_stopped_it(cfg) -> None:
     assert budget.refusal() is None
     budget.spend(DAILY_REFS)
     assert "budget" in (budget.refusal() or "")
+
+
+def test_the_daily_budget_fits_one_located_run_with_every_search_retried() -> None:
+    """The user's own setup on 2026-09-23: five queries plus the feed, both job
+    types, the United States and Canada. `fetch` spends one unit per attempt
+    and may make two, so a run needs twice its search count."""
+    from jobhunt.preferences import UpworkPreferences
+    from jobhunt.sources import upwork_query
+
+    prefs = UpworkPreferences(
+        queries=["AI Agent", "LLM", "Generative AI", "RAG", "LangChain"],
+        client_locations=["United States", "Canada"], recommended_feed=True,
+    )
+    searches = len(upwork_query.refs_for(prefs))
+    assert searches == 24
+    assert DAILY_REFS >= 2 * searches

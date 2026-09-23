@@ -24,11 +24,13 @@ from jobhunt.db.models import utcnow
 from jobhunt.db.session import session_scope
 
 # Attempts, not refs: `fetch` spends a unit on each of its two attempts, so a
-# day of retries is 6 refs, not 12. Counting attempts is the point - the scarce
+# day of retries is 24 refs, not 48. Counting attempts is the point - the scarce
 # thing is the `claude -p` turn, and a retry is a whole extra turn with a whole
-# extra live search behind it. The name is kept because the daily meta key it
-# writes is already in the database under it; read it as "ref attempts".
-DAILY_REFS = 12
+# extra live search behind it. 48 fits one run of five queries plus the feed,
+# both job types and two client locations (24 searches) with every search
+# retried. The name is kept because the daily meta key it writes is already in
+# the database under it; read it as "ref attempts".
+DAILY_REFS = 48
 BREAKER_AFTER = 3
 
 _SPENT_KEY = "upwork_refs_{day}"

@@ -174,8 +174,12 @@ def _positive_float(value: Any) -> float | None:
     Both the hourly detail's `hourlyBudgetMin`/`Max` and the search-level
     `budget` string need this same guard: a stated 0 is never a real rate on
     either path, and a `hourlyBudgetMin: 0` beside a real max must not report
-    a $0 floor.
+    a $0 floor. Budgets arrive as display strings once they pass a thousand -
+    "1,500.00" from search, "$1,200.00" from the feed - so the symbol and the
+    separators come off first, as `_client_quality` does for spend.
     """
+    if isinstance(value, str):
+        value = value.replace("$", "").replace(",", "").strip()
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -494,10 +498,10 @@ class UpworkAdapter(HttpAdapter):
         self._refused = False
 
     def board_refs(self, prefs: preferences_module.UpworkPreferences) -> list[BoardRef]:
-        """One ref per (query, job_type). See `upwork_query.refs_for`."""
+        """One ref per search `upwork_query.refs_for` plans, the feed first."""
         return [
-            BoardRef(provider=self.source_id, token=f"{q}|{job_type}", market=self.market)
-            for q, job_type in query.refs_for(prefs)
+            BoardRef(provider=self.source_id, token=planned.token, market=self.market)
+            for planned in query.refs_for(prefs)
         ]
 
     def still_fetching(self) -> bool:
@@ -554,17 +558,28 @@ class UpworkAdapter(HttpAdapter):
             self.budget.record_failure()
             return empty
 
-        job_query, _, job_type = ref.token.partition("|")
+        planned = query.parse_ref(ref.token)
         # `org_uid` is a sibling of `params` on every `find_jobs` call, never a
         # filter inside it - confirmed live against the MCP, not inferred.
         # `search_params` stays a pure filter-dict mapper; the account id is
         # env/deployment concern, so it is layered on here instead.
         org_uid = os.environ.get(query.ORG_UID_ENV) or _DEFAULT_ORG_UID
-        search_call = {
-            "action": "search",
-            "org_uid": org_uid,
-            "params": query.search_params(job_query, job_type, prefs.upwork),
-        }
+        if planned.is_feed:
+            search_call = {
+                "action": "smart_search",
+                "org_uid": org_uid,
+                "params": query.feed_params(
+                    planned.job_type, prefs.upwork, prefs.max_age_days, location=planned.location
+                ),
+            }
+        else:
+            search_call = {
+                "action": "search",
+                "org_uid": org_uid,
+                "params": query.search_params(
+                    planned.query, planned.job_type, prefs.upwork, location=planned.location
+                ),
+            }
 
         prompt = _render_prompt(
             self.config,
