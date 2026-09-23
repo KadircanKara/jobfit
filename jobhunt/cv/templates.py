@@ -62,6 +62,13 @@ class Template:
         return (self.folder / SOURCE_NAME).read_text(encoding="utf-8")
 
 
+def get_builtin(template_id: str) -> Template:
+    template = _load(BUILTIN_DIR / template_id, "builtin")
+    if template is None:
+        raise UnknownTemplate(f"there is no built-in template called {template_id!r}")
+    return template
+
+
 def user_dir(config: Config) -> pathlib.Path:
     return pathlib.Path(config.db_path).parent / "cv_templates"
 

@@ -72,6 +72,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # install, but it is the document every tailored CV is checked against:
         # worth the same model you give `tailor`. Unset inherits the CLI default.
         "import": {"model": None, "effort": None},
+        # Rewrites an uploaded CV into a template. Its output is checked by
+        # validation and never trusted: a mid-size model is enough.
+        "template": {"model": None, "effort": None},
     },
     "digest": {
         "limit": 15,
