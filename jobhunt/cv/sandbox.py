@@ -63,7 +63,7 @@ def profile(
 
 
 def texmf_var() -> pathlib.Path | None:
-    """The shared font-cache folder, which an upload's private cache is seeded from."""
+    """The shared font-cache folder, which every sandboxed build copies its own from."""
     value = _kpse("TEXMFVAR")
     return pathlib.Path(value).expanduser().resolve() if value else None
 

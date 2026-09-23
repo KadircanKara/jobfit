@@ -6,16 +6,14 @@ user even on a run that ends in approval.
 """
 from __future__ import annotations
 
-import copy
 import json
 import pathlib
 
 import pytest
-from conftest import load_fixture, passing
+from conftest import LatexRecorder, passing, save_profile
 from fastapi.testclient import TestClient
 
-from jobhunt.cv import model
-from jobhunt.cv import store as cvstore
+from jobhunt.cv import templates
 from jobhunt.web import tailor as tailor_module
 from jobhunt.web.events import EventLog
 
@@ -248,20 +246,16 @@ def test_preparing_a_folder_calls_apply_the_way_apply_is_defined(cfg, monkeypatc
 
 # --- a template per job -------------------------------------------------------
 
-def save_profile(cfg) -> None:
-    cvstore.write(cfg, model.parse(copy.deepcopy(load_fixture("cv/profile.json"))))
-
-
 def test_each_job_is_prepared_in_its_own_template():
     steps = FakeSteps()
     run = tailor_module.TailorBatch(
-        job_ids=[1, 2], steps=steps, log=EventLog(), concurrency=1, templates={1: "modern"}
+        job_ids=[1, 2], steps=steps, log=EventLog(), concurrency=1, picks={1: templates.get_builtin("modern")}
     )
 
     run.run()
 
     assert dict(zip(steps.prepared, steps.templates, strict=True)) == {1: "modern", 2: None}
-    assert [row.template_id for row in run.rows] == ["modern", None]
+    assert [(row.template_id, row.template_name) for row in run.rows] == [("modern", "Modern"), (None, "")]
 
 
 class Applied:
@@ -308,17 +302,13 @@ def test_a_template_that_cannot_build_stops_before_any_folder_is_made(cfg, cv_so
 
 def test_one_build_per_template_per_batch(cfg, cv_source, applied):
     save_profile(cfg)
-    builds = []
+    runner = LatexRecorder()
 
-    def counting(argv, cwd):
-        builds.append(argv)
-        return passing(argv, cwd)
-
-    steps = tailor_module.ClaudeSteps(cfg, runner=counting)
+    steps = tailor_module.ClaudeSteps(cfg, runner=runner)
     for job_id in (1, 2, 3):
         steps.prepare(job_id, "classic")
 
-    assert len(builds) == 2, "one two-pass build, however many jobs share the template"
+    assert len(runner.calls) == 2, "one two-pass build, however many jobs share the template"
 
 
 def test_without_a_template_the_folder_is_cut_from_the_global_master(cfg, cv_source, applied, monkeypatch):
@@ -360,15 +350,10 @@ def test_the_page_count_comes_from_a_sandboxed_build(cfg, cv_source, tmp_path):
     folder = tmp_path / "Acme - Engineer"
     folder.mkdir()
     (folder / "cv.tex").write_text("\\documentclass{article}\\begin{document}x\\end{document}\n")
-    calls = []
+    runner = LatexRecorder()
 
-    def run(argv, cwd):
-        calls.append(argv)
-        (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")
-        return 0, "Output written on cv.pdf (2 pages, 10 bytes)."
-
-    assert tailor_module.ClaudeSteps(cfg, runner=run).pages(str(folder)) == 2
-    assert calls and calls[0][0].endswith("sandbox-exec")
+    assert tailor_module.ClaudeSteps(cfg, runner=runner).pages(str(folder)) == 2
+    assert runner.calls and runner.calls[0][0].endswith("sandbox-exec")
 
 
 # --- choosing templates for a batch -------------------------------------------
@@ -460,26 +445,61 @@ def test_a_run_that_stops_before_writing_the_cv_is_not_approved():
     assert steps.marked == [(1, "cv_failed")]
 
 
-def delivery_folder(tmp_path):
+def built_folder(cfg, tmp_path):
+    """A folder whose cv.pdf the compile command built from the cv.tex in it."""
+    from jobhunt.cv import tailored
+
     folder = tmp_path / "Acme - Engineer"
     folder.mkdir()
-    (folder / "cv.pdf").write_bytes(b"%PDF-1.7 round two")
+    (folder / "cv.tex").write_text("\\documentclass{article}\\begin{document}x\\end{document}\n")
+    tailored.compile_here(cfg, folder / "cv.tex", runner=passing)
     return folder
 
 
-def test_a_cv_is_delivered_when_the_named_pdf_is_the_last_build(cfg, tmp_path):
-    folder = delivery_folder(tmp_path)
-    (folder / "Kadircan_Kara-CV.pdf").write_bytes(b"%PDF-1.7 round two")
+def test_a_cv_is_delivered_when_the_named_pdf_is_the_last_build(cfg, cv_source, tmp_path):
+    folder = built_folder(cfg, tmp_path)
+    (folder / "Kadircan_Kara-CV.pdf").write_bytes((folder / "cv.pdf").read_bytes())
 
     assert tailor_module.ClaudeSteps(cfg).delivered(str(folder))
 
 
-def test_a_named_pdf_from_an_earlier_round_is_not_a_delivery(cfg, tmp_path):
-    folder = delivery_folder(tmp_path)
+def test_a_named_pdf_from_an_earlier_round_is_not_a_delivery(cfg, cv_source, tmp_path):
+    folder = built_folder(cfg, tmp_path)
     (folder / "Kadircan_Kara-CV.pdf").write_bytes(b"%PDF-1.7 round one")
 
     assert not tailor_module.ClaudeSteps(cfg).delivered(str(folder))
 
 
-def test_no_named_pdf_is_no_delivery(cfg, tmp_path):
-    assert not tailor_module.ClaudeSteps(cfg).delivered(str(delivery_folder(tmp_path)))
+def test_a_cv_edited_after_its_last_build_is_not_a_delivery(cfg, cv_source, tmp_path):
+    folder = built_folder(cfg, tmp_path)
+    (folder / "Kadircan_Kara-CV.pdf").write_bytes((folder / "cv.pdf").read_bytes())
+    (folder / "cv.tex").write_text("\\documentclass{article}\\begin{document}answered\\end{document}\n")
+
+    assert not tailor_module.ClaudeSteps(cfg).delivered(str(folder))
+
+
+def test_a_pdf_the_compile_command_did_not_build_is_not_a_delivery(cfg, cv_source, tmp_path):
+    folder = built_folder(cfg, tmp_path)
+    (folder / "cv.pdf").write_bytes(b"%PDF-1.7 from lualatex run by hand")
+    (folder / "Kadircan_Kara-CV.pdf").write_bytes(b"%PDF-1.7 from lualatex run by hand")
+
+    assert not tailor_module.ClaudeSteps(cfg).delivered(str(folder))
+
+
+def test_no_named_pdf_is_no_delivery(cfg, cv_source, tmp_path):
+    assert not tailor_module.ClaudeSteps(cfg).delivered(str(built_folder(cfg, tmp_path)))
+
+
+def test_the_tailoring_agent_cannot_run_a_tex_engine_itself(cfg, cv_source, applied, monkeypatch):
+    seen = {}
+
+    def run(config, phase, prompt, **kw):
+        seen.update(kw, prompt=prompt)
+        return "verifier output"
+
+    monkeypatch.setattr(tailor_module.agent, "run", run)
+    tailor_module.ClaudeSteps(cfg).tailor(str(applied.root), [])
+
+    for engine in ("lualatex", "pdflatex", "xelatex", "latexmk"):
+        assert f"Bash(*{engine}*)" in seen["disallowed"]
+    assert "never run" in seen["prompt"].lower()

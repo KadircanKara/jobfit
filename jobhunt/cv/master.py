@@ -110,10 +110,9 @@ def _generate(config: Config, runner: latex.Runner | None) -> Outcome:
         raise MasterError("save your details before generating the master CV")
     template = templates.get(config, templates.default_id(config))
     try:
-        tex = builds.fill(template.text(), saved.profile, trusted=template.trusted)
+        tex, built = builds.make(config, template, saved.profile, runner=runner)
     except render.RenderError as exc:
         return Outcome(ok=False, log=str(exc), pages=None, status=status(config))
-    built = builds.build(config, tex, engine=template.engine, trusted=template.trusted, runner=runner)
     if not built.ok:
         return Outcome(ok=False, log=built.log, pages=None, status=status(config))
 

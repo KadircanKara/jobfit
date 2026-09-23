@@ -9,11 +9,9 @@ database closed to it.
 from __future__ import annotations
 
 import pathlib
-import shutil
-import threading
 
 from jobhunt.config import Config
-from jobhunt.cv import latex, render, sandbox
+from jobhunt.cv import latex, render, sandbox, templates
 from jobhunt.cv import store as cvstore
 from jobhunt.cv.model import Profile
 
@@ -35,27 +33,25 @@ def build(
         runner=runner,
         sandboxed=True,
         deny=private_dirs(config),
-        cache=sandbox_cache(config),
+        seed=sandbox.texmf_var(),
     )
+
+
+def make(
+    config: Config,
+    template: templates.Template,
+    profile: Profile,
+    *,
+    runner: latex.Runner | None = None,
+    source: str | None = None,
+) -> tuple[str, latex.Build]:
+    """The profile in this template, and its build, each with the trust and the
+    engine the template carries. Raises RenderError when it cannot be filled.
+    `source` is the template's text when the caller has already read it."""
+    tex = fill(template.text() if source is None else source, profile, trusted=template.trusted)
+    return tex, build(config, tex, engine=template.engine, trusted=template.trusted, runner=runner)
 
 
 def private_dirs(config: Config) -> list[pathlib.Path]:
     """Where the profile, the master CV, the database and uploads live."""
     return [pathlib.Path(config.db_path).parent, cvstore.master_path(config).parent]
-
-
-_SEEDING = threading.Lock()
-
-
-def sandbox_cache(config: Config) -> pathlib.Path:
-    """The font cache untrusted builds may write: a private copy of the shared
-    one, seeded once so the first upload does not rebuild every font index."""
-    folder = pathlib.Path(config.db_path).parent / "cv_sandbox" / "texmf-var"
-    with _SEEDING:
-        if not folder.exists():
-            shared = sandbox.texmf_var()
-            if shared is not None and shared.is_dir():
-                shutil.copytree(shared, folder, symlinks=False)
-            else:
-                folder.mkdir(parents=True)
-    return folder

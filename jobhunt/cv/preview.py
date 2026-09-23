@@ -59,10 +59,9 @@ def preview(config: Config, template_id: str, *, runner: latex.Runner | None = N
             cached_png = png.read_bytes() if png.exists() else None
             return Preview(True, (folder / "cv.pdf").read_bytes(), cached_png, "")
         try:
-            tex = builds.fill(source, profile, trusted=template.trusted)
+            _, built = builds.make(config, template, profile, runner=runner, source=source)
         except render.RenderError as exc:
             return Preview(False, b"", None, str(exc))
-        built = builds.build(config, tex, engine=template.engine, trusted=template.trusted, runner=runner)
         if not built.ok:
             return Preview(False, b"", None, built.log)
         png = thumbnail(built.pdf)

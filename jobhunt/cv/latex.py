@@ -69,7 +69,7 @@ def build(
     runner: Runner | None = None,
     sandboxed: bool = False,
     deny: Iterable[pathlib.Path] = (),
-    cache: pathlib.Path | None = None,
+    seed: pathlib.Path | None = None,
 ) -> Build:
     """Build in a scratch directory. Nothing outside it is read or written."""
     if engine not in ENGINES:
@@ -90,9 +90,11 @@ def build(
                     "which is not available here, so this one was not run.",
                 )
             # TeX must be able to write a font cache, and the shared one is
-            # read-only in the sandbox. Without a private cache to reuse, this
-            # build gets a throwaway one: correct, only slower.
-            argv = sandbox.wrap(argv, folder, deny, cache or folder / "texmf-var")
+            # read-only in the sandbox. Each build gets its own, copied from
+            # `seed` and thrown away with the scratch directory: a cache two
+            # builds shared would let one plant a class or package the other
+            # loads first, since TeX searches the cache before its own tree.
+            argv = sandbox.wrap(argv, folder, deny, _own_cache(folder, seed))
         # A CV usually needs a second pass for its own references to settle.
         code, log = run(argv, folder)
         if code == 0:
@@ -110,6 +112,32 @@ def build(
             missing=missing(transcript),
             transcript=transcript,
         )
+
+
+def excerpt(log: str, lines: int = 12) -> str:
+    """The part of a LaTeX log worth reading.
+
+    That is the first line starting with "!" and what follows it, not the end of
+    the file: TeX signs off with a page of memory statistics that say nothing
+    about what went wrong.
+    """
+    kept = [line for line in (log or "").splitlines() if line.strip()]
+    for index, line in enumerate(kept):
+        if line.startswith("!"):
+            return "\n".join(kept[index : index + lines])
+    return "\n".join(kept[-lines:])
+
+
+def _own_cache(folder: pathlib.Path, seed: pathlib.Path | None) -> pathlib.Path:
+    cache = folder / "texmf-var"
+    if seed is not None and seed.is_dir():
+        try:
+            shutil.copytree(seed, cache, symlinks=False, ignore_dangling_symlinks=True)
+            return cache
+        except OSError:
+            shutil.rmtree(cache, ignore_errors=True)
+    cache.mkdir()
+    return cache
 
 
 def _read(path: pathlib.Path) -> str:

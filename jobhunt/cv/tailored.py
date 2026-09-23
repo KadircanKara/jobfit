@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import pathlib
 import sys
@@ -33,12 +34,11 @@ from jobhunt.cv import store as cvstore
 
 SNAPSHOT_NAME = "master.tex"
 RECORD_NAME = "master.json"
-
-# How much of a failed build's log a refusal quotes.
-LOG_TAIL = 800
-
-# The command line builds for real. Tests swap in a fake runner here.
-_RUNNER: latex.Runner | None = None
+# The tailored source and its PDF, as the tailoring skill names them.
+TEX_NAME = "cv.tex"
+PDF_NAME = "cv.pdf"
+# What the compile command last built: the source and the PDF it made from it.
+STAMP_NAME = "cv.build.json"
 
 
 class TailoredError(ValueError):
@@ -68,12 +68,11 @@ def snapshot(config: Config, template_id: str, *, runner: latex.Runner | None = 
     except templates.TemplateError as exc:
         raise TailoredError(str(exc)) from exc
     try:
-        tex = builds.fill(template.text(), saved.profile, trusted=template.trusted)
+        tex, built = builds.make(config, template, saved.profile, runner=runner)
     except render.RenderError as exc:
         raise TailoredError(f"{template.name} could not be filled in: {exc}") from exc
-    built = builds.build(config, tex, engine=template.engine, trusted=template.trusted, runner=runner)
     if not built.ok:
-        raise TailoredError(f"{template.name} does not build with your profile:\n{built.log[-LOG_TAIL:]}")
+        raise TailoredError(f"{template.name} does not build with your profile:\n{latex.excerpt(built.log)}")
     return Snapshot(template=template, tex=tex)
 
 
@@ -114,24 +113,45 @@ def compile_here(
     config: Config, tex_path: pathlib.Path, *, runner: latex.Runner | None = None
 ) -> latex.Build:
     """Build, then leave the PDF and the log next to the source, where the
-    tailoring skill's verifiers look for them. A failed build removes the last
-    round's PDF, so nothing checks a CV that no longer matches its source."""
+    tailoring skill's verifiers look for them, and a stamp tying the PDF to the
+    exact source it came from. The last round's PDF and stamp go first, so a
+    build that fails or crashes leaves nothing to mistake for this round's."""
+    pdf, stamp = tex_path.with_suffix(".pdf"), tex_path.parent / STAMP_NAME
+    pdf.unlink(missing_ok=True)
+    stamp.unlink(missing_ok=True)
+    source = tex_path.read_bytes()
     built = build(config, tex_path, runner=runner)
     tex_path.with_suffix(".log").write_text(built.transcript or built.log, encoding="utf-8")
-    pdf = tex_path.with_suffix(".pdf")
     if built.ok:
         pdf.write_bytes(built.pdf)
-    else:
-        pdf.unlink(missing_ok=True)
+        stamp.write_text(json.dumps({"tex": _sha(source), "pdf": _sha(built.pdf)}) + "\n", encoding="utf-8")
     return built
 
 
-def main(argv: list[str] | None = None) -> int:
+def current_build(tex_path: pathlib.Path) -> bytes | None:
+    """The PDF beside `tex_path` if the compile command built it from the
+    source as it is now, else None. An edit after the last build, a PDF from
+    anywhere else, or no build at all, all read as None."""
+    try:
+        stamp = json.loads((tex_path.parent / STAMP_NAME).read_text(encoding="utf-8"))
+        source, pdf = tex_path.read_bytes(), tex_path.with_suffix(".pdf").read_bytes()
+    except (OSError, ValueError):
+        return None
+    if not isinstance(stamp, dict) or stamp.get("tex") != _sha(source) or stamp.get("pdf") != _sha(pdf):
+        return None
+    return pdf
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def main(argv: list[str] | None = None, *, runner: latex.Runner | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m jobhunt.cv.tailored",
         description="Build a tailored CV the way the app does: in the sandbox, with its template's engine.",
     )
-    parser.add_argument("tex", type=pathlib.Path, help="the tailored source, usually cv.tex")
+    parser.add_argument("tex", type=pathlib.Path, help=f"the tailored source, usually {TEX_NAME}")
     parser.add_argument("--config", type=pathlib.Path, default=None, help="the app's config.yaml")
     args = parser.parse_args(argv)
 
@@ -140,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no such file: {tex}", file=sys.stderr)
         return 2
     config = config_module.load(args.config)
-    built = compile_here(config, tex, runner=_RUNNER)
+    built = compile_here(config, tex, runner=runner)
     if not built.ok:
         print(built.log, file=sys.stderr)
         return 1

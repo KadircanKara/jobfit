@@ -62,6 +62,16 @@ def cv_source(tmp_path: pathlib.Path, cfg: config_module.Config) -> pathlib.Path
     return folder
 
 
+def save_profile(cfg: config_module.Config) -> None:
+    """Save the fixture profile, as the Profile page would."""
+    import copy
+
+    from jobhunt.cv import model
+    from jobhunt.cv import store as cvstore
+
+    cvstore.write(cfg, model.parse(copy.deepcopy(load_fixture("cv/profile.json"))))
+
+
 def passing(argv, cwd):
     """A LaTeX build that always succeeds with a one-page stand-in PDF."""
     (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")

@@ -44,7 +44,7 @@ def check(config: Config, tex: str, pdf: bytes, *, runner: Runner | None = None)
         (folder / "cv.tex").write_text(tex, encoding="utf-8")
         (folder / "cv.pdf").write_bytes(pdf)
         code, output = (runner or _run)([python, str(script), str(folder / "cv.pdf")], folder)
-    found = _findings(output)
+    found = findings(output)
     # A script that timed out or crashed says nothing about the CV. Reporting it
     # as a clean pass would be the one wrong answer.
     if code == TIMED_OUT or (code != 0 and not found):
@@ -57,7 +57,7 @@ def check(config: Config, tex: str, pdf: bytes, *, runner: Runner | None = None)
     )
 
 
-def _findings(output: str) -> list[tuple[str, str]]:
+def findings(output: str) -> list[tuple[str, str]]:
     """Each [FAIL] or [WARN] line with the indented lines under it, which is
     where the script names the words, links or glyphs it is talking about."""
     found: list[tuple[str, list[str]]] = []

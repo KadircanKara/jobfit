@@ -8,18 +8,12 @@ that read a posting from the internet.
 """
 from __future__ import annotations
 
-import copy
 import json
 
 import pytest
-from conftest import LatexRecorder, load_fixture, passing
+from conftest import LatexRecorder, passing, save_profile
 
-from jobhunt.cv import model, tailored
-from jobhunt.cv import store as cvstore
-
-
-def save_profile(cfg) -> None:
-    cvstore.write(cfg, model.parse(copy.deepcopy(load_fixture("cv/profile.json"))))
+from jobhunt.cv import tailored
 
 
 def failing(argv, cwd):
@@ -115,7 +109,6 @@ def test_an_engine_the_app_does_not_run_falls_back(tmp_path):
 
 def test_a_tailored_cv_always_builds_in_the_sandbox(cfg, cv_source, tmp_path):
     folder = tailored_folder(tmp_path, engine="lualatex")
-    (folder / "master.json").write_text(json.dumps({"template_id": "classic", "engine": "lualatex"}))
     runner = LatexRecorder()
 
     built = tailored.build(cfg, folder / "cv.tex", runner=runner)
@@ -151,13 +144,11 @@ def test_a_failed_compile_leaves_no_old_pdf_to_verify(cfg, cv_source, tmp_path):
 def test_the_command_line_says_how_the_build_went(cfg, cv_source, tmp_path, monkeypatch, capsys):
     folder = tailored_folder(tmp_path)
     monkeypatch.setattr(tailored.config_module, "load", lambda path=None: cfg)
-    monkeypatch.setattr(tailored, "_RUNNER", passing)
 
-    assert tailored.main([str(folder / "cv.tex")]) == 0
+    assert tailored.main([str(folder / "cv.tex")], runner=passing) == 0
     assert "1 page" in capsys.readouterr().out
 
-    monkeypatch.setattr(tailored, "_RUNNER", failing)
-    assert tailored.main([str(folder / "cv.tex")]) == 1
+    assert tailored.main([str(folder / "cv.tex")], runner=failing) == 1
     assert "resumeSubheadng" in capsys.readouterr().err
 
 
@@ -165,3 +156,25 @@ def test_the_command_line_refuses_a_missing_file(cfg, tmp_path, monkeypatch, cap
     monkeypatch.setattr(tailored.config_module, "load", lambda path=None: cfg)
 
     assert tailored.main([str(tmp_path / "nothing.tex")]) == 2
+
+
+def test_a_build_is_current_only_for_the_source_it_was_built_from(cfg, cv_source, tmp_path):
+    folder = tailored_folder(tmp_path)
+    tex = folder / "cv.tex"
+
+    assert tailored.current_build(tex) is None
+    tailored.compile_here(cfg, tex, runner=passing)
+    assert tailored.current_build(tex) == (folder / "cv.pdf").read_bytes()
+
+    tex.write_text("\\documentclass{article}\\begin{document}edited\\end{document}\n")
+    assert tailored.current_build(tex) is None
+
+
+def test_a_failed_build_is_never_current(cfg, cv_source, tmp_path):
+    folder = tailored_folder(tmp_path)
+    tailored.compile_here(cfg, folder / "cv.tex", runner=passing)
+
+    tailored.compile_here(cfg, folder / "cv.tex", runner=failing)
+
+    assert tailored.current_build(folder / "cv.tex") is None
+    assert not (folder / "cv.build.json").exists()

@@ -71,11 +71,12 @@ def check(config: Config) -> None:
         )
 
 
-def argv_for(config: Config, phase: str, *, tools: str) -> list[str]:
+def argv_for(config: Config, phase: str, *, tools: str, disallowed: str = "") -> list[str]:
     binary = shutil.which("claude") or "claude"
     return [
         binary, "-p", "--output-format", "json",
         "--allowedTools", tools,
+        *(["--disallowedTools", disallowed] if disallowed else []),
         *flags(config, phase),
     ]
 
@@ -86,11 +87,12 @@ def run(
     prompt: str,
     *,
     tools: str,
+    disallowed: str = "",
     timeout: float = DEFAULT_TIMEOUT,
 ) -> str:
     """One model call for one phase. Returns the answer text, not the envelope."""
     done = subprocess.run(
-        argv_for(config, phase, tools=tools),
+        argv_for(config, phase, tools=tools, disallowed=disallowed),
         input=prompt, capture_output=True, text=True, timeout=timeout, check=False,
     )
     if done.returncode != 0:

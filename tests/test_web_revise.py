@@ -9,7 +9,9 @@ from __future__ import annotations
 import pathlib
 
 import pytest
+from conftest import LatexRecorder
 
+from jobhunt.cv import latex as cv_latex
 from jobhunt.web import revise as revise_module
 
 TEX = "\\documentclass{article}\\begin{document}Kadircan\\end{document}\n"
@@ -515,7 +517,7 @@ def test_the_log_shown_starts_at_the_error_not_the_memory_dump() -> None:
          *[f" {n} words out of many" for n in range(10)]]
     )
 
-    shown = revise_module._tail(log)
+    shown = cv_latex.excerpt(log)
 
     assert shown.startswith("! Undefined control sequence.")
     assert "l.42" in shown
@@ -547,14 +549,9 @@ def test_a_cv_from_before_templates_is_revised_against_the_global_master(cfg, sh
 
 
 def test_the_studio_builds_drafts_in_the_sandbox(cfg, shipped) -> None:
-    calls = []
+    runner = LatexRecorder()
 
-    def run(argv, cwd):
-        calls.append(argv)
-        (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")
-        return 0, "Output written on cv.pdf (1 page, 13 bytes)."
+    ok, log, pdf = revise_module.TailoredLatex(cfg, runner=runner).build(shipped / "cv.tex")
 
-    ok, log, pdf = revise_module.TailoredLatex(cfg, runner=run).build(shipped / "cv.tex")
-
-    assert ok and pdf.startswith(b"%PDF") and "1 page" in log
-    assert calls and all(argv[0].endswith("sandbox-exec") for argv in calls)
+    assert ok and pdf.startswith(b"%PDF") and "2 pages" in log
+    assert runner.calls and all(argv[0].endswith("sandbox-exec") for argv in runner.calls)

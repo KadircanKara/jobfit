@@ -39,8 +39,8 @@ MAX_PAGES = 2
 # The compiled artefacts a sync replaces in the shipped folder. The named PDF is
 # what the tailoring skill hands to an employer, so a sync that refreshed cv.pdf
 # and left it stale would be the worst possible half-write.
-TEX_NAME = "cv.tex"
-PDF_NAME = "cv.pdf"
+TEX_NAME = tailored.TEX_NAME
+PDF_NAME = tailored.PDF_NAME
 
 
 
@@ -312,7 +312,7 @@ class ReviseDesk:
                     changes=changes,
                     build="failed",
                     version=session.version,
-                    log=_tail(log),
+                    log=cv_latex.excerpt(log),
                 )
             )
             return
@@ -383,7 +383,7 @@ class ReviseDesk:
         session = self._require(job_id)
         ok, log, pdf = self.latex.build(pathlib.Path(session.draft) / TEX_NAME)
         if not ok:
-            return {"ok": False, "log": _tail(log), "pdf": None, "pages": session.pages}
+            return {"ok": False, "log": cv_latex.excerpt(log), "pdf": None, "pages": session.pages}
         session.pages = cv_latex.page_count(log, pdf)
         return {
             "ok": True,
@@ -452,20 +452,6 @@ def _kind_of(answer: dict[str, Any], changes: list[str]) -> str:
     if answer.get("refused"):
         return "refusal"
     return "edit" if changes else "answer"
-
-
-def _tail(log: str, lines: int = 12) -> str:
-    """The part of a LaTeX log worth reading.
-
-    That is the first line starting with "!" and what follows it, not the end of
-    the file: pdflatex signs off with a page of memory statistics that say
-    nothing about what went wrong.
-    """
-    kept = [line for line in (log or "").splitlines() if line.strip()]
-    for index, line in enumerate(kept):
-        if line.startswith("!"):
-            return "\n".join(kept[index : index + lines])
-    return "\n".join(kept[-lines:])
 
 
 # --- the real agent and the real toolchain ----------------------------------

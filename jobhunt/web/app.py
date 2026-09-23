@@ -646,14 +646,9 @@ def create_app(*, config: Config | None = None) -> FastAPI:
         except tailor_module.TemplateChoice as exc:
             return JSONResponse(status_code=422, content={"field": exc.field, "message": str(exc)})
         jh.batch = tailor_module.TailorBatch(
-            job_ids=job_ids,
-            steps=tailor_module.ClaudeSteps(cfg),
-            log=jh.log,
-            templates={job_id: template.id for job_id, template in chosen.items()},
+            job_ids=job_ids, steps=tailor_module.ClaudeSteps(cfg), log=jh.log, picks=chosen
         )
         _name_the_rows(cfg, jh.batch)
-        for row in jh.batch.rows:
-            row.template_name = chosen[row.job_id].name if row.job_id in chosen else ""
         jh.batch.start()
         return {"started": True, "jobs": jh.batch.state()}
 
