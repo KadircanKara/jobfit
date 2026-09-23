@@ -1289,10 +1289,12 @@ td.posting .go {
   gap: 12px;
   flex-wrap: wrap;
 }
-.job .who {
+.job .who,
+.tpl-jobs .who {
   font-weight: 600;
 }
-.job .at {
+.job .at,
+.tpl-jobs .at {
   color: var(--ink-dim);
   font-size: var(--small);
 }
@@ -3160,7 +3162,8 @@ tr.drawer > td {
   background: var(--paper);
   border-bottom: 1px solid var(--line);
 }
-.cv-thumb img {
+.cv-thumb img,
+.tpl-pick img {
   display: block;
   width: 100%;
   height: 100%;
@@ -3273,11 +3276,7 @@ tr.drawer > td {
   box-shadow: 0 0 0 1px var(--accent);
 }
 .tpl-pick img {
-  display: block;
-  width: 100%;
   aspect-ratio: 210 / 297;
-  object-fit: cover;
-  object-position: top;
 }
 .tpl-pick span {
   padding: 0 8px 8px;
@@ -3303,22 +3302,9 @@ tr.drawer > td {
   min-width: 0;
 }
 .tpl-jobs .who {
-  font-weight: 600;
   overflow-wrap: anywhere;
-}
-.tpl-jobs .at {
-  color: var(--ink-dim);
-  font-size: var(--small);
 }
 .tpl-jobs select {
   margin-left: auto;
   max-width: 100%;
-}
-.job .tpl {
-  font-family: var(--data);
-  font-size: var(--small);
-  color: var(--ink-dim);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 0 8px;
 }

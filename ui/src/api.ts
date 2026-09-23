@@ -396,7 +396,7 @@ export const api = {
     const response = await fetch("/api/tailor", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(templates ? { job_ids: jobIds, templates } : { job_ids: jobIds }),
+      body: JSON.stringify({ job_ids: jobIds, templates }),
     });
     if (response.status === 409) return response.json();
     return json<{ started: boolean; jobs: JobRun[] }>(response);

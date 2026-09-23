@@ -88,6 +88,9 @@ export default function App() {
   const [picked, setPicked] = useState<Set<number>>(new Set());
   // "Tailor selected" first asks which template each CV is cut in.
   const [choosing, setChoosing] = useState(false);
+  useEffect(() => {
+    if (!picked.size) setChoosing(false);
+  }, [picked]);
   const [applied, setApplied] = useState<Set<number>>(new Set());
   const [outreachBudget, setOutreachBudget] = useState<OutreachBudget | null>(null);
   const [outreachStates, setOutreachStates] = useState<OutreachStates>({});
@@ -235,9 +238,11 @@ export default function App() {
       const ids = [...picked];
       if (!ids.length) return;
       const body = await api.startTailoring(ids, templates);
+      // Refreshed either way: a 409 means another tab started a batch this one
+      // has not seen, and showing it is the point of the refusal.
+      setTailor(await api.tailorState());
       if (body.started === false) throw new Error(body.message ?? "tailoring did not start");
       setChoosing(false);
-      setTailor(await api.tailorState());
     },
     [picked],
   );
