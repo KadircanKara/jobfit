@@ -29,7 +29,8 @@ from jinja2.sandbox import SandboxedEnvironment, SecurityError
 
 from jobhunt.cv import markup
 from jobhunt.cv.markup import Latex
-from jobhunt.cv.model import ENTRY_SECTIONS, Basics, Profile
+from jobhunt.cv.model import ENTRY_SECTIONS, Basics, Profile, ProfileInvalid
+from jobhunt.cv.model import parse as parse_profile
 
 
 class RenderError(ValueError):
@@ -98,13 +99,36 @@ ISOLATED_TIMEOUT = 20.0
 _RESULT_LIMIT = 100_000
 
 
-class _Guarded(SandboxedEnvironment):
-    """The sandbox, plus a cap on the two operators that build huge values from
-    tiny templates: `'x' * 10**9` would otherwise exhaust memory."""
+# String methods and filters that turn a small number into a huge string. A CV
+# template has no use for padding text to a width, and each one would let
+# "'x'|center(10**9)" build a gigabyte inside the sandbox.
+_PADDING_METHODS = frozenset({"format", "format_map", "center", "ljust", "rjust", "zfill", "expandtabs"})
+_PADDING_FILTERS = ("center", "indent", "wordwrap", "format")
+# Far more than any CV; a template that prints more is looping, not laying out.
+_OUTPUT_LIMIT = 2_000_000
 
-    intercepted_binops = frozenset({"*", "**"})
+
+class _Guarded(SandboxedEnvironment):
+    """The sandbox, with every way a tiny template can build a huge value closed:
+    `*` and `**` are capped, %-formatting and padding methods are refused."""
+
+    intercepted_binops = frozenset({"*", "**", "%"})
+
+    # Checked in getattr and getitem rather than is_safe_attribute: Jinja hands
+    # str.format to its own formatter before is_safe_attribute is ever asked.
+    def getattr(self, obj: Any, attribute: str) -> Any:
+        if isinstance(obj, str) and attribute in _PADDING_METHODS:
+            return self.unsafe_undefined(obj, attribute)
+        return super().getattr(obj, attribute)
+
+    def getitem(self, obj: Any, argument: Any) -> Any:
+        if isinstance(obj, str) and argument in _PADDING_METHODS:
+            return self.unsafe_undefined(obj, str(argument))
+        return super().getitem(obj, argument)
 
     def call_binop(self, context: Any, operator: str, left: Any, right: Any) -> Any:
+        if operator == "%" and isinstance(left, str):
+            raise SecurityError("templates cannot format strings with %")
         if operator == "**" and isinstance(right, (int, float)) and abs(right) > 64:
             raise SecurityError("the template raises a number to a power too large to compute")
         if operator == "*":
@@ -133,6 +157,8 @@ def environment() -> SandboxedEnvironment:
         undefined=StrictUndefined,
         finalize=_finalize,
     )
+    for name in _PADDING_FILTERS:
+        env.filters.pop(name, None)
     env.filters.update(
         rich=markup.rich, latex=markup.escape, url=markup.escape_url, comment=markup.comment
     )
@@ -200,7 +226,7 @@ def context(profile: Profile) -> dict[str, Any]:
 
 def render(profile: Profile, source: str) -> str:
     try:
-        return environment().from_string(source).render(context(profile))
+        out = environment().from_string(source).render(context(profile))
     except TemplateSyntaxError as exc:
         raise RenderError(f"the template does not parse, line {exc.lineno}: {exc.message}") from exc
     except UndefinedError as exc:
@@ -209,6 +235,9 @@ def render(profile: Profile, source: str) -> str:
         raise RenderError(f"the template tried something templates may not do: {exc}") from exc
     except TemplateError as exc:
         raise RenderError(f"the template could not be filled: {exc}") from exc
+    if len(out) > _OUTPUT_LIMIT:
+        raise RenderError("the template printed far more than any CV holds, and was stopped")
+    return out
 
 
 def render_isolated(profile: Profile, source: str, *, timeout: float = ISOLATED_TIMEOUT) -> str:
@@ -230,12 +259,10 @@ def render_isolated(profile: Profile, source: str, *, timeout: float = ISOLATED_
 
 
 def _main() -> int:
-    from jobhunt.cv import model
-
     request = json.loads(sys.stdin.read())
     try:
-        out = render(model.parse(request["profile"]), request["source"])
-    except (RenderError, model.ProfileInvalid) as exc:
+        out = render(parse_profile(request["profile"]), request["source"])
+    except (RenderError, ProfileInvalid) as exc:
         sys.stderr.write(str(exc))
         return 2
     sys.stdout.write(out)

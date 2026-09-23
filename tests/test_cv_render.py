@@ -172,3 +172,27 @@ def test_a_template_that_never_finishes_is_stopped():
     with pytest.raises(render.RenderError) as caught:
         render.render_isolated(profile(), endless, timeout=2)
     assert "longer than 2 seconds" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "\\VAR{'x'|center(1000000000)}",
+        "\\VAR{'x'|indent(1000000000)}",
+        "\\VAR{'%1000000000s' % 'x'}",
+        "\\VAR{'{:>1000000000}'.format('x')}",
+        "\\VAR{'x'.rjust(1000000000)}",
+        "\\VAR{'{:>1000000000}'['format']('x')}",
+    ],
+)
+def test_every_way_to_pad_a_string_to_a_huge_width_is_refused(source):
+    with pytest.raises(render.RenderError):
+        render.render(profile(), source)
+
+
+def test_a_template_that_prints_megabytes_is_stopped():
+    flood = "\\BLOCK{for a in range(100000)}" + "x" * 40 + "\\BLOCK{endfor}"
+
+    with pytest.raises(render.RenderError) as caught:
+        render.render(profile(), flood)
+    assert "far more" in str(caught.value)
