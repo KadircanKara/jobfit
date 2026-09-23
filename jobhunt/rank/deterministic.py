@@ -51,6 +51,7 @@ REASON_LABELS: dict[str, str] = {
     "salary_below": "salary below the floor",
     "rate_below": "freelance rate below the floor",
     "client_no_spend": "client has never spent anything",
+    "client_low_spend": "client spent less than the minimum",
     "client_unverified": "client has not verified payment",
     "tz_overlap": "timezone overlap below the minimum",
 }
@@ -60,7 +61,7 @@ REASON_LABELS: dict[str, str] = {
 TUNABLE_REASONS = frozenset(
     {"age", "title_unmatched", "field_mismatch", "seniority_low", "seniority_high",
      "salary_unstated", "salary_below", "rate_below",
-     "client_no_spend", "client_unverified"}
+     "client_no_spend", "client_low_spend", "client_unverified"}
 )
 
 
@@ -367,7 +368,7 @@ def _check_rate(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
 def _check_client(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
     """Judge who is paying, when the user has asked to be picky about it.
 
-    Both switches default off, so a filters.yaml written before they existed
+    Every rule here defaults off, so a filters.yaml written before they existed
     keeps exactly the corpus it had. Both follow the house rule that unknown is
     never a rejection: `client_verified` and `client_total_spent` are null on
     every source but Upwork, and null there means the fetch never learned the
@@ -377,9 +378,13 @@ def _check_client(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
     """
     rules = profile.get("client") or {}
 
-    if rules.get("require_spend") and job.client_total_spent is not None:
-        if job.client_total_spent <= 0:
-            verdict.drop("client_no_spend", "client has never spent on this platform")
+    floor = rules.get("min_spend")
+    spent = job.client_total_spent
+    if floor and spent is not None and spent < float(floor):
+        verdict.drop("client_low_spend", f"client has spent ${spent:,.0f}, under ${float(floor):,.0f}")
+    elif rules.get("require_spend") and spent is not None and spent <= 0:
+        # A filters.yaml written before `min_spend` existed and not saved since.
+        verdict.drop("client_no_spend", "client has never spent on this platform")
 
     if rules.get("require_verified") and job.client_verified is False:
         verdict.drop("client_unverified", "client has not verified a payment method")

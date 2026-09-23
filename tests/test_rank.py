@@ -695,7 +695,40 @@ def test_the_client_rules_do_nothing_unless_switched_on(cfg) -> None:
                       client_verified=False, client_total_spent=0.0)
     filters = {"profiles": {"upwork": {}}, "global": {"max_age_days": 30}}
     codes = verdict_for(cfg, job_id, filters).codes
-    assert "client_no_spend" not in codes and "client_unverified" not in codes
+    assert not {"client_no_spend", "client_low_spend", "client_unverified"} & set(codes)
+
+
+def test_a_client_below_the_spend_floor_is_dropped(cfg) -> None:
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c7",
+                      client_total_spent=200.0)
+    filters = {"profiles": {"upwork": {"client": {"min_spend": 1000.0}}},
+               "global": {"max_age_days": 30}}
+    assert "client_low_spend" in verdict_for(cfg, job_id, filters).codes
+
+
+def test_a_client_exactly_at_the_spend_floor_is_kept(cfg) -> None:
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c8",
+                      client_total_spent=1000.0)
+    filters = {"profiles": {"upwork": {"client": {"min_spend": 1000.0}}},
+               "global": {"max_age_days": 30}}
+    assert "client_low_spend" not in verdict_for(cfg, job_id, filters).codes
+
+
+def test_an_unknown_spend_is_never_below_the_floor(cfg) -> None:
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c9",
+                      client_total_spent=None)
+    filters = {"profiles": {"upwork": {"client": {"min_spend": 1000.0}}},
+               "global": {"max_age_days": 30}}
+    assert "client_low_spend" not in verdict_for(cfg, job_id, filters).codes
+
+
+def test_a_one_dollar_floor_drops_a_client_who_never_spent(cfg) -> None:
+    """The migrated form of the old switch must still do the old switch's job."""
+    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c10",
+                      client_total_spent=0.0)
+    filters = {"profiles": {"upwork": {"client": {"min_spend": 1.0}}},
+               "global": {"max_age_days": 30}}
+    assert "client_low_spend" in verdict_for(cfg, job_id, filters).codes
 
 
 # --- seniority ceiling --------------------------------------------------------
