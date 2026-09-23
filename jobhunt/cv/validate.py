@@ -34,6 +34,8 @@ _INCLUDES = re.compile(
     r"\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}"
 )
 _COMMENTS = re.compile(r"(?<!\\)%.*$", re.MULTILINE)
+# Commands that reach outside the page: Lua, and TeX's own file and shell access.
+_REACHING = re.compile(r"\\(directlua|latelua|luaexec|luacode|openin|openout|write18|immediate\\write)\b")
 _MAGIC = re.compile(r"^%\s*!TEX\s+(?:TS-)?program\s*=\s*(\w+)", re.MULTILINE | re.IGNORECASE)
 
 
@@ -79,6 +81,12 @@ def validate(
         problems.append("it does not compile:\n" + built.log[-2000:])
         return Findings(problems, [], tex)
     warnings = []
+    reaching = sorted(set(_REACHING.findall(_COMMENTS.sub("", source))))
+    if reaching:
+        warnings.append(
+            "it runs Lua or opens files (" + ", ".join(f"\\{name}" for name in reaching) + "). "
+            "that only ever happens inside the sandbox, with no access to your files or the network"
+        )
     if built.missing:
         warnings.append("its font cannot print " + " ".join(built.missing))
     report = ats.check(config, tex, built.pdf, runner=ats_runner)

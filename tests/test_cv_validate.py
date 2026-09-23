@@ -119,3 +119,12 @@ def test_the_probe_carries_the_marker_only_in_hidden_places():
     visible = validate.expected_words(probe)
 
     assert validate.SENTINEL not in visible
+
+
+def test_a_template_that_runs_lua_is_flagged_but_not_refused(cfg, cv_source):
+    lua = GOOD.replace("\\par\n", "\\par\n\\directlua{tex.print('hi')}\n", 1)
+
+    findings = check(cfg, lua)
+
+    assert findings.ok
+    assert any("\\directlua" in warning and "sandbox" in warning for warning in findings.warnings)
