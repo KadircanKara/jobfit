@@ -6,7 +6,8 @@ and it is far cheaper to pin down as a pure function than through a fetch.
 
 The one asymmetry worth naming: the API takes a single `budget_min`/`budget_max`
 pair, but an hourly rate floor and a fixed-price floor are different numbers.
-That is why a query becomes two refs rather than one.
+That is why a query becomes one ref per job type, and one per client location on top,
+since `location` also takes a single value.
 
 Facts below were verified live against the Upwork MCP, not re-derived from
 documentation:
@@ -26,9 +27,10 @@ documentation:
 """
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
-from jobhunt.preferences import UpworkPreferences
+from jobhunt.preferences import UPWORK_FEED_QUERY, UPWORK_JOB_TYPES, UpworkPreferences
 
 ORG_UID_ENV = "UPWORK_ORG_UID"
 
@@ -56,13 +58,68 @@ def _floor(job_type: str, prefs: UpworkPreferences) -> tuple[str, float] | None:
     return (name, floor) if floor else None
 
 
-def search_params(query: str, job_type: str, prefs: UpworkPreferences) -> dict[str, Any]:
-    """Build the find_jobs params for one (query, job_type) ref."""
+@dataclasses.dataclass(frozen=True)
+class UpworkRef:
+    """One Upwork fetch: a keyword search or the Most Recent feed, for one job
+    type and at most one client location."""
+
+    query: str
+    job_type: str
+    location: str | None = None
+
+    @property
+    def is_feed(self) -> bool:
+        return self.query == UPWORK_FEED_QUERY
+
+    @property
+    def token(self) -> str:
+        """Self-describing on purpose: `sync` rebuilds a ref from a saved raw
+        envelope with nothing but this string, so it has to carry everything."""
+        parts = [self.query, self.job_type]
+        if self.location:
+            parts.append(self.location)
+        return "|".join(parts)
+
+
+def parse_ref(token: str) -> UpworkRef:
+    """The inverse of `UpworkRef.token`, and the one place a token is split.
+
+    The job type is found rather than counted to: a query may itself contain a
+    "|", so the last segment naming a job type is the divider. A token written
+    before locations existed simply has nothing after it.
+    """
+    parts = token.split("|")
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index] in UPWORK_JOB_TYPES:
+            location = "|".join(parts[index + 1:]) or None
+            return UpworkRef("|".join(parts[:index]), parts[index], location)
+    # No job type anywhere: read it the way `partition` always did.
+    query, _, job_type = token.partition("|")
+    return UpworkRef(query, job_type)
+
+
+def refs_for(prefs: UpworkPreferences) -> list[UpworkRef]:
+    """Every fetch one run makes: the feed first, then each keyword search.
+
+    One ref per job type, because `rate_min` and `budget_min` cannot share a
+    call, and one per client location, because `location` takes one value. The
+    feed goes first so a daily budget that runs out mid-run refuses keyword
+    searches rather than the one search that honours a date.
+    """
+    queries = ([UPWORK_FEED_QUERY] if prefs.recommended_feed else []) + list(prefs.queries)
+    locations: list[str | None] = list(prefs.client_locations) or [None]
+    return [
+        UpworkRef(q, job_type, location)
+        for q in queries
+        for job_type in prefs.job_types
+        for location in locations
+    ]
+
+
+def _filters(job_type: str, prefs: UpworkPreferences, location: str | None) -> dict[str, Any]:
+    """The filters a keyword search and the feed take alike."""
     params: dict[str, Any] = {
-        "query": query,
         "job_type": job_type,
-        "sort": prefs.sort,
-        "limit": PAGE_SIZE,
         "verified_payment_only": prefs.verified_payment_only,
     }
 
@@ -82,13 +139,40 @@ def search_params(query: str, job_type: str, prefs: UpworkPreferences) -> dict[s
     if prefs.client_min_hires is not None:
         params["client_hires_min"] = prefs.client_min_hires
 
+    if prefs.client_max_hires is not None:
+        params["client_hires_max"] = prefs.client_max_hires
+
+    if location:
+        params["location"] = location
+
     return params
 
 
-def refs_for(prefs: UpworkPreferences) -> list[tuple[str, str]]:
-    """One (query, job_type) pair per query per job type asked for.
+def search_params(
+    query: str, job_type: str, prefs: UpworkPreferences, *, location: str | None = None
+) -> dict[str, Any]:
+    """Build the find_jobs `search` params for one keyword search."""
+    return {
+        "query": query,
+        "sort": prefs.sort,
+        "limit": PAGE_SIZE,
+        **_filters(job_type, prefs, location),
+    }
 
-    A query becomes as many refs as job types because `budget_min` cannot
-    carry both an hourly floor and a fixed floor in the same search call.
+
+def feed_params(
+    job_type: str, prefs: UpworkPreferences, max_age_days: int, *, location: str | None = None
+) -> dict[str, Any]:
+    """Build the find_jobs `smart_search` params for one Most Recent feed read.
+
+    No `query` and no `sort`: the feed is Upwork's recommender, matched to the
+    profile and newest first. `days_posted` is the only date filter Upwork
+    honours anywhere, so the shared age limit is pushed down here as well as
+    enforced at rank.
     """
-    return [(query, job_type) for query in prefs.queries for job_type in prefs.job_types]
+    return {
+        "mode": "most_recent",
+        "limit": PAGE_SIZE,
+        "days_posted": max(1, int(max_age_days)),
+        **_filters(job_type, prefs, location),
+    }

@@ -1,3 +1,5 @@
+import pytest
+
 from jobhunt.preferences import UpworkPreferences
 from jobhunt.sources import upwork_query as query
 
@@ -75,9 +77,10 @@ def test_client_hires_min_is_passed_through_under_the_wire_name() -> None:
 
 def test_one_ref_per_query_and_job_type() -> None:
     prefs = UpworkPreferences(queries=["rag", "llm"], job_types=["hourly", "fixed"])
-    assert query.refs_for(prefs) == [
-        ("rag", "hourly"), ("rag", "fixed"), ("llm", "hourly"), ("llm", "fixed"),
+    assert [ref.token for ref in query.refs_for(prefs)] == [
+        "rag|hourly", "rag|fixed", "llm|hourly", "llm|fixed",
     ]
+
 
 
 def test_no_queries_means_no_refs() -> None:
@@ -121,3 +124,91 @@ def test_an_hourly_ref_ignores_the_fixed_floor_and_the_reverse() -> None:
     prefs = UpworkPreferences(min_hourly=50, min_fixed=1500)
     assert "budget_min" not in query.search_params("x", "hourly", prefs)
     assert "rate_min" not in query.search_params("x", "fixed", prefs)
+
+
+# --- locations, the feed, and tokens -------------------------------------------
+
+
+def test_one_ref_per_location_with_location_innermost() -> None:
+    prefs = UpworkPreferences(
+        queries=["rag"], job_types=["hourly"], client_locations=["United States", "Canada"]
+    )
+    assert [ref.token for ref in query.refs_for(prefs)] == [
+        "rag|hourly|United States", "rag|hourly|Canada",
+    ]
+
+
+def test_the_feed_comes_first_so_a_spent_budget_refuses_keyword_searches() -> None:
+    prefs = UpworkPreferences(queries=["rag"], job_types=["hourly"], recommended_feed=True)
+    assert [ref.token for ref in query.refs_for(prefs)] == ["@feed|hourly", "rag|hourly"]
+
+
+def test_the_feed_alone_still_makes_refs() -> None:
+    prefs = UpworkPreferences(job_types=["fixed"], recommended_feed=True)
+    refs = query.refs_for(prefs)
+    assert [ref.token for ref in refs] == ["@feed|fixed"]
+    assert refs[0].is_feed
+
+
+@pytest.mark.parametrize("ref", [
+    query.UpworkRef("rag", "hourly"),
+    query.UpworkRef("rag", "fixed", "United States"),
+    query.UpworkRef("@feed", "hourly", "Europe"),
+    query.UpworkRef("RAG|LLM", "hourly", "Canada"),
+])
+def test_a_token_round_trips(ref) -> None:
+    assert query.parse_ref(ref.token) == ref
+
+
+def test_a_token_from_before_locations_still_parses() -> None:
+    assert query.parse_ref("AI Agent|fixed") == query.UpworkRef("AI Agent", "fixed", None)
+
+
+def test_a_query_containing_a_bar_is_not_read_as_the_job_type() -> None:
+    assert query.parse_ref("rag|fixed|hourly") == query.UpworkRef("rag|fixed", "hourly", None)
+
+
+def test_a_location_is_sent_when_the_ref_has_one() -> None:
+    params = query.search_params("x", "hourly", UpworkPreferences(), location="Canada")
+    assert params["location"] == "Canada"
+
+
+def test_no_location_means_no_location_parameter() -> None:
+    assert "location" not in query.search_params("x", "hourly", UpworkPreferences())
+
+
+def test_client_hires_max_is_passed_through_under_the_wire_name() -> None:
+    prefs = UpworkPreferences(client_max_hires=9)
+    assert query.search_params("x", "hourly", prefs)["client_hires_max"] == 9
+
+
+def test_the_feed_reads_most_recent_within_the_age_limit() -> None:
+    params = query.feed_params("hourly", UpworkPreferences(), 7)
+    assert params["mode"] == "most_recent"
+    assert params["days_posted"] == 7
+    assert params["limit"] == 10
+
+
+def test_the_feed_sends_no_query_and_no_sort() -> None:
+    """`smart_search` takes neither: it is Upwork's own recommender, newest first."""
+    params = query.feed_params("hourly", UpworkPreferences(sort="relevance"), 30)
+    assert "query" not in params and "sort" not in params
+
+
+def test_the_feed_takes_the_same_filters_as_a_search() -> None:
+    prefs = UpworkPreferences(
+        min_fixed=500, experience_level=["expert"], proposals_max=20,
+        client_min_hires=1, client_max_hires=9, verified_payment_only=True,
+    )
+    params = query.feed_params("fixed", prefs, 30, location="United States")
+    assert params["budget_min"] == 500
+    assert params["experience_level"] == "expert"
+    assert params["proposals_max"] == 20
+    assert params["client_hires_min"] == 1 and params["client_hires_max"] == 9
+    assert params["verified_payment_only"] is True
+    assert params["location"] == "United States"
+    assert params["job_type"] == "fixed"
+
+
+def test_the_feed_window_is_never_below_one_day() -> None:
+    assert query.feed_params("hourly", UpworkPreferences(), 0)["days_posted"] == 1
