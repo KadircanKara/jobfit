@@ -15,8 +15,10 @@ export function MasterPanel({
   missing,
   version,
   templates,
+  switching,
   onGenerate,
   onPick,
+  onOpenTemplates,
 }: {
   status: MasterStatus | null;
   dirty: boolean;
@@ -25,9 +27,13 @@ export function MasterPanel({
   missing: string[];
   version: number;
   templates: TemplateRow[];
+  switching: boolean;
   onGenerate: () => void;
   onPick: (id: string) => void;
+  onOpenTemplates?: () => void;
 }) {
+  // Before the first save there is no status yet; the default is still known.
+  const chosen = status?.template_id ?? templates.find((row) => row.default)?.id ?? "";
   const available = status?.state === "ready" || status?.state === "stale";
   return (
     <section className="panel">
@@ -45,7 +51,7 @@ export function MasterPanel({
           <label htmlFor="cv-template">Template</label>
           <select
             id="cv-template"
-            value={status?.template_id ?? ""}
+            value={chosen}
             onChange={(event) => onPick(event.target.value)}
             disabled={busy}
           >
@@ -55,14 +61,22 @@ export function MasterPanel({
               </option>
             ))}
           </select>
-          <a className="note" href="/templates">
+          <a
+            className="note"
+            href="/templates"
+            onClick={(event) => {
+              if (!onOpenTemplates || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+              event.preventDefault();
+              onOpenTemplates();
+            }}
+          >
             all templates
           </a>
         </div>
       )}
       <div className="cv-actions">
         <button className="btn" onClick={onGenerate} disabled={busy}>
-          {busy ? "Generating" : dirty ? "Save and generate" : "Generate master CV"}
+          {switching ? "Switching" : busy ? "Generating" : dirty ? "Save and generate" : "Generate master CV"}
         </button>
         <Download href="/api/cv/master.pdf?download=1" enabled={available} label="PDF" />
         <Download href="/api/cv/master.tex" enabled={available} label=".tex" />

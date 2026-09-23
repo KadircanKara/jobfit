@@ -333,7 +333,7 @@ export default function App() {
         </nav>
 
         <main>
-        {screen === "profile" && <Profile />}
+        {screen === "profile" && <Profile onOpenTemplates={() => go("templates")} />}
         {screen === "templates" && <Templates />}
 
         {/* Kept mounted whichever screen is up, so an unsaved draft survives a

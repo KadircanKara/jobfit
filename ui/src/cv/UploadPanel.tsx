@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { cvApi, type TemplateRow, type UploadState } from "./api";
+import { cvApi, type TemplateRow } from "./api";
+import { usePolledJob } from "./usePolledJob";
 
 /**
  * Adding a template. A finished CV is converted by an agent, a file that already
@@ -8,49 +9,24 @@ import { cvApi, type TemplateRow, type UploadState } from "./api";
  * is added until they have seen the result and named it.
  */
 export function UploadPanel({ onAccepted }: { onAccepted: (row: TemplateRow) => void }) {
-  const [job, setJob] = useState<UploadState | null>(null);
+  const { job, setJob, settle, problem, version, act } = usePolledJob(cvApi.uploadState);
   const [name, setName] = useState("");
-  const [problem, setProblem] = useState<string | null>(null);
-  const [version, setVersion] = useState(0);
   const input = useRef<HTMLInputElement>(null);
 
+  // The suggested name arrives with the job; the person can change it after.
   useEffect(() => {
-    cvApi
-      .uploadState()
-      .then((state) => {
-        setJob(state);
-        setName(state.suggested_name);
-      })
-      .catch((error) => setProblem(String(error)));
-  }, []);
-
-  // Converting takes a minute or two, so the page polls.
-  useEffect(() => {
-    if (job?.state !== "running") return;
-    const timer = window.setInterval(async () => {
-      const next = await cvApi.uploadState();
-      setJob(next);
-      if (next.state !== "running") setVersion((current) => current + 1);
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [job?.state]);
-
-  async function act(call: () => Promise<void>) {
-    setProblem(null);
-    try {
-      await call();
-    } catch (error) {
-      setProblem(error instanceof Error ? error.message : String(error));
-    }
-  }
+    if (job?.suggested_name) setName(job.suggested_name);
+  }, [job?.suggested_name]);
 
   const choose = (file: File) =>
     act(async () => {
-      const next = await cvApi.uploadTemplate(file);
-      setJob(next);
-      setName(next.suggested_name);
-      setVersion((current) => current + 1);
-      if (input.current) input.current.value = "";
+      try {
+        settle(await cvApi.uploadTemplate(file));
+      } finally {
+        // Cleared whatever happened, so picking the same file again after a
+        // refusal still counts as a change.
+        if (input.current) input.current.value = "";
+      }
     });
 
   const discard = () => act(async () => setJob(await cvApi.discardUpload()));

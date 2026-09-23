@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { cvApi, type ImportState } from "./api";
+import { cvApi } from "./api";
+import { usePolledJob } from "./usePolledJob";
 
 /**
  * Bringing today's master.tex in, once. An agent reads it; the review below is
@@ -7,34 +7,7 @@ import { cvApi, type ImportState } from "./api";
  * back out of the Classic render of the result.
  */
 export function ImportPanel({ onAccepted, onStartEmpty }: { onAccepted: () => void; onStartEmpty: () => void }) {
-  const [job, setJob] = useState<ImportState | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
-  const [version, setVersion] = useState(0);
-
-  useEffect(() => {
-    cvApi.importState().then(setJob).catch((error) => setProblem(String(error)));
-  }, []);
-
-  // The agent takes a minute or two, so the page polls instead of holding a
-  // request open.
-  useEffect(() => {
-    if (job?.state !== "running") return;
-    const timer = window.setInterval(async () => {
-      const next = await cvApi.importState();
-      setJob(next);
-      if (next.state !== "running") setVersion((current) => current + 1);
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [job?.state]);
-
-  async function act(call: () => Promise<void>) {
-    setProblem(null);
-    try {
-      await call();
-    } catch (error) {
-      setProblem(error instanceof Error ? error.message : String(error));
-    }
-  }
+  const { job, setJob, problem, version, act } = usePolledJob(cvApi.importState);
 
   const start = () => act(async () => setJob(await cvApi.startImport()));
   const report = job?.report;

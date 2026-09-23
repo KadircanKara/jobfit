@@ -21,7 +21,7 @@ import { ProfileForm } from "./cv/ProfileForm";
  * here. Every save backs the profile up first, and the master files are only
  * replaced by a generate that compiled.
  */
-export function Profile() {
+export function Profile({ onOpenTemplates }: { onOpenTemplates?: () => void } = {}) {
   const [body, setBody] = useState<ProfileBody | null>(null);
   const [profile, setProfile] = useState<CvProfile | null>(null);
   const [saved, setSaved] = useState("");
@@ -31,7 +31,7 @@ export function Profile() {
   const [refused, setRefused] = useState<CvProfile | null>(null);
   const [status, setStatus] = useState<MasterStatus | null>(null);
   const [backups, setBackups] = useState<BackupRow[]>([]);
-  const [busy, setBusy] = useState<null | "saving" | "generating" | "restoring">(null);
+  const [busy, setBusy] = useState<null | "saving" | "generating" | "restoring" | "switching">(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [log, setLog] = useState<string | null>(null);
   const [missing, setMissing] = useState<string[]>([]);
@@ -121,7 +121,7 @@ export function Profile() {
     const row = templates.find((candidate) => candidate.id === id);
     if (!row || row.default) return;
     if (!window.confirm(`Switch to ${row.name}? The master CV will be empty until you generate it again.`)) return;
-    setBusy("generating");
+    setBusy("switching");
     try {
       setStatus(await cvApi.useTemplate(id));
       setLog(null);
@@ -196,6 +196,8 @@ export function Profile() {
               status={status}
               dirty={dirty}
               busy={busy !== null}
+              switching={busy === "switching"}
+              onOpenTemplates={onOpenTemplates}
               log={log}
               missing={missing}
               templates={templates}
