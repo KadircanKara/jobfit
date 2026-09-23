@@ -118,3 +118,22 @@ def test_a_backup_keeps_the_source_suffix(cfg, cv_source):
     backup = cvstore.take_backup(cv_source / "master.tex", cv_source / "backups", "master")
 
     assert backup.name.startswith("master-") and backup.name.endswith(".tex")
+
+
+def test_concurrent_saves_each_publish_a_whole_file(cfg, cv_source):
+    import threading
+
+    cvstore.write(cfg, profile())
+    names = [f"Writer {n}" for n in range(8)]
+    threads = [threading.Thread(target=cvstore.write, args=(cfg, profile(name=name))) for name in names]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert cvstore.read(cfg).profile.basics.name in names
+    kept = cvstore.backups(cfg)
+    assert len(kept) == 8, "every writer found a file to back up, and no backup overwrote another"
+    for backup in kept:
+        model.parse(json.loads(backup.path.read_text(encoding="utf-8")))
+    assert not [p for p in cv_source.iterdir() if p.name.endswith(".tmp")]

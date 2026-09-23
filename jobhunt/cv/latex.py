@@ -7,11 +7,19 @@ the document the tailored CVs are cut from and compared against.
 
 `-no-shell-escape` is passed every time rather than left to the TeX
 installation's default. Templates can be uploaded, and a \\write18 in one of
-them must not run.
+them must not run. lualatex also gets `--nosocket` and an environment with
+nothing in it but what TeX needs: the server's own environment carries API keys
+from .env, and Lua inside a template could otherwise print them into the PDF.
+
+What this does not do is confine reads. `--safer` breaks luaotfload (Classic's
+FontAwesome icons stop loading) and `openin_any=p` stops lualatex from starting
+at all, so a template can still read files the user can read. Built-in
+templates are trusted; uploaded ones need an OS-level sandbox before they run.
 """
 from __future__ import annotations
 
 import dataclasses
+import os
 import pathlib
 import re
 import shutil
@@ -30,6 +38,10 @@ Runner = Callable[[list[str], pathlib.Path], tuple[int, str]]
 
 _PAGES_IN_LOG = re.compile(r"Output written on .*?\((\d+) pages?", re.S)
 _PAGE_OBJECT = re.compile(rb"/Type\s*/Page[^s]")
+# What TeX logs, rather than fails on, when a font has no glyph for a character.
+_MISSING = re.compile(r"Missing character: There is no (.+?) \(U\+[0-9A-F]+\)")
+_KEEP_ENV = ("HOME", "LANG", "LC_ALL", "TMPDIR")
+_TEX_ENV = ("TEXMF", "TEXINPUTS", "OSFONTDIR")
 _DOCUMENT = "\\begin{document}"
 
 
@@ -39,6 +51,9 @@ class Build:
     log: str
     pdf: bytes = b""
     pages: int | None = None
+    # Characters the build dropped because the template's font cannot print
+    # them. The build still succeeds, so these are said out loud instead.
+    missing: tuple[str, ...] = ()
 
 
 def build(tex: str, *, engine: str = DEFAULT_ENGINE, runner: Runner | None = None) -> Build:
@@ -46,7 +61,10 @@ def build(tex: str, *, engine: str = DEFAULT_ENGINE, runner: Runner | None = Non
     if engine not in ENGINES:
         return Build(ok=False, log=f"unknown LaTeX engine {engine!r}. use one of {', '.join(ENGINES)}.")
     run = runner or _run
-    argv = [engine, "-interaction=nonstopmode", "-halt-on-error", "-no-shell-escape", SOURCE]
+    argv = [engine, "-interaction=nonstopmode", "-halt-on-error", "-no-shell-escape"]
+    if engine == "lualatex":
+        argv.append("--nosocket")
+    argv.append(SOURCE)
     with tempfile.TemporaryDirectory(prefix="jobhunt-cv-") as raw:
         folder = pathlib.Path(raw)
         (folder / SOURCE).write_text(tex, encoding="utf-8")
@@ -58,7 +76,9 @@ def build(tex: str, *, engine: str = DEFAULT_ENGINE, runner: Runner | None = Non
         if code != 0 or not pdf.exists():
             return Build(ok=False, log=trim(log))
         data = pdf.read_bytes()
-        return Build(ok=True, log=trim(log), pdf=data, pages=page_count(log, data))
+        return Build(
+            ok=True, log=trim(log), pdf=data, pages=page_count(log, data), missing=missing(folder / "cv.log")
+        )
 
 
 def _run(argv: list[str], cwd: pathlib.Path) -> tuple[int, str]:
@@ -68,11 +88,27 @@ def _run(argv: list[str], cwd: pathlib.Path) -> tuple[int, str]:
     try:
         done = subprocess.run(
             [binary, *argv[1:]], cwd=cwd, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=TIMEOUT, check=False,
+            encoding="utf-8", errors="replace", timeout=TIMEOUT, check=False, env=environment(binary),
         )
     except subprocess.TimeoutExpired:
         return 124, f"{argv[0]} ran past {int(TIMEOUT)} seconds and was stopped."
     return done.returncode, done.stdout + done.stderr
+
+
+def environment(binary: str) -> dict[str, str]:
+    """Only what TeX needs to find itself and its font cache."""
+    kept = {key: value for key, value in os.environ.items() if key in _KEEP_ENV or key.startswith(_TEX_ENV)}
+    kept["PATH"] = os.pathsep.join([str(pathlib.Path(binary).parent), "/usr/bin", "/bin"])
+    return kept
+
+
+def missing(log_file: pathlib.Path) -> tuple[str, ...]:
+    """The characters the log says had no glyph, each once, in order."""
+    try:
+        text = log_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ()
+    return tuple(dict.fromkeys(_MISSING.findall(text)))
 
 
 def page_count(log: str, pdf: bytes) -> int | None:

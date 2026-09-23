@@ -196,3 +196,41 @@ def test_downloads_are_refused_while_empty(cfg, cv_source):
     with pytest.raises(master.MasterError) as caught:
         master.download(cfg, "tex")
     assert "generated" in str(caught.value)
+
+
+def test_a_run_that_died_between_the_two_writes_does_not_leave_an_old_pdf(cfg, cv_source):
+    save(cfg)
+    master.generate(cfg, runner=passing)
+    save(cfg, name="Ada King")
+    # As if the last generate wrote the new master.tex and died before the PDF.
+    newer = master.render.render(cvstore.read(cfg).profile, templates.get(cfg, "classic").text())
+    (cv_source / "master.tex").write_text(newer, encoding="utf-8")
+
+    def second_build(argv, cwd):
+        (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 second")
+        return 0, "Output written on cv.pdf (1 page, 15 bytes)."
+
+    master.generate(cfg, runner=second_build)
+
+    assert (cv_source / "Master_CV.pdf").read_bytes() == b"%PDF-1.7 second"
+    assert master.status(cfg).state == "ready"
+
+
+def test_a_second_generate_while_one_runs_is_refused(cfg, cv_source):
+    save(cfg)
+
+    with master._LOCK, pytest.raises(master.MasterError) as caught:
+        master.generate(cfg, runner=passing)
+    assert "already" in str(caught.value)
+
+
+def test_characters_the_font_could_not_print_reach_the_outcome(cfg, cv_source):
+    save(cfg)
+
+    def lossy(argv, cwd):
+        (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")
+        line = "Missing character: There is no ✓ (U+2713) in font x!\n"
+        (cwd / "cv.log").write_text(line, encoding="utf-8")
+        return 0, "Output written on cv.pdf (1 page, 13 bytes)."
+
+    assert master.generate(cfg, runner=lossy).missing == ("✓",)

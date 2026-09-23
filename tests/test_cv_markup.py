@@ -119,4 +119,4 @@ def test_every_mapping_prints_under_the_classic_preamble():
     built = latex.build(preamble + "\\begin{document}\n" + sample + "\n\\end{document}\n")
 
     assert built.ok, built.log
-    assert "Missing character" not in built.log
+    assert built.missing == ()

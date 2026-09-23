@@ -15,6 +15,7 @@ import os
 import pathlib
 import re
 import shutil
+import tempfile
 
 from jobhunt.config import Config
 from jobhunt.cv import model
@@ -118,25 +119,39 @@ def take_backup(source: pathlib.Path, folder: pathlib.Path, prefix: str) -> Back
         return None
     folder.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now().strftime(BACKUP_STAMP)
-    target = folder / f"{prefix}-{stamp}{source.suffix}"
+    data = source.read_bytes()
     # Two saves inside the same second must not collide, or one of them is lost.
-    counter = 1
-    while target.exists():
-        target = folder / f"{prefix}-{stamp}-{counter}{source.suffix}"
-        counter += 1
-    shutil.copy2(source, target)
+    # Claimed with an exclusive create, so two at once cannot pick the same name.
+    counter = 0
+    while True:
+        suffix = f"-{counter}" if counter else ""
+        target = folder / f"{prefix}-{stamp}{suffix}{source.suffix}"
+        try:
+            with target.open("xb") as handle:
+                handle.write(data)
+        except FileExistsError:
+            counter += 1
+            continue
+        break
+    shutil.copystat(source, target)
     return _backup_of(target)
 
 
 def write_atomic(path: pathlib.Path, data: str | bytes) -> None:
     """Replace `path` in one step, so a crash mid-write leaves the old file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    if isinstance(data, bytes):
-        temp.write_bytes(data)
-    else:
-        temp.write_text(data, encoding="utf-8")
-    os.replace(temp, path)
+    # A temp file of its own per writer: a shared "<name>.tmp" would let two
+    # saves at once publish each other's half-written file.
+    handle, raw = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    temp = pathlib.Path(raw)
+    try:
+        with os.fdopen(handle, "wb") as out:
+            out.write(data if isinstance(data, bytes) else data.encode("utf-8"))
+        os.chmod(temp, 0o644)
+        os.replace(temp, path)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
 
 
 def _backup_of(path: pathlib.Path) -> Backup:

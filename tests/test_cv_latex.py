@@ -93,3 +93,44 @@ def test_a_real_build_produces_a_one_page_pdf():
 
     assert result.ok, result.log
     assert result.pdf.startswith(b"%PDF") and result.pages == 1
+
+
+def test_lualatex_runs_without_sockets():
+    runner = Recorder()
+
+    latex.build(DOC, engine="lualatex", runner=runner)
+    latex.build(DOC, engine="pdflatex", runner=runner)
+
+    assert "--nosocket" in runner.calls[0][0]
+    assert "--nosocket" not in runner.calls[-1][0]
+
+
+def test_the_compile_environment_carries_no_secrets(monkeypatch):
+    monkeypatch.setenv("UNIPILE_DSN", "secret")
+    monkeypatch.setenv("TEXMFHOME", "/tex")
+
+    env = latex.environment("/Library/TeX/texbin/lualatex")
+
+    assert "UNIPILE_DSN" not in env and env["TEXMFHOME"] == "/tex"
+    assert env["PATH"].startswith("/Library/TeX/texbin")
+
+
+def test_characters_the_font_could_not_print_are_named():
+    def runner(argv, cwd):
+        (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")
+        (cwd / "cv.log").write_text(
+            "Missing character: There is no ≥ (U+2265) in font x!\n"
+            "Missing character: There is no ✓ (U+2713) in font x!\n"
+            "Missing character: There is no ≥ (U+2265) in font x!\n",
+            encoding="utf-8",
+        )
+        return 0, "Output written on cv.pdf (1 page, 1 bytes)."
+
+    assert latex.build(DOC, runner=runner).missing == ("≥", "✓")
+
+
+@pytest.mark.skipif(shutil.which("lualatex") is None, reason="lualatex is not installed")
+def test_a_real_build_reports_a_character_its_font_lacks():
+    result = latex.build(DOC.replace("Hello", "Hello ✓"))
+
+    assert result.ok and result.missing == ("✓",)

@@ -21,6 +21,7 @@ import datetime as dt
 import hashlib
 import json
 import pathlib
+import threading
 from typing import Any
 
 from jobhunt import store as jobstore
@@ -30,6 +31,11 @@ from jobhunt.cv import store as cvstore
 from jobhunt.db.session import session_scope
 
 RECORD_KEY = "cv.last_generated"
+
+# One generate at a time, and no template change in the middle of one: two
+# interleaved writes could leave one build's master.tex next to another's PDF
+# under a record that calls the pair ready.
+_LOCK = threading.Lock()
 
 
 class MasterError(ValueError):
@@ -54,6 +60,9 @@ class Outcome:
     log: str
     pages: int | None
     status: Status
+    # Characters the template's font could not print. The build succeeded, but
+    # they are missing from the PDF.
+    missing: tuple[str, ...] = ()
 
 
 def status(config: Config) -> Status:
@@ -87,6 +96,15 @@ def status(config: Config) -> Status:
 def generate(config: Config, *, runner: latex.Runner | None = None) -> Outcome:
     """Render the saved profile in the default template, build it, and only if
     that worked, replace master.tex and Master_CV.pdf."""
+    if not _LOCK.acquire(blocking=False):
+        raise MasterError("the master CV is already being generated")
+    try:
+        return _generate(config, runner)
+    finally:
+        _LOCK.release()
+
+
+def _generate(config: Config, runner: latex.Runner | None) -> Outcome:
     saved = cvstore.read(config)
     if saved is None:
         raise MasterError("save your details before generating the master CV")
@@ -100,11 +118,15 @@ def generate(config: Config, *, runner: latex.Runner | None = None) -> Outcome:
         return Outcome(ok=False, log=built.log, pages=None, status=status(config))
 
     source = tex.encode("utf-8")
+    previous = _record(config) or {}
     changed = _replace(config, cvstore.master_path(config), source, "master")
     pdf_path = cvstore.master_pdf_path(config)
-    # The PDF differs on every build (it carries its own timestamp), so it is
-    # rewritten only when the source did, or when there is none yet.
-    if changed or not pdf_path.exists():
+    # The PDF differs on every build (it carries its own timestamp), so an
+    # identical rebuild is not written again - but only when the record proves
+    # the PDF on disk came from this very source. A run that died between the
+    # two writes leaves the new source next to the old PDF.
+    proven = previous.get("tex_sha256") == _sha(source) and pdf_path.exists()
+    if changed or not proven:
         _replace(config, pdf_path, built.pdf, "Master_CV")
     _write_record(
         config,
@@ -115,13 +137,15 @@ def generate(config: Config, *, runner: latex.Runner | None = None) -> Outcome:
             "generated_at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
         },
     )
-    return Outcome(ok=True, log=built.log, pages=built.pages, status=status(config))
+    return Outcome(
+        ok=True, log=built.log, pages=built.pages, status=status(config), missing=built.missing
+    )
 
 
 def use_template(config: Config, template_id: str) -> Status:
     """Make a template the default, and empty the master CV."""
     template = templates.get(config, template_id)
-    with session_scope(config.db_path) as session:
+    with _LOCK, session_scope(config.db_path) as session:
         jobstore.meta_set(session, templates.DEFAULT_KEY, template.id)
         # Forgotten, not compared later: switching back to the previous template
         # is still a change, and the rule is that a change empties.
