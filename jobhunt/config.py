@@ -68,6 +68,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # bounded, cheap task - not fabrication risk, so it needs neither the
         # model nor the effort `tailor`/`review` might warrant.
         "upwork": {"model": None, "effort": None},
+        # Reads master.tex once and writes it out as a profile. Runs once per
+        # install, but it is the document every tailored CV is checked against,
+        # so it gets whatever the tailoring phase would.
+        "import": {"model": None, "effort": None},
     },
     "digest": {
         "limit": 15,

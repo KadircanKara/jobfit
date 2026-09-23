@@ -27,7 +27,7 @@ from jobhunt.config import Config
 # filters file. "upwork" is the exception to "sync is HTTP" - its fetch has no
 # HTTP client of its own, only the Upwork MCP reached through this same `claude
 # -p` mechanism, so its effort needs the same startup validation as the rest.
-PHASES = ("gate", "tailor", "review", "revise", "upwork")
+PHASES = ("gate", "tailor", "review", "revise", "upwork", "import")
 
 # What `claude --effort` accepts. Naming one this project does not know would be
 # passed straight to the CLI and fail every call in that phase.
