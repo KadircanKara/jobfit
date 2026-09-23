@@ -94,11 +94,17 @@ def test_the_ats_report_is_read_from_the_script_output(cfg, tmp_path):
 
     def runner(argv, cwd):
         assert (cwd / "cv.tex").exists() and (cwd / "cv.pdf").exists()
-        return 1, "[PASS] text layer\n[FAIL] encoding clean: ligature\n[WARN] links in text: x\n"
+        return 1, (
+            "[PASS] text layer\n"
+            "[FAIL] text fidelity: 1 of 571 source words are missing:\n"
+            "    band\n"
+            "[PASS] no hidden text\n"
+            "[WARN] links in text: x\n"
+        )
 
     report = ats.check(cfg, "tex", b"%PDF", runner=runner)
 
-    assert report.ran and report.failures == ["encoding clean: ligature"]
+    assert report.ran and report.failures == ["text fidelity: 1 of 571 source words are missing: band"]
     assert report.warnings == ["links in text: x"]
 
 

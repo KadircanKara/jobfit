@@ -20,7 +20,7 @@ from jobhunt.config import Config
 
 DEFAULT_SCRIPT = pathlib.Path.home() / ".claude/skills/tailoring-cv/scripts/ats_check.py"
 TIMEOUT = 120.0
-_LINE = re.compile(r"^\[(FAIL|WARN)\]\s*(.+)$", re.MULTILINE)
+_FINDING = re.compile(r"^\[(FAIL|WARN)\]\s*(.+)$")
 
 Runner = Callable[[list[str], pathlib.Path], tuple[int, str]]
 
@@ -43,12 +43,27 @@ def check(config: Config, tex: str, pdf: bytes, *, runner: Runner | None = None)
         (folder / "cv.tex").write_text(tex, encoding="utf-8")
         (folder / "cv.pdf").write_bytes(pdf)
         _, output = (runner or _run)([python, str(script), str(folder / "cv.pdf")], folder)
-    found = _LINE.findall(output)
+    found = _findings(output)
     return Report(
         True,
         [text for level, text in found if level == "FAIL"],
         [text for level, text in found if level == "WARN"],
     )
+
+
+def _findings(output: str) -> list[tuple[str, str]]:
+    """Each [FAIL] or [WARN] line with the indented lines under it, which is
+    where the script names the words, links or glyphs it is talking about."""
+    found: list[tuple[str, list[str]]] = []
+    for line in output.splitlines():
+        match = _FINDING.match(line)
+        if match:
+            found.append((match.group(1), [match.group(2).strip()]))
+        elif found and line.startswith((" ", "\t")) and line.strip() and not line.lstrip().startswith("["):
+            found[-1][1].append(line.strip())
+        elif not line.startswith((" ", "\t")):
+            found.append(("", []))
+    return [(level, " ".join(parts)) for level, parts in found if level]
 
 
 def _run(argv: list[str], cwd: pathlib.Path) -> tuple[int, str]:
