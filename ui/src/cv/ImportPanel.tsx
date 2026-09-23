@@ -1,4 +1,5 @@
 import { cvApi } from "./api";
+import { Check as CheckIcon, X } from "lucide-react";
 import { usePolledJob } from "./usePolledJob";
 
 /**
@@ -119,7 +120,7 @@ export function ImportPanel({ onAccepted, onStartEmpty }: { onAccepted: () => vo
 function Check({ ok, good, bad, words }: { ok: boolean; good: string; bad: string; words?: string[] }) {
   return (
     <div className="cv-check" data-ok={ok}>
-      <span className="cv-mark">{ok ? "✓" : "!"}</span>
+      <span className="cv-mark">{ok ? <CheckIcon aria-hidden="true" /> : <X aria-hidden="true" />}</span>
       <div>
         <div>{ok ? good : bad}</div>
         {!ok && words && words.length > 0 && (

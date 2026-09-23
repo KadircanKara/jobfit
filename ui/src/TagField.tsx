@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { X } from "lucide-react";
 import type { VocabRow } from "./api";
 
 type Props = {
@@ -115,7 +116,7 @@ export function TagField({
                 aria-label={`Remove ${tag}`}
                 onClick={() => onChange(tags.filter((t) => t !== tag))}
               >
-                ×
+                <X aria-hidden="true" />
               </button>
             </span>
           ))}

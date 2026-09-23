@@ -1,4 +1,5 @@
 import type { MasterStatus, TemplateRow } from "./api";
+import { Download as DownloadIcon, FileOutput } from "lucide-react";
 
 const LABEL = { empty: "Empty", ready: "Ready", stale: "Out of date" } as const;
 
@@ -16,6 +17,7 @@ export function MasterPanel({
   version,
   templates,
   switching,
+  generating,
   onGenerate,
   onPick,
   onOpenTemplates,
@@ -28,6 +30,7 @@ export function MasterPanel({
   version: number;
   templates: TemplateRow[];
   switching: boolean;
+  generating?: boolean;
   onGenerate: () => void;
   onPick: (id: string) => void;
   onOpenTemplates?: () => void;
@@ -63,7 +66,7 @@ export function MasterPanel({
           </select>
           <a
             className="note"
-            href="/templates"
+            href="/cv/templates"
             onClick={(event) => {
               if (!onOpenTemplates || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
               event.preventDefault();
@@ -76,7 +79,16 @@ export function MasterPanel({
       )}
       <div className="cv-actions">
         <button className="btn" onClick={onGenerate} disabled={busy}>
-          {switching ? "Switching" : busy ? "Generating" : dirty ? "Save and generate" : "Generate master CV"}
+          {busy ? <span className="spin" aria-hidden="true" /> : <FileOutput aria-hidden="true" />}
+          {switching
+            ? "Switching template"
+            : generating
+              ? "Generating"
+              : busy
+                ? "Working"
+                : dirty
+                  ? "Save and generate"
+                  : "Generate master CV"}
         </button>
         <Download href="/api/cv/master.pdf?download=1" enabled={available} label="PDF" />
         <Download href="/api/cv/master.tex" enabled={available} label=".tex" />
@@ -116,11 +128,13 @@ function Download({ href, enabled, label }: { href: string; enabled: boolean; la
   // followed, middle-clicked or opened in a tab while the master is empty.
   return enabled ? (
     <a className="btn ghost" href={href}>
-      Download {label}
+      <DownloadIcon aria-hidden="true" />
+      {label}
     </a>
   ) : (
-    <span className="btn ghost cv-off" aria-disabled="true">
-      Download {label}
+    <span className="btn ghost cv-off" aria-disabled="true" title="Generate the master CV first">
+      <DownloadIcon aria-hidden="true" />
+      {label}
     </span>
   );
 }

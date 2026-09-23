@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { CircleCheck, Download, TriangleAlert } from "lucide-react";
 import { cvApi, type TemplateRow } from "./cv/api";
 import { UploadPanel } from "./cv/UploadPanel";
 
@@ -56,16 +57,24 @@ export function Templates() {
   }
 
   return (
-    <div className="cv">
-      <div className="hero">
-        <div>
-          <h1>Templates</h1>
-          <div className="sub">Every preview shows your own details · the default is what Generate uses</div>
-        </div>
-      </div>
+    <div className="page">
+      <header className="page-header">
+        <h1>Templates</h1>
+        <span className="sub">Every preview shows your own details. The default is what Generate uses.</span>
+      </header>
 
-      {problem && <div className="err">{problem}</div>}
-      {notice && <div className="cv-notice">{notice}</div>}
+      {problem && (
+        <div className="notice" data-tone="danger" role="alert" style={{ marginBottom: 16 }}>
+          <TriangleAlert className="icon" aria-hidden="true" />
+          <span className="grow">{problem}</span>
+        </div>
+      )}
+      {notice && (
+        <div className="cv-notice" role="status">
+          <CircleCheck className="icon" aria-hidden="true" />
+          {notice}
+        </div>
+      )}
 
       <div className="cv-gallery">
         {rows.map((row) => (
@@ -127,7 +136,7 @@ function TemplateCard({
         <div className="cv-card-title">
           <b>{row.name}</b>
           {row.default && (
-            <span className="cv-state" data-state="ready">
+            <span className="badge" data-tone="accent">
               Default
             </span>
           )}
@@ -138,12 +147,13 @@ function TemplateCard({
         {row.description && <p className="cv-card-desc">{row.description}</p>}
         <div className="cv-actions">
           {!row.default && (
-            <button className="btn sm" onClick={onDefault} disabled={busy}>
+            <button className="btn ghost sm" onClick={onDefault} disabled={busy}>
               Make default
             </button>
           )}
-          <a className="btn ghost sm" href={`/api/cv/templates/${id}/source.tex`}>
-            Download .tex
+          <a className="btn quiet sm" href={`/api/cv/templates/${id}/source.tex`}>
+            <Download aria-hidden="true" />
+            .tex
           </a>
           {!row.builtin && (
             <button className="btn ghost sm" onClick={onRename} disabled={busy}>

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Check, Send } from "lucide-react";
 import { api } from "./api";
 
 /**
@@ -40,7 +41,7 @@ export function MarkApplied({
   return (
     <button
       type="button"
-      className={applied ? "btn sm applied" : "btn sm ghost"}
+      className={error ? "btn sm danger" : applied ? "btn sm applied" : "btn sm ghost"}
       onClick={toggle}
       disabled={saving}
       title={
@@ -50,7 +51,14 @@ export function MarkApplied({
           : "Record that you sent this application")
       }
     >
-      {saving ? "…" : applied ? "Applied \u2713" : "Mark applied"}
+      {saving ? (
+        <span className="spin" aria-hidden="true" />
+      ) : applied ? (
+        <Check aria-hidden="true" />
+      ) : (
+        <Send aria-hidden="true" />
+      )}
+      {error ? "Not saved, retry" : applied ? "Applied" : "Mark applied"}
     </button>
   );
 }

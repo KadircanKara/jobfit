@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { X } from "lucide-react";
 import { api } from "./api";
 
 /**
@@ -72,7 +73,7 @@ export function TitlePresets({
               disabled={busy}
               onClick={() => run(() => api.deleteTitleGroup(name))}
             >
-              ×
+              <X aria-hidden="true" />
             </button>
           </span>
         ))}
@@ -85,7 +86,7 @@ export function TitlePresets({
             title={titles.length ? "Name the titles in the field" : "Add a title first"}
             onClick={() => setNaming(naming === null ? "" : null)}
           >
-            Save as…
+            Save as
           </button>
           <button
             type="button"

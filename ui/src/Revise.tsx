@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MarkApplied } from "./MarkApplied";
 import {
-  api,
-  type OutreachBudget,
-  type OutreachStates,
-  type RevisableJob,
-  type ReviseSession,
-  type ReviseTurn,
-} from "./api";
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  SendHorizontal,
+  TriangleAlert,
+  X,
+} from "lucide-react";
+import { MarkApplied } from "./MarkApplied";
+import { api, type RevisableJob, type ReviseSession, type ReviseTurn } from "./api";
+import { followLink, href, type Route } from "./app/router";
+import { Sheet } from "./app/Sheet";
+import { useHunt } from "./app/store";
 import { OutreachDrawer } from "./Outreach";
 import { hostOf } from "./Run";
 
@@ -15,48 +22,22 @@ import { hostOf } from "./Run";
  *  LaTeX build is slow enough that anything tighter is wasted. */
 const POLL_MS = 1500;
 
-export function ReviseStudio({
-  jobs,
-  focus,
-  applied,
-  onApplied,
-  outreachStates,
-  onBudget,
-}: {
-  jobs: RevisableJob[];
-  focus?: number | null;
-  applied: Set<number>;
-  onApplied: (jobId: number, applied: boolean) => void;
-  outreachStates?: OutreachStates;
-  onBudget?: (budget: OutreachBudget) => void;
-}) {
-  const [at, setAt] = useState(0);
+export function StudioPage({ jobId, go }: { jobId: number; go: (to: Route | string) => void }) {
+  const hunt = useHunt();
+  const jobs = hunt.revisable;
+  const at = jobs.findIndex((row) => row.job_id === jobId);
+  const job = at >= 0 ? jobs[at] : undefined;
   const [session, setSession] = useState<ReviseSession | null>(null);
   const [pdf, setPdf] = useState<string | null>(null);
   const [buildLog, setBuildLog] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
-  // Collapsed by default - the studio is a focused writing view, and a
-  // permanently expanded drawer would crowd it. `key={jobId}` on the mounted
-  // drawer below (not a reset here) is what keeps it from ever showing the
-  // previous job's contacts after a prev/next switch: it forces a fresh
-  // mount, so it fetches for the new job instead of reusing stale state.
-  const [openOutreach, setOpenOutreach] = useState(false);
+  const [outreach, setOutreach] = useState(false);
 
-  const job = jobs[at];
-  const jobId = job?.job_id;
   // Opening a job whose CV has not been written yet fails, and correctly so.
   // The studio waits for it instead of showing that failure.
   const ready = job?.ready ?? false;
-
-  // "Review & revise" on a batch row picks that CV rather than whichever one
-  // the studio happened to be showing.
-  useEffect(() => {
-    if (focus == null) return;
-    const index = jobs.findIndex((row) => row.job_id === focus);
-    if (index >= 0) setAt(index);
-  }, [focus, jobs]);
 
   const refreshPreview = useCallback(async (id: number) => {
     const built = await api.revisionPreview(id);
@@ -66,12 +47,12 @@ export function ReviseStudio({
 
   // Opening is idempotent on the server: it resumes the thread if there is one.
   useEffect(() => {
-    if (jobId == null) return;
     let live = true;
     setSession(null);
     setPdf(null);
     setBuildLog(null);
     setNotice(null);
+    setOutreach(false);
     if (!ready) return;
     api
       .openRevision(jobId)
@@ -89,31 +70,36 @@ export function ReviseStudio({
   // While the agent works the thread is polled, and the preview is rebuilt once
   // it stops, because that is the only moment the PDF can have changed.
   useEffect(() => {
-    if (jobId == null || !session?.thinking) return;
+    if (!session?.thinking) return;
     const timer = window.setInterval(async () => {
-      const body = await api.revision(jobId);
-      setSession(body);
-      if (!body.thinking) await refreshPreview(jobId);
+      try {
+        const body = await api.revision(jobId);
+        setSession(body);
+        if (!body.thinking) await refreshPreview(jobId);
+      } catch (error) {
+        setNotice((error as Error).message);
+      }
     }, POLL_MS);
     return () => window.clearInterval(timer);
   }, [jobId, session?.thinking, refreshPreview]);
 
-  const send = useCallback(async () => {
-    if (jobId == null || !draft.trim()) return;
-    setNotice(null);
-    const text = draft;
-    setDraft("");
-    try {
-      setSession(await api.sendRevision(jobId, text));
-    } catch (error) {
-      setDraft(text); // give them their words back rather than losing them
-      setNotice((error as Error).message);
-    }
-  }, [jobId, draft]);
+  const send = useCallback(
+    async (text: string) => {
+      if (!text.trim()) return;
+      setNotice(null);
+      setDraft("");
+      try {
+        setSession(await api.sendRevision(jobId, text));
+      } catch (error) {
+        setDraft(text); // give them their words back rather than losing them
+        setNotice((error as Error).message);
+      }
+    },
+    [jobId],
+  );
 
   const act = useCallback(
     async (run: () => Promise<ReviseSession>) => {
-      if (jobId == null) return;
       setNotice(null);
       try {
         setSession(await run());
@@ -125,124 +111,126 @@ export function ReviseStudio({
     [jobId, refreshPreview],
   );
 
-  if (!jobs.length) return null;
+  const moveTo = (index: number) => {
+    const next = jobs[index];
+    if (next) go({ page: "tailoring", jobId: next.job_id });
+  };
+
+  const back = (
+    <nav className="crumbs" aria-label="Breadcrumb">
+      <a href={href({ page: "tailoring" })} onClick={(e) => followLink(e, () => go({ page: "tailoring" }))}>
+        Tailoring
+      </a>
+      <ChevronRight aria-hidden="true" />
+      <span>Revise</span>
+    </nav>
+  );
+
+  if (!job) {
+    return (
+      <div className="page">
+        {back}
+        <div className="empty-state" style={{ marginTop: 16 }}>
+          <h2>No tailored CV for job {jobId} in this session</h2>
+          <p>
+            The studio opens CVs from the current tailoring batch. After a restart the batch is gone, but the
+            folder and its files are still on disk.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="panel">
-      <div className="panel-head">
-        <h2>Revision studio</h2>
-        <div className="note">
-          {jobs.some((row) => !row.ready)
-            ? `${jobs.filter((row) => row.ready).length} of ${jobs.length} ready`
-            : "optional · the folder already has a finished CV"}
-        </div>
-        {job?.url && (
-          <a className="posting-link" href={job.url} target="_blank" rel="noreferrer" title={job.url}>
-            {hostOf(job.url)} ↗
-          </a>
-        )}
-        {jobId != null && (
-          <button
-            type="button"
-            className="outbtn"
-            aria-expanded={openOutreach}
-            onClick={() => setOpenOutreach((was) => !was)}
-          >
-            <span className="dot" data-state={outreachStates?.[jobId]} />
-            <span>Outreach</span>
-            <span className="caret">{openOutreach ? "▾" : "▸"}</span>
+    <div className="page">
+      {back}
+      <header className="page-header" style={{ marginTop: 6 }}>
+        <h1>{job.title || `Job ${job.job_id}`}</h1>
+        <span className="sub">{job.company}</span>
+        {job.fit != null && <span className="badge num">fit {job.fit.toFixed(2)}</span>}
+        <div className="page-actions">
+          {job.url && (
+            <a className="extlink" href={job.url} target="_blank" rel="noreferrer" title={job.url}>
+              {hostOf(job.url)}
+              <ExternalLink aria-hidden="true" />
+            </a>
+          )}
+          <button type="button" className="outbtn" aria-expanded={outreach} onClick={() => setOutreach(true)}>
+            <span className="dot" data-state={hunt.outreachStates[job.job_id]} />
+            Outreach
           </button>
-        )}
-        {jobId != null && (
           <MarkApplied
-            jobId={jobId}
-            applied={applied.has(jobId)}
-            onChange={(on) => onApplied(jobId, on)}
+            jobId={job.job_id}
+            applied={hunt.applied.has(job.job_id)}
+            onChange={(on) => hunt.setApplied(job.job_id, on)}
           />
-        )}
+        </div>
+      </header>
+
+      <div className="studio-bar">
+        <Picker jobs={jobs} at={at} open={open} onToggle={() => setOpen((was) => !was)} onPick={(index) => {
+          setOpen(false);
+          moveTo(index);
+        }} />
+        <button type="button" className="btn ghost sm" disabled={at === 0} onClick={() => moveTo(at - 1)}>
+          <ArrowLeft aria-hidden="true" />
+          Previous
+        </button>
+        <button type="button" className="btn ghost sm" disabled={at >= jobs.length - 1} onClick={() => moveTo(at + 1)}>
+          Next
+          <ArrowRight aria-hidden="true" />
+        </button>
+        <span className="of">
+          CV {at + 1} of {jobs.length}
+          {jobs.some((row) => !row.ready) && ` · ${jobs.filter((row) => row.ready).length} ready`}
+        </span>
       </div>
 
-      {openOutreach && jobId != null && (
-        <div className="studio-outreach">
-          {/* Keyed by jobId so switching CVs with prev/next remounts the
-              drawer instead of reusing one wired to the job just left. */}
-          <OutreachDrawer key={jobId} jobId={jobId} onBudget={onBudget} />
+      {notice && (
+        <div className="notice" data-tone="danger" role="alert" style={{ marginBottom: 12 }}>
+          <TriangleAlert className="icon" aria-hidden="true" />
+          <span className="grow">{notice}</span>
         </div>
       )}
 
-      <div className="stepper">
-        <Picker
-          jobs={jobs}
-          at={at}
-          open={open}
-          onToggle={() => setOpen((was) => !was)}
-          onPick={(index) => {
-            setAt(index);
-            setOpen(false);
-          }}
-        />
-        <div className="dots" aria-hidden="true">
-          {jobs.map((row, index) => (
-            <span
-              key={row.job_id}
-              className="dot"
-              data-s={index === at ? "now" : index < at ? "done" : undefined}
-            />
-          ))}
-        </div>
-        <span className="of">
-          CV {at + 1} of {jobs.length}
-        </span>
-        <div className="nav">
-          <button type="button" disabled={at === 0} onClick={() => setAt(at - 1)}>
-            ← Previous
-          </button>
-          <button type="button" disabled={at >= jobs.length - 1} onClick={() => setAt(at + 1)}>
-            Next →
-          </button>
-        </div>
-      </div>
-
-      {notice && <div className="err">{notice}</div>}
-
       {!ready && (
-        <div className="fx">
-          The CV for this job is still being cut. This opens on its own the moment{" "}
-          <b>cv.tex</b> lands — checking every five seconds.
+        <div className="notice" style={{ marginBottom: 12 }}>
+          <span className="spin" aria-hidden="true" />
+          <span className="grow">
+            The CV for this job is still being cut. This opens on its own the moment <b>cv.tex</b> lands; the
+            list is checked every five seconds.
+          </span>
         </div>
       )}
 
       <div className="studio">
         <div className="chat">
-          <Thread
-            turns={session?.turns ?? []}
-            thinking={session?.thinking ?? false}
-            waiting={!ready}
-          />
+          <Thread turns={session?.turns ?? []} thinking={session?.thinking ?? false} waiting={!ready} />
           <div className="composer">
             <div className="row">
               <textarea
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send();
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void send(draft);
                 }}
-                placeholder="Ask about the posting, or say what to change…"
+                placeholder="Ask about the posting, or say what to change"
                 aria-label="Message the tailoring agent"
                 disabled={!ready || session?.thinking}
               />
               <button
                 className="btn"
-                onClick={send}
+                onClick={() => send(draft)}
                 disabled={!ready || !session || session.thinking || !draft.trim()}
+                title="Send (Cmd or Ctrl + Enter)"
               >
+                <SendHorizontal aria-hidden="true" />
                 Send
               </button>
             </div>
             <div className="hint">
-              Ask a question and you get an answer; ask for a change and the agent edits{" "}
-              <b>cv.tex</b> and rebuilds. There is no text editor here on purpose — every change is
-              asked for, so every change has a reason in the thread above it.
+              A question gets an answer; a change request makes the agent edit <b>cv.tex</b> and rebuild. There is
+              no text editor on purpose: every change is asked for, so every change has a reason in the thread.
             </div>
           </div>
         </div>
@@ -250,17 +238,15 @@ export function ReviseStudio({
         <div className="pdfpane">
           <div className="preview">
             {!ready ? (
-              <div className="empty">Waiting for the CV to be cut…</div>
+              <div className="empty">Waiting for the CV to be cut.</div>
             ) : buildLog ? (
               <div className="failbox">{buildLog}</div>
             ) : pdf ? (
-              <object
-                data={`data:application/pdf;base64,${pdf}`}
-                type="application/pdf"
-                aria-label="Tailored CV preview"
-              />
+              <object data={`data:application/pdf;base64,${pdf}`} type="application/pdf" aria-label="Tailored CV preview" />
             ) : (
-              <div className="empty">Building the preview…</div>
+              <div className="empty">
+                <span className="spin" aria-hidden="true" /> Building the preview
+              </div>
             )}
           </div>
 
@@ -269,20 +255,24 @@ export function ReviseStudio({
             <SyncBar
               session={session}
               onSync={() => act(() => api.syncRevision(session.job_id))}
-              onDiscard={() => act(() => api.discardRevision(session.job_id))}
-              onTrim={async () => {
-                setDraft("");
-                setSession(
-                  await api.sendRevision(
-                    session.job_id,
-                    "This runs past two pages. Cut it back to two without dropping anything the posting asks for.",
-                  ),
-                );
+              onDiscard={() => {
+                if (window.confirm("Discard every revision not yet synced to the folder?")) {
+                  void act(() => api.discardRevision(session.job_id));
+                }
               }}
+              onTrim={() =>
+                send("This runs past two pages. Cut it back to two without dropping anything the posting asks for.")
+              }
             />
           )}
         </div>
       </div>
+
+      {outreach && (
+        <Sheet label="Outreach" title={job.title || `Job ${job.job_id}`} sub={`${job.company} · outreach`} onClose={() => setOutreach(false)}>
+          <OutreachDrawer key={job.job_id} jobId={job.job_id} onBudget={hunt.refreshOutreach} />
+        </Sheet>
+      )}
     </div>
   );
 }
@@ -325,9 +315,7 @@ function Picker({
           <span className="ttl">{here.title || `job ${here.job_id}`}</span>
           <span className="co">{subtitleOf(here)}</span>
         </span>
-        <span className="caret" aria-hidden="true">
-          {open ? "▴" : "▾"}
-        </span>
+        <ChevronDown className="icon" aria-hidden="true" />
       </button>
 
       {open && (
@@ -342,7 +330,7 @@ function Picker({
               aria-current={index === at}
               onClick={() => onPick(index)}
             >
-              <span className="mk" />
+              <span className="dot" data-tone={row.state === "running" ? "accent" : row.state === "failed" ? "danger" : "ok"} />
               <span>
                 <span className="ttl">{row.title || `job ${row.job_id}`}</span>
                 <span className="co">{subtitleOf(row)}</span>
@@ -351,7 +339,7 @@ function Picker({
                 {row.fit != null && <span>{row.fit.toFixed(2)}</span>}
                 {row.pages != null && <span>{row.pages} pp</span>}
                 {!row.ready ? (
-                  <span className="unsynced">cutting…</span>
+                  <span className="unsynced">cutting</span>
                 ) : row.ahead > 0 ? (
                   <span className="unsynced">{row.ahead} ahead</span>
                 ) : row.opened ? (
@@ -396,7 +384,7 @@ function Thread({
           <div className="bubble">
             <div className="thinking">
               <span className="pulse" />
-              <span>cutting the CV — I can talk about it once it exists…</span>
+              <span>Cutting the CV. I can talk about it once it exists.</span>
             </div>
           </div>
         </div>
@@ -430,7 +418,7 @@ function Thread({
           <div className="bubble">
             <div className="thinking">
               <span className="pulse" />
-              <span>editing cv.tex and rebuilding…</span>
+              <span>Editing cv.tex and rebuilding</span>
             </div>
           </div>
         </div>
@@ -443,8 +431,16 @@ function Built({ turn }: { turn: ReviseTurn }) {
   if (!turn.build && turn.version == null) return null;
   return (
     <div className="built">
-      {turn.build === "ok" && <span className="ok">✓ builds</span>}
-      {turn.build === "failed" && <span className="bad">✗ build failed</span>}
+      {turn.build === "ok" && (
+        <span className="ok">
+          <Check aria-hidden="true" /> builds
+        </span>
+      )}
+      {turn.build === "failed" && (
+        <span className="bad">
+          <X aria-hidden="true" /> build failed
+        </span>
+      )}
       {!turn.build && <span>no change</span>}
       {turn.pages != null && <span>{turn.pages} pages</span>}
       {turn.version != null && (
@@ -504,7 +500,7 @@ function SyncBar({
       {session.over_length && (
         <div className="synced" data-state="ahead">
           <span className="pages" data-over="true">
-            {session.pages} pp · over
+            {session.pages} pages
           </span>
           <span>Two pages is what the batch cuts to. Past that it is your call.</span>
           <span className="acts">
@@ -519,7 +515,7 @@ function SyncBar({
         <span>
           {ahead
             ? `${session.ahead} revision${session.ahead > 1 ? "s" : ""} ahead of the folder`
-            : "✓ Folder matches the CV you are looking at"}
+            : "The folder matches the CV you are looking at"}
         </span>
         <span className="where" title={session.folder}>
           {folderName(session.folder)}

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Save, TriangleAlert } from "lucide-react";
 import type { BackupRow } from "./api";
+import { setLeaveGuard } from "./app/router";
 import {
   cvApi,
   ProfileRefused,
@@ -61,7 +63,13 @@ export function Profile({ onOpenTemplates }: { onOpenTemplates?: () => void } = 
     reload().catch((error) => setProblem(String(error)));
   }, [reload]);
 
-  // Edits live only in this tab until saved, so leaving asks first.
+  // Edits live only in this tab until saved, so leaving asks first: another
+  // page in the app as much as a reload or a closed tab.
+  useEffect(() => {
+    setLeaveGuard(dirty ? () => window.confirm("Leave this page? Your unsaved profile changes will be lost.") : null);
+    return () => setLeaveGuard(null);
+  }, [dirty]);
+
   useEffect(() => {
     if (!dirty) return;
     const guard = (event: BeforeUnloadEvent) => {
@@ -148,28 +156,34 @@ export function Profile({ onOpenTemplates }: { onOpenTemplates?: () => void } = 
   }
 
   return (
-    <div className="cv">
-      <div className="hero">
-        <div>
-          <h1>Your background</h1>
-          <div className="sub">{body?.path ?? ""} · the only source every CV is cut from</div>
-        </div>
+    <div className="page">
+      <header className="page-header">
+        <h1>Profile</h1>
         {profile && (
-          <div className="runstate" data-state={dirty ? "running" : "idle"}>
-            <span className="pulse" />
-            <span>{dirty ? "Unsaved changes" : "Saved"}</span>
-          </div>
+          <span className="badge" data-tone={dirty ? "warn" : "ok"}>
+            <span className="dot" />
+            {dirty ? "Unsaved changes" : "Saved"}
+          </span>
         )}
+        <span className="sub" title={body?.path}>
+          The only source every CV is cut from
+        </span>
         {profile && (
-          <div className="runctl">
+          <div className="page-actions">
             <button className="btn" onClick={save} disabled={!dirty || busy !== null}>
+              {busy === "saving" ? <span className="spin" aria-hidden="true" /> : <Save aria-hidden="true" />}
               {busy === "saving" ? "Saving" : "Save and back up"}
             </button>
           </div>
         )}
-      </div>
+      </header>
 
-      {problem && <div className="err">{problem}</div>}
+      {problem && (
+        <div className="notice" data-tone="danger" role="alert" style={{ marginBottom: 16 }}>
+          <TriangleAlert className="icon" aria-hidden="true" />
+          <span className="grow">{problem}</span>
+        </div>
+      )}
 
       {body && !profile && body.import_available && (
         <ImportPanel onAccepted={() => reload()} onStartEmpty={() => setProfile(blankProfile())} />
@@ -197,6 +211,7 @@ export function Profile({ onOpenTemplates }: { onOpenTemplates?: () => void } = 
               dirty={dirty}
               busy={busy !== null}
               switching={busy === "switching"}
+              generating={busy === "generating"}
               onOpenTemplates={onOpenTemplates}
               log={log}
               missing={missing}
@@ -209,7 +224,12 @@ export function Profile({ onOpenTemplates }: { onOpenTemplates?: () => void } = 
         </div>
       )}
 
-      {profile && <BackupsPanel backups={backups} busy={busy !== null} onRestore={restore} />}
+      {profile && (
+        <div style={{ marginTop: 16 }}>
+          <BackupsPanel backups={backups} busy={busy !== null} onRestore={restore} />
+        </div>
+      )}
+      {body?.path && <div className="hint mono" style={{ marginTop: 12 }}>{body.path}</div>}
     </div>
   );
 }

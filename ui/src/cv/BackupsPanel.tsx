@@ -22,7 +22,7 @@ export function BackupsPanel({
           <div className="backup" key={backup.name}>
             <span className="ts">{backup.taken_at.replace("T", " ").slice(0, 19)}</span>
             <span className="sz">{(backup.size / 1024).toFixed(1)} KB</span>
-            <button onClick={() => onRestore(backup.name)} disabled={busy}>
+            <button className="btn ghost sm" onClick={() => onRestore(backup.name)} disabled={busy}>
               Restore
             </button>
           </div>

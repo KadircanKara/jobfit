@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ExternalLink, Search, UserPlus } from "lucide-react";
 import { api } from "./api";
 import type { ContactCandidate, OutreachBudget, OutreachContact, OutreachRoute } from "./api";
 
@@ -228,7 +229,15 @@ export function OutreachDrawer({
         )}
       </div>
 
-      {error && <div className="err">{error}</div>}
+      {error && (
+        <div className="notice" data-tone="danger" role="alert">
+          {error}
+        </div>
+      )}
+
+      {contacts.length === 0 && (
+        <div className="hint">No contacts yet. Find people at the company, or add one by hand below.</div>
+      )}
 
       <div className="contacts">
         {contacts.map((contact) => (
@@ -245,7 +254,8 @@ export function OutreachDrawer({
 
       <div className="findrow">
         <button type="button" className="btn ghost sm" disabled={finding} onClick={find}>
-          {finding ? "Looking…" : "Find more contacts"}
+          {finding ? <span className="spin" aria-hidden="true" /> : <Search aria-hidden="true" />}
+          {finding ? "Looking" : "Find more contacts"}
         </button>
         <span className="hint">
           Searches LinkedIn for who else works at the company. Uses your account.
@@ -268,11 +278,13 @@ export function OutreachDrawer({
                   </span>
                   {candidate.profile_url && (
                     <a
+                      className="extlink"
                       href={`https://${candidate.profile_url.replace(/^https?:\/\//, "")}`}
                       target="_blank"
                       rel="noreferrer"
                     >
-                      {candidate.profile_url} ↗
+                      {candidate.profile_url.replace(/^https?:\/\/(www\.)?/, "")}
+                      <ExternalLink aria-hidden="true" />
                     </a>
                   )}
                 </div>
@@ -319,13 +331,11 @@ export function OutreachDrawer({
             })
           }
         >
+          <UserPlus aria-hidden="true" />
           Add contact
         </button>
       </div>
-      <div className="hint">
-        Contacts named by the posting arrive on their own once LinkedIn ingestion lands. Until then
-        this is how someone gets in.
-      </div>
+      <div className="hint">Add someone by hand when the posting and the search did not name them.</div>
     </div>
   );
 }
@@ -610,8 +620,14 @@ function Who({ contact }: { contact: OutreachContact }) {
       <div className="src">
         <span className="srctag">{ORIGIN_LABEL[contact.origin] ?? "added by hand"}</span>
         {contact.profile_url && (
-          <a href={`https://${contact.profile_url.replace(/^https?:\/\//, "")}`} target="_blank" rel="noreferrer">
-            {contact.profile_url} ↗
+          <a
+            className="extlink"
+            href={`https://${contact.profile_url.replace(/^https?:\/\//, "")}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {contact.profile_url.replace(/^https?:\/\/(www\.)?/, "")}
+            <ExternalLink aria-hidden="true" />
           </a>
         )}
       </div>

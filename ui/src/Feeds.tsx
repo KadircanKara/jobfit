@@ -121,21 +121,25 @@ export function FeedsPanel({ reloadToken }: Props) {
   const empty = !data?.proposals.length && !data?.approved.length;
 
   return (
-    <div className="panel">
-      <div className="panel-head">
-        <h2>Where to look</h2>
-        <div className="note">categories scored against your titles</div>
+    <section className="subsection">
+      <div className="subsection-head">
+        <h3>Where to look</h3>
+        <span className="hint">Board categories, scored against your titles</span>
       </div>
 
       {error && <div className="err">{error}</div>}
 
-      {!data && !error && <div className="empty">Loading…</div>}
+      {!data && !error && (
+        <div className="empty">
+          <span className="spin" aria-hidden="true" /> Loading feeds
+        </div>
+      )}
 
       {data && empty && (
         <div className="empty">
           {data.has_titles
-            ? "Run a sync first — these are counted from jobs already fetched."
-            : "Add a job title in Filters first — categories are scored by how many stored postings match your titles."}
+            ? "Run a sync first. These are counted from jobs already fetched."
+            : "Add a job title first. Categories are scored by how many stored postings match your titles."}
         </div>
       )}
 
@@ -164,7 +168,7 @@ export function FeedsPanel({ reloadToken }: Props) {
                     disabled={retiring === id}
                     onClick={() => retire(row.provider, row.token)}
                   >
-                    {retiring === id ? "Stopping…" : "Stop fetching"}
+                    {retiring === id ? "Stopping" : "Stop fetching"}
                   </button>
                 </div>
               );
@@ -209,11 +213,11 @@ export function FeedsPanel({ reloadToken }: Props) {
               );
             })}
           </div>
-          <button className="btn ghost" disabled={!picked.size || saving} onClick={approve}>
-            {saving ? "Saving…" : "Fetch selected"}
+          <button className="btn ghost sm" style={{ marginTop: 10 }} disabled={!picked.size || saving} onClick={approve}>
+            {saving ? "Saving" : "Fetch selected"}
           </button>
         </div>
       )}
-    </div>
+    </section>
   );
 }

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ArrowDown, ArrowUp, Eye, EyeOff, Trash2, X } from "lucide-react";
 
 /** Server refusals keyed by dotted field path, e.g. `experience.0.bullets.2.text`. */
 export type Errors = Record<string, string>;
@@ -107,11 +108,12 @@ export function RowTools({
           onClick={onHide}
           title="Hidden items are never printed. They stay in master.tex as comments."
         >
-          {hidden ? "Hidden" : "Hide"}
+          {hidden ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+        <span className="sr-only">{hidden ? "Hidden" : "Hide"}</span>
         </button>
       )}
       <button type="button" className="cv-tool" onClick={() => onMove(-1)} disabled={index === 0} aria-label={`Move ${label} up`}>
-        ↑
+        <ArrowUp aria-hidden="true" />
       </button>
       <button
         type="button"
@@ -120,11 +122,11 @@ export function RowTools({
         disabled={index >= count - 1}
         aria-label={`Move ${label} down`}
       >
-        ↓
+        <ArrowDown aria-hidden="true" />
       </button>
       {onRemove && (
         <button type="button" className="cv-tool danger" onClick={onRemove} aria-label={`Remove ${label}`}>
-          ✕
+          <Trash2 aria-hidden="true" />
         </button>
       )}
     </div>
@@ -155,7 +157,7 @@ export function ChipInput({
         <span key={item} className="cv-chip">
           {item}
           <button type="button" onClick={() => onChange(items.filter((kept) => kept !== item))} aria-label={`Remove ${item}`}>
-            ✕
+            <X aria-hidden="true" />
           </button>
         </span>
       ))}

@@ -1,4 +1,5 @@
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Check, ChevronDown, TriangleAlert } from "lucide-react";
 import { api, FieldError, type Filters, type Vocab } from "./api";
 import { TagField } from "./TagField";
 import { TitlePresets } from "./TitlePresets";
@@ -168,6 +169,9 @@ function Acts({
   const locked = saving !== null;
   return (
     <div className={whole ? "formacts whole" : "formacts"}>
+      {!ok && dirty && scope !== "upwork" && (
+        <span className="hint">Fix the fields marked above, and keep at least one source on, to save.</span>
+      )}
       <button
         className="btn ghost"
         onClick={() => onRevert(scope)}
@@ -227,7 +231,7 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources }: P
   const local = useMemo(() => validate(draft), [draft]);
   const messages = { ...local, ...errors };
   const valid = Object.keys(local).length === 0;
-  onValidity(valid);
+  useEffect(() => onValidity(valid), [valid, onValidity]);
 
   // Every Upwork setting is keyed under the same prefix, in the validator and
   // in the errors the API tags, so one test splits both maps by section.
@@ -285,10 +289,10 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources }: P
 
   return (
     <>
-      <div className="pagehead">
-        <h1>Search filters</h1>
-        <div className="note">{vocab.active_jobs.toLocaleString()} active jobs in the corpus</div>
-      </div>
+      <header className="page-header">
+        <h1>Filters</h1>
+        <span className="sub">{vocab.active_jobs.toLocaleString()} active jobs in the corpus</span>
+      </header>
 
       <Accordion
         title="Job boards"
@@ -562,11 +566,6 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources }: P
   );
 }
 
-// Mirrors the `height` transition on .acc-body. The listener is what normally
-// ends a slide; this only has to cover the case where no transition runs at
-// all - reduced motion switches them off globally - and transitionend with it.
-const SLIDE_MS = 220;
-
 function Accordion({
   title,
   note,
@@ -580,67 +579,23 @@ function Accordion({
   onToggle: () => void;
   children: ReactNode;
 }) {
-  const body = useRef<HTMLDivElement>(null);
-  // A section stays in the tree until its closing slide has finished, so there
-  // is a box left to animate. One never opened renders nothing at all.
+  // Rendered from the first time it opens, so a section never opened costs
+  // nothing, and a draft inside one survives it closing again.
   const [mounted, setMounted] = useState(open);
   if (open && !mounted) setMounted(true);
-  const wasOpen = useRef(open);
-
-  useLayoutEffect(() => {
-    const el = body.current;
-    if (!el) return;
-    const changed = wasOpen.current !== open;
-    wasOpen.current = open;
-    // Nothing to slide from on the very first render of the element: settle it
-    // open and let the layout have its height back.
-    if (!changed) {
-      if (open) {
-        el.style.height = "auto";
-        el.style.overflow = "visible";
-      }
-      return;
-    }
-
-    el.style.overflow = "hidden";
-    el.style.height = `${open ? 0 : el.scrollHeight}px`;
-    // Read back, so the two writes are two frames and not one computed style.
-    void el.offsetHeight;
-    el.style.height = open ? `${el.scrollHeight}px` : "0px";
-
-    const settle = () => {
-      if (!open) {
-        setMounted(false);
-        return;
-      }
-      // Handed back to the layout once open, so a field that grows later - or
-      // a suggestion list hanging past the bottom - is never clipped.
-      el.style.height = "auto";
-      el.style.overflow = "visible";
-    };
-    // Scoped to this box's own height: transitionend bubbles, and a button
-    // inside the section fading under the cursor would otherwise end the slide.
-    const onEnd = (event: TransitionEvent) => {
-      if (event.target === el && event.propertyName === "height") settle();
-    };
-    el.addEventListener("transitionend", onEnd);
-    const timer = window.setTimeout(settle, SLIDE_MS + 40);
-    return () => {
-      el.removeEventListener("transitionend", onEnd);
-      window.clearTimeout(timer);
-    };
-  }, [open, mounted]);
 
   return (
     <div className="acc" data-open={open}>
       <button className="acc-head" type="button" aria-expanded={open} onClick={onToggle}>
-        <span className="chev" aria-hidden="true" />
         <h2>{title}</h2>
         <span className="note">{note}</span>
+        <ChevronDown className="icon chev" aria-hidden="true" />
       </button>
       {mounted && (
-        <div className="acc-body" ref={body}>
-          <div className="acc-inner">{children}</div>
+        <div className="acc-body" data-open={open}>
+          <div className="acc-clip">
+            <div className="acc-inner">{children}</div>
+          </div>
         </div>
       )}
     </div>
@@ -821,26 +776,31 @@ export function SourcePicker({
   saving?: boolean;
 }) {
   return (
-    <div className="sources" aria-busy={saving}>
+    <div className="sources" role="group" aria-label="Sources" aria-busy={saving}>
       <span className="lbl">Sources</span>
-      {SOURCES.map((source) => (
-        <label key={source.id} className={source.enabled ? "src" : "src off"} title={source.hint}>
-          <input
-            type="checkbox"
+      {SOURCES.map((source) => {
+        const on = value.includes(source.id);
+        return (
+          <button
+            key={source.id}
+            type="button"
+            className="chip"
+            aria-pressed={on}
             disabled={!source.enabled}
-            checked={value.includes(source.id)}
-            onChange={(e) =>
-              onChange(
-                e.target.checked ? [...value, source.id] : value.filter((id) => id !== source.id),
-              )
-            }
-          />
-          {source.label}
-        </label>
-      ))}
+            title={source.hint}
+            onClick={() => onChange(on ? value.filter((id) => id !== source.id) : [...value, source.id])}
+          >
+            {on && <Check aria-hidden="true" />}
+            {source.label}
+          </button>
+        );
+      })}
       {saving && <span className="spin" aria-hidden="true" />}
       {value.length === 0 && (
-        <span className="why warn">Pick at least one source — nothing can be found otherwise.</span>
+        <span className="warn" role="alert">
+          <TriangleAlert className="icon" aria-hidden="true" /> Pick at least one source. Nothing can be found
+          otherwise.
+        </span>
       )}
     </div>
   );

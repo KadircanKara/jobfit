@@ -61,16 +61,18 @@ export function TemplateStep({
 
   return (
     <section className="tpl-step" aria-label="Choose a template for each CV">
-      <div className="tpl-step-head">
-        <b>{hasProfile === false ? `Tailor ${count} from master.tex` : "Which template should each CV use?"}</b>
-        {hasProfile && (
-          <span className="note">
-            Each CV is cut from your profile in the template you pick. Click a template to use it for every job.
-          </span>
-        )}
-      </div>
+      {hasProfile && (
+        <div className="tpl-step-head">
+          <h3>Template</h3>
+          <span className="hint">Click a template to use it for every job, or pick one per job below.</span>
+        </div>
+      )}
 
-      {loading && <div className="empty">Loading templates…</div>}
+      {loading && (
+        <div className="empty">
+          <span className="spin" aria-hidden="true" /> Loading templates
+        </div>
+      )}
 
       {hasProfile === false && (
         <p className="note">
@@ -127,14 +129,24 @@ export function TemplateStep({
         </>
       )}
 
-      {problem && <div className="failbox">{problem}</div>}
+      {problem && (
+        <div className="notice" data-tone="danger" role="alert">
+          {problem}
+        </div>
+      )}
 
       <div className="acts">
         <button className="btn ghost" onClick={onCancel} disabled={starting}>
           Cancel
         </button>
         <button className="btn" onClick={start} disabled={starting || loading}>
-          {starting ? "Starting…" : `Tailor ${count}`}
+          {starting ? (
+            <>
+              <span className="spin" aria-hidden="true" /> Starting
+            </>
+          ) : (
+            `Tailor ${count}`
+          )}
         </button>
       </div>
     </section>

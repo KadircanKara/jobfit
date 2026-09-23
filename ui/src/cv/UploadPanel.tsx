@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Check, X } from "lucide-react";
 import { cvApi, type TemplateRow } from "./api";
 import { usePolledJob } from "./usePolledJob";
 
@@ -152,7 +153,7 @@ export function UploadPanel({ onAccepted }: { onAccepted: (row: TemplateRow) => 
 function Line({ ok, text }: { ok: boolean; text: string }) {
   return (
     <div className="cv-check" data-ok={ok}>
-      <span className="cv-mark">{ok ? "✓" : "!"}</span>
+      <span className="cv-mark">{ok ? <Check aria-hidden="true" /> : <X aria-hidden="true" />}</span>
       <div style={{ whiteSpace: "pre-wrap" }}>{text}</div>
     </div>
   );
