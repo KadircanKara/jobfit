@@ -44,6 +44,11 @@ class Template:
     def builtin(self) -> bool:
         return self.source == "builtin"
 
+    @property
+    def trusted(self) -> bool:
+        """Only what ships with the package. Uploads fill in a child process and build in the sandbox."""
+        return self.builtin
+
     def text(self) -> str:
         return (self.folder / SOURCE_NAME).read_text(encoding="utf-8")
 

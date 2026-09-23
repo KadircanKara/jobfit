@@ -12,7 +12,6 @@ from __future__ import annotations
 import collections
 import dataclasses
 import json
-import re
 import threading
 import uuid
 from collections.abc import Callable
@@ -21,6 +20,7 @@ from typing import Any
 from jobhunt.config import Config
 from jobhunt.cv import latex, model, render, templates
 from jobhunt.cv import store as cvstore
+from jobhunt.cv.words import split_comments, words
 from jobhunt.web import agent as agent_module
 
 AGENT_TIMEOUT = 900.0
@@ -135,37 +135,14 @@ def _with_ids(data: Any) -> Any:
     return data
 
 
-_COMMENT = re.compile(r"(?<!\\)%.*$")
-_COMMAND = re.compile(r"\\[a-zA-Z]+\*?")
-_NOISE = re.compile(r"[{}$~^&%\\\[\]()|:,;]")
-_LENGTH = re.compile(r"^-?[\d.]+(pt|em|ex|in|cm|mm)$")
-
-
 def compare(old: str, new: str) -> Report:
     old_preamble, old_body = latex.split_preamble(old)
     new_preamble, new_body = latex.split_preamble(new)
-    old_text, old_notes = _split_comments(old_body)
-    new_text, new_notes = _split_comments(new_body)
-    missing, added = _difference(_words(old_text), _words(new_text))
-    notes_missing, notes_added = _difference(_words(old_notes), _words(new_notes))
+    old_text, old_notes = split_comments(old_body)
+    new_text, new_notes = split_comments(new_body)
+    missing, added = _difference(words(old_text), words(new_text))
+    notes_missing, notes_added = _difference(words(old_notes), words(new_notes))
     return Report(old_preamble == new_preamble, missing, added, notes_missing, notes_added)
-
-
-def _split_comments(body: str) -> tuple[str, str]:
-    visible, comments = [], []
-    for line in body.splitlines():
-        match = _COMMENT.search(line)
-        if match:
-            comments.append(match.group()[1:])
-            line = line[: match.start()]
-        visible.append(line)
-    return "\n".join(visible), "\n".join(comments)
-
-
-def _words(text: str) -> collections.Counter[str]:
-    text = _NOISE.sub(" ", _COMMAND.sub(" ", text))
-    words = (word.strip(".'`\"-").lower() for word in text.split())
-    return collections.Counter(word for word in words if word and not _LENGTH.match(word))
 
 
 def _difference(old: collections.Counter[str], new: collections.Counter[str]) -> tuple[list[str], list[str]]:

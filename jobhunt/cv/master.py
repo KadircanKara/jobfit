@@ -26,7 +26,7 @@ from typing import Any
 
 from jobhunt import store as jobstore
 from jobhunt.config import Config
-from jobhunt.cv import latex, render, templates
+from jobhunt.cv import builds, latex, render, templates
 from jobhunt.cv import store as cvstore
 from jobhunt.db.session import session_scope
 
@@ -110,10 +110,10 @@ def _generate(config: Config, runner: latex.Runner | None) -> Outcome:
         raise MasterError("save your details before generating the master CV")
     template = templates.get(config, templates.default_id(config))
     try:
-        tex = render.render(saved.profile, template.text())
+        tex = builds.fill(template.text(), saved.profile, trusted=template.trusted)
     except render.RenderError as exc:
         return Outcome(ok=False, log=str(exc), pages=None, status=status(config))
-    built = latex.build(tex, engine=template.engine, runner=runner)
+    built = builds.build(config, tex, engine=template.engine, trusted=template.trusted, runner=runner)
     if not built.ok:
         return Outcome(ok=False, log=built.log, pages=None, status=status(config))
 
