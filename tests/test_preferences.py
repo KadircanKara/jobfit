@@ -642,16 +642,6 @@ def test_upwork_preferences_round_trip_through_from_filters() -> None:
     assert restored.upwork.min_hourly == 50.0
 
 
-def test_the_client_switches_reach_the_upwork_profile() -> None:
-    prefs = preferences.Preferences(
-        upwork=preferences.UpworkPreferences(
-            require_verified_client=True, require_client_spend=True
-        )
-    )
-    client = preferences.to_filters(prefs)["profiles"]["upwork"]["client"]
-    assert client == {"require_verified": True, "require_spend": True}
-
-
 def test_the_client_key_is_omitted_when_both_switches_are_off() -> None:
     """Same discipline as `sources`: an always-present key churns the filter
     fingerprint and re-gates the whole corpus on every write."""
@@ -659,30 +649,124 @@ def test_the_client_key_is_omitted_when_both_switches_are_off() -> None:
     assert "client" not in preferences.to_filters(prefs)["profiles"]["upwork"]
 
 
-def test_a_client_switch_turned_off_again_leaves_no_rule_behind(cfg) -> None:
+def test_the_client_rules_reach_the_upwork_profile() -> None:
+    prefs = preferences.Preferences(
+        upwork=preferences.UpworkPreferences(require_verified_client=True, client_min_spend=500.0)
+    )
+    client = preferences.to_filters(prefs)["profiles"]["upwork"]["client"]
+    assert client == {"require_verified": True, "min_spend": 500.0}
+
+
+def test_a_spend_floor_removed_again_leaves_no_rule_behind(cfg) -> None:
     """`update` adds keys and never removes them, so without `client` in the
-    owned list a switch could be turned on but never off - the corpus would
-    stay filtered with nothing in the UI still saying so."""
+    owned list a floor could be set but never cleared."""
     prefs, _ = preferences.load(cfg)
-    prefs.upwork.require_client_spend = True
+    prefs.upwork.client_min_spend = 250.0
     preferences.save(cfg, prefs)
 
     prefs, _ = preferences.load(cfg)
-    assert prefs.upwork.require_client_spend is True
-    prefs.upwork.require_client_spend = False
+    assert prefs.upwork.client_min_spend == 250.0
+    prefs.upwork.client_min_spend = None
     preferences.save(cfg, prefs)
 
     document = yaml.safe_load(preferences.filters_path(cfg).read_text(encoding="utf-8"))
     assert "client" not in document["profiles"]["upwork"]
 
 
-def test_the_client_switches_accept_a_plain_word(cfg) -> None:
+def test_the_old_spend_switch_becomes_a_one_dollar_floor() -> None:
+    """`require_client_spend: true` meant "has spent something": $1 says the same."""
+    restored = preferences.from_filters(
+        {preferences.MANAGED_KEY: {"upwork": {"require_client_spend": True}}}
+    )
+    assert restored.upwork.client_min_spend == 1.0
+
+
+def test_the_old_spend_switch_left_off_sets_no_floor() -> None:
+    restored = preferences.from_filters(
+        {preferences.MANAGED_KEY: {"upwork": {"require_client_spend": False}}}
+    )
+    assert restored.upwork.client_min_spend is None
+
+
+def test_a_new_spend_floor_is_never_overwritten_by_the_old_switch() -> None:
+    restored = preferences.from_filters(
+        {preferences.MANAGED_KEY: {"upwork": {"require_client_spend": True, "client_min_spend": 250.0}}}
+    )
+    assert restored.upwork.client_min_spend == 250.0
+
+
+def test_the_new_client_settings_apply_from_text(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    updated = preferences.apply_updates(prefs, {
+        "upwork.client_locations": "United States, Canada",
+        "upwork.client_min_hires": "1",
+        "upwork.client_max_hires": "9",
+        "upwork.proposals_max": "20",
+        "upwork.client_min_spend": "$1,000",
+        "upwork.recommended_feed": "true",
+    })
+    assert updated.upwork.client_locations == ["United States", "Canada"]
+    assert updated.upwork.client_min_hires == 1
+    assert updated.upwork.client_max_hires == 9
+    assert updated.upwork.proposals_max == 20
+    assert updated.upwork.client_min_spend == 1000.0
+    assert updated.upwork.recommended_feed is True
+
+
+def test_a_location_typed_twice_in_another_case_is_kept_once(cfg) -> None:
     prefs, _ = preferences.load(cfg)
     updated = preferences.apply_updates(
-        prefs, {"upwork.require_client_spend": "true", "upwork.require_verified_client": "yes"}
+        prefs, {"upwork.client_locations": "United States,  united states , Canada"}
     )
-    assert updated.upwork.require_client_spend is True
-    assert updated.upwork.require_verified_client is True
+    assert updated.upwork.client_locations == ["United States", "Canada"]
+
+
+def test_a_zero_spend_floor_means_no_rule(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    updated = preferences.apply_updates(prefs, {"upwork.client_min_spend": "0"})
+    assert updated.upwork.client_min_spend is None
+
+
+def test_a_negative_count_is_refused(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    with pytest.raises(preferences.PreferenceError, match="upwork.proposals_max"):
+        preferences.apply_updates(prefs, {"upwork.proposals_max": "-1"})
+
+
+def test_hires_min_above_max_is_refused_against_the_max(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    with pytest.raises(preferences.PreferenceError) as excinfo:
+        preferences.apply_updates(
+            prefs, {"upwork.client_min_hires": "10", "upwork.client_max_hires": "2"}
+        )
+    assert str(excinfo.value).startswith("upwork.client_max_hires:")
+
+
+def test_hires_of_zero_to_zero_is_allowed(cfg) -> None:
+    """Upwork's own example for "clients with no hires yet"."""
+    prefs, _ = preferences.load(cfg)
+    updated = preferences.apply_updates(
+        prefs, {"upwork.client_min_hires": "0", "upwork.client_max_hires": "0"}
+    )
+    assert (updated.upwork.client_min_hires, updated.upwork.client_max_hires) == (0, 0)
+
+
+def test_the_feed_query_is_reserved(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    with pytest.raises(preferences.PreferenceError, match="upwork.queries"):
+        preferences.apply_updates(prefs, {"upwork.queries": "rag, @feed"})
+
+
+def test_the_new_client_settings_survive_a_save_and_load(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    prefs.upwork.client_locations = ["United States"]
+    prefs.upwork.client_max_hires = 9
+    prefs.upwork.recommended_feed = True
+    preferences.save(cfg, prefs)
+    loaded, _ = preferences.load(cfg)
+    assert loaded.upwork.client_locations == ["United States"]
+    assert loaded.upwork.client_max_hires == 9
+    assert loaded.upwork.recommended_feed is True
 
 
 def test_a_market_profile_this_writer_creates_is_seeded_from_the_packaged_one(cfg) -> None:

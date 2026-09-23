@@ -40,6 +40,9 @@ UPWORK_JOB_TYPES = ("hourly", "fixed")
 UPWORK_EXPERIENCE = ("entry_level", "intermediate", "expert")
 UPWORK_WORKLOAD = ("full_time", "part_time", "as_needed")
 UPWORK_SORTS = ("relevance", "recency", "client_total_charge", "client_rating")
+# The query a feed ref carries in place of a search term. Reserved: a keyword
+# search spelled this way would be read back as the feed. See upwork_query.
+UPWORK_FEED_QUERY = "@feed"
 
 
 def _ats_sources() -> tuple[str, ...]:
@@ -100,13 +103,23 @@ class UpworkPreferences:
     # postings that merely mention AI, relevance gave the engineering roles.
     sort: str = "relevance"
     require_verified_client: bool = False
-    # Drop postings whose client has never spent anything. Not the same signal
+    # Drop postings whose client has spent less than this many dollars, after
+    # the fetch - Upwork has no search parameter for spend. Not the same signal
     # as verification: every client in the first real run was VERIFIED, yet 14
-    # of 40 had spent $0.00 - a verified card is not a hiring history.
-    require_client_spend: bool = False
+    # of 40 had spent $0.00 - a verified card is not a hiring history. None is
+    # no rule; 1 is "has spent something", which is what the retired
+    # `require_client_spend` switch meant (see `_migrate_upwork`).
+    client_min_spend: float | None = None
     workload: list[str] = dataclasses.field(default_factory=list)
     proposals_max: int | None = None
     client_min_hires: int | None = None
+    client_max_hires: int | None = None
+    # As Upwork spells them ("United States", "Europe"). One search per entry,
+    # because `location` takes a single value per call. Empty is anywhere.
+    client_locations: list[str] = dataclasses.field(default_factory=list)
+    # Also read Upwork's personalised Most Recent feed (`smart_search`), the one
+    # Upwork search that honours a date.
+    recommended_feed: bool = False
     # Two pages of 10, not three: every result on every page is echoed back
     # verbatim through the fetch prompt, so a page is output tokens the model
     # retypes, not a cheap extra request. See DETAIL_BUDGET in sources/upwork.py
@@ -182,6 +195,14 @@ class Preferences:
 
 def _split(value: str) -> list[str]:
     return [part.strip() for part in str(value).split(",") if part.strip()]
+
+
+def _unique(items: list[str]) -> list[str]:
+    """Each item once, compared without case, keeping the first spelling."""
+    kept: dict[str, str] = {}
+    for item in items:
+        kept.setdefault(item.lower(), item)
+    return list(kept.values())
 
 
 def _seniority(value: str) -> str:
@@ -271,7 +292,12 @@ def _apply_upwork(target: UpworkPreferences, name: str, value: str) -> None:
     blank = value in ("", "any", "none", "-")
 
     if name == "queries":
-        target.queries = [] if blank else _split(value)
+        queries = [] if blank else _split(value)
+        if UPWORK_FEED_QUERY in (q.lower() for q in queries):
+            raise PreferenceError(
+                f"upwork.queries: {UPWORK_FEED_QUERY!r} is reserved for the Most Recent feed"
+            )
+        target.queries = queries
     elif name == "job_types":
         target.job_types = list(UPWORK_JOB_TYPES) if blank else _restricted(
             _split(value), UPWORK_JOB_TYPES, "upwork job type"
@@ -292,14 +318,22 @@ def _apply_upwork(target: UpworkPreferences, name: str, value: str) -> None:
         )[0]
     elif name == "require_verified_client":
         target.require_verified_client = value.lower() in ("true", "yes", "1", "on")
-    elif name == "require_client_spend":
-        target.require_client_spend = value.lower() in ("true", "yes", "1", "on")
     elif name == "workload":
         target.workload = [] if blank else _restricted(_split(value), UPWORK_WORKLOAD, "upwork workload")
-    elif name == "proposals_max":
-        target.proposals_max = None if blank else int(_number(value))
-    elif name == "client_min_hires":
-        target.client_min_hires = None if blank else int(_number(value))
+    elif name == "client_min_spend":
+        amount = None if blank else _number(value)
+        if amount is not None and amount < 0:
+            raise PreferenceError("upwork.client_min_spend has to be 0 or more")
+        target.client_min_spend = amount or None
+    elif name in ("proposals_max", "client_min_hires", "client_max_hires"):
+        count = None if blank else int(_number(value))
+        if count is not None and count < 0:
+            raise PreferenceError(f"upwork.{name} has to be 0 or more")
+        setattr(target, name, count)
+    elif name == "client_locations":
+        target.client_locations = [] if blank else _unique(_split(value))
+    elif name == "recommended_feed":
+        target.recommended_feed = value.lower() in ("true", "yes", "1", "on")
     elif name == "max_pages":
         target.max_pages = 2 if blank else int(_number(value))
 
@@ -358,6 +392,19 @@ def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
             raise PreferenceError(
                 f"experience {prefs.experience_min} is above the ceiling {prefs.experience_max}"
             )
+
+    upwork = prefs.upwork
+    if (
+        upwork.client_min_hires is not None
+        and upwork.client_max_hires is not None
+        and upwork.client_min_hires > upwork.client_max_hires
+    ):
+        # Named against the maximum, the field the web form marks. Never the
+        # word "ceiling": `web.filters._field_for` sends that to experience_max.
+        raise PreferenceError(
+            f"upwork.client_max_hires: {upwork.client_max_hires} is below the minimum of "
+            f"{upwork.client_min_hires} hires"
+        )
     return prefs
 
 
@@ -555,8 +602,8 @@ def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -
             client: dict[str, Any] = {}
             if prefs.upwork.require_verified_client:
                 client["require_verified"] = True
-            if prefs.upwork.require_client_spend:
-                client["require_spend"] = True
+            if prefs.upwork.client_min_spend:
+                client["min_spend"] = prefs.upwork.client_min_spend
             # Omitted entirely when neither is on, for the reason `sources` is:
             # an always-present key churns the filter fingerprint and re-gates
             # the corpus every time the document is rewritten.
@@ -630,6 +677,21 @@ def _coerce(declared: Any, value: Any) -> Any:
     return value
 
 
+def _migrate_upwork(raw: Any) -> Any:
+    """Carry a retired Upwork setting across to the key that replaced it.
+
+    `require_client_spend: true` meant "the client has spent something", which
+    is a minimum spend of $1. Only when the new key is absent, so a document
+    written after the change is never second-guessed. `_coerce` drops the old
+    key afterwards, and the next save stops writing it.
+    """
+    if not isinstance(raw, dict) or "client_min_spend" in raw:
+        return raw
+    if raw.get("require_client_spend") is True:
+        return {**raw, "client_min_spend": 1.0}
+    return raw
+
+
 def from_filters(filters: dict[str, Any]) -> Preferences:
     """Read preferences back out, so the wizard can show current values.
 
@@ -645,7 +707,10 @@ def from_filters(filters: dict[str, Any]) -> Preferences:
     hints = typing.get_type_hints(Preferences)
     for field in dataclasses.fields(Preferences):
         if field.name in managed:
-            setattr(prefs, field.name, _coerce(hints[field.name], managed[field.name]))
+            value = managed[field.name]
+            if field.name == "upwork":
+                value = _migrate_upwork(value)
+            setattr(prefs, field.name, _coerce(hints[field.name], value))
     return prefs
 
 
