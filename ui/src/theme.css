@@ -2806,6 +2806,14 @@ tr.drawer > td {
   padding: 6px 12px;
   font-size: var(--small);
 }
+/* The profile path is one long unbroken token; on a phone it would push the
+   whole page sideways. */
+.cv .hero > div:first-child {
+  min-width: 0;
+}
+.cv .hero .sub {
+  overflow-wrap: anywhere;
+}
 .cv-lede {
   color: var(--ink-dim);
   font-size: var(--small);
