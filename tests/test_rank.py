@@ -15,6 +15,7 @@ from sqlalchemy import select
 from jobhunt import store
 from jobhunt.db.models import Job, Score, utcnow
 from jobhunt.db.session import session_scope
+from jobhunt.pipeline import client_identity
 from jobhunt.rank import deterministic, profile, runner, timezones
 from jobhunt.sources.base import JobPosting
 
@@ -470,6 +471,22 @@ def test_emit_does_not_let_one_company_fill_the_batch(cfg, tmp_path) -> None:
     companies = [job["company"] for job in jobs]
     assert companies.count("Acme") == 2
     assert companies.count("Beta") == 2
+
+
+def test_the_upwork_placeholder_company_does_not_cap_the_batch(cfg, tmp_path) -> None:
+    """Seen live: 112 of 116 Upwork jobs carried the placeholder company, so the
+    cap cut every gate batch to three jobs and 82 were never scored at all."""
+    for index in range(8):
+        make_job(
+            cfg, source="upwork", market="upwork", external_id=f"gig{index}",
+            company_name=client_identity.COMPANY_NAME_PLACEHOLDER, country="DE",
+        )
+    runner.run_deterministic(cfg)
+
+    path = tmp_path / "b.json"
+    runner.emit(cfg, path, limit=6, max_per_company=2)
+    jobs = json.loads(path.read_text())["batches"][0]["jobs"]
+    assert len(jobs) == 6
 
 
 def test_a_title_matching_no_required_pattern_fails(cfg) -> None:
