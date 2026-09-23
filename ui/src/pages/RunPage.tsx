@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ArrowRight, History, Info, Pause, Play, RotateCcw, Square, TriangleAlert } from "lucide-react";
 import { SourcePicker } from "../Filters";
-import { GatePanel, Log, Pipeline, RankPanel, SourceRail } from "../Run";
+import { GatePanel, Log, Pipeline, RankPanel, SourceRail, plural } from "../Run";
 import { followLink, href, type Route } from "../app/router";
 import { runStatus, runTone, stamp, useHunt, useShownRun } from "../app/store";
 
@@ -208,8 +208,7 @@ export function RunPage({ runId, go }: { runId?: string; go: (to: Route | string
               <div className="panel-head">
                 <h2>Sync</h2>
                 <span className="note">
-                  {(run.counters.jobs_total ?? 0).toLocaleString()} jobs ·{" "}
-                  {(run.counters.boards_done ?? 0).toLocaleString()} boards
+                  {plural(run.counters.jobs_total ?? 0, "job")} · {plural(run.counters.boards_done ?? 0, "board")}
                 </span>
               </div>
               {saved ? (

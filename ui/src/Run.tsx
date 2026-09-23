@@ -81,7 +81,7 @@ function valueFor(phase: string, state: RunState) {
     const jobs = state.counters.jobs_total ?? 0;
     const boards = state.counters.boards_done ?? 0;
     if (!boards) return "—";
-    return `${jobs.toLocaleString()} jobs · ${boards.toLocaleString()} boards`;
+    return `${plural(jobs, "job")} · ${plural(boards, "board")}`;
   }
   if (phase === "rank") {
     const rank = state.rank;
@@ -594,6 +594,10 @@ function headOf(title: string) {
 function tailOf(title: string) {
   const cut = title.lastIndexOf(" ");
   return cut < 0 ? title : title.slice(cut + 1);
+}
+
+export function plural(count: number, word: string) {
+  return `${count.toLocaleString()} ${word}${count === 1 ? "" : "s"}`;
 }
 
 function matches(value: string, needle: string) {
