@@ -212,6 +212,19 @@ main {
     width: auto;
   }
 }
+/* Four sections no longer fit side by side on a phone: the row scrolls on its
+   own rather than pushing the whole page sideways. */
+@media (max-width: 640px) {
+  .sidenav {
+    overflow-x: auto;
+    padding: 10px 16px;
+    gap: 4px;
+  }
+  .sidenav .tab {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+}
 
 /* ---------------- shared ---------------- */
 
