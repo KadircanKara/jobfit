@@ -52,7 +52,12 @@ _FIELD_OF_KEY = {
     "upwork.sort": "upwork.sort",
     "upwork sort": "upwork.sort",
     "upwork.require_verified_client": "upwork.require_verified_client",
-    "upwork.require_client_spend": "upwork.require_client_spend",
+    "upwork.client_locations": "upwork.client_locations",
+    "upwork.client_min_hires": "upwork.client_min_hires",
+    "upwork.client_max_hires": "upwork.client_max_hires",
+    "upwork.proposals_max": "upwork.proposals_max",
+    "upwork.client_min_spend": "upwork.client_min_spend",
+    "upwork.recommended_feed": "upwork.recommended_feed",
     "upwork.workload": "upwork.workload",
     "upwork workload": "upwork.workload",
 }
@@ -60,8 +65,11 @@ _FIELD_OF_KEY = {
 # Upwork preference fields the panel edits as free-form lists vs. rate floors.
 # Kept apart from `_FIELD_OF_KEY` because they drive flattening, not error
 # lookup: `_updates_from` walks these, `_field_for` only reads the map above.
-_UPWORK_LIST_FIELDS = ("queries", "job_types", "experience_level", "workload")
+_UPWORK_LIST_FIELDS = ("queries", "job_types", "experience_level", "workload", "client_locations")
 _UPWORK_RATE_FIELDS = ("min_hourly", "min_fixed")
+# Whole numbers of 0 or more. Zero is meaningful here - client_max_hires=0 is
+# "clients who have never hired" - so unlike a rate floor it is never "none".
+_UPWORK_COUNT_FIELDS = ("client_min_hires", "client_max_hires", "proposals_max")
 
 
 class FieldError(ValueError):
@@ -107,7 +115,7 @@ def _days_from(payload: Any) -> int:
 _UPWORK_FLAG_FIELDS = (
     "verified_payment_only",
     "require_verified_client",
-    "require_client_spend",
+    "recommended_feed",
 )
 
 
@@ -138,6 +146,31 @@ def _upwork_updates(payload: dict[str, Any]) -> dict[str, str]:
         if amount <= 0:
             raise FieldError(f"upwork.{field}", "a rate floor has to be above zero")
         updates[f"upwork.{field}"] = f"{amount:g}"
+
+    for field in _UPWORK_COUNT_FIELDS:
+        if field not in payload:
+            continue
+        raw = payload[field]
+        if raw in (None, ""):
+            updates[f"upwork.{field}"] = "none"
+            continue
+        text = str(raw).strip()
+        if not text.isdigit():
+            raise FieldError(f"upwork.{field}", "a whole number, 0 or more")
+        updates[f"upwork.{field}"] = text
+
+    if "client_min_spend" in payload:
+        raw = payload["client_min_spend"]
+        if raw in (None, ""):
+            updates["upwork.client_min_spend"] = "none"
+        else:
+            try:
+                amount = prefs_module._number(str(raw))
+            except PreferenceError as exc:
+                raise FieldError("upwork.client_min_spend", str(exc)) from exc
+            if amount < 0:
+                raise FieldError("upwork.client_min_spend", "a minimum spend can't be negative")
+            updates["upwork.client_min_spend"] = f"{amount:g}" if amount else "none"
 
     if "sort" in payload:
         updates["upwork.sort"] = str(payload["sort"] or "").strip().lower() or "none"

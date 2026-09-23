@@ -106,21 +106,64 @@ def test_the_upwork_block_is_flattened_into_dotted_updates() -> None:
     assert updates["upwork.verified_payment_only"] == "false"
 
 
-def test_the_client_switches_survive_the_browser_round_trip() -> None:
+def test_the_client_settings_survive_the_browser_round_trip() -> None:
     """The `sources` checkbox shipped broken this exact way: rendered in the UI,
     posted by the browser, and silently dropped for want of an entry here."""
-    prefs = webfilters.apply(
-        Preferences(),
-        {"upwork": {"require_client_spend": True, "require_verified_client": True}},
-    )
-    assert prefs.upwork.require_client_spend is True
-    assert prefs.upwork.require_verified_client is True
+    prefs = webfilters.apply(Preferences(), {"upwork": {
+        "require_verified_client": True,
+        "client_min_spend": "500",
+        "client_locations": ["United States", "Canada"],
+        "client_min_hires": "1",
+        "client_max_hires": "9",
+        "proposals_max": "20",
+        "recommended_feed": True,
+    }})
+    upwork = prefs.upwork
+    assert upwork.require_verified_client is True
+    assert upwork.client_min_spend == 500.0
+    assert upwork.client_locations == ["United States", "Canada"]
+    assert (upwork.client_min_hires, upwork.client_max_hires, upwork.proposals_max) == (1, 9, 20)
+    assert upwork.recommended_feed is True
 
 
-def test_a_client_switch_can_be_turned_back_off_through_the_browser() -> None:
-    prefs = webfilters.apply(Preferences(), {"upwork": {"require_client_spend": True}})
-    prefs = webfilters.apply(prefs, {"upwork": {"require_client_spend": False}})
-    assert prefs.upwork.require_client_spend is False
+def test_a_spend_floor_can_be_cleared_through_the_browser() -> None:
+    prefs = webfilters.apply(Preferences(), {"upwork": {"client_min_spend": "500"}})
+    prefs = webfilters.apply(prefs, {"upwork": {"client_min_spend": None}})
+    assert prefs.upwork.client_min_spend is None
+
+
+def test_a_spend_floor_can_be_typed_the_way_people_write_money() -> None:
+    prefs = webfilters.apply(Preferences(), {"upwork": {"client_min_spend": "$1,000"}})
+    assert prefs.upwork.client_min_spend == 1000.0
+    prefs = webfilters.apply(prefs, {"upwork": {"client_min_spend": "1k"}})
+    assert prefs.upwork.client_min_spend == 1000.0
+
+
+def test_a_negative_spend_floor_is_rejected_against_its_own_field() -> None:
+    with pytest.raises(webfilters.FieldError) as excinfo:
+        webfilters.apply(Preferences(), {"upwork": {"client_min_spend": "-5"}})
+    assert excinfo.value.field == "upwork.client_min_spend"
+
+
+@pytest.mark.parametrize("field", ["client_min_hires", "client_max_hires", "proposals_max"])
+@pytest.mark.parametrize("bad", ["-1", "2.5", "lots"])
+def test_a_count_must_be_a_whole_number(field, bad) -> None:
+    with pytest.raises(webfilters.FieldError) as excinfo:
+        webfilters.apply(Preferences(), {"upwork": {field: bad}})
+    assert excinfo.value.field == f"upwork.{field}"
+
+
+def test_hires_min_above_max_lands_on_the_max_field() -> None:
+    with pytest.raises(webfilters.FieldError) as excinfo:
+        webfilters.apply(
+            Preferences(), {"upwork": {"client_min_hires": "10", "client_max_hires": "2"}}
+        )
+    assert excinfo.value.field == "upwork.client_max_hires"
+
+
+def test_an_empty_location_list_clears_rather_than_being_dropped() -> None:
+    updates = webfilters._updates_from({"upwork": {"client_locations": []}})
+    assert updates["upwork.client_locations"] == "none"
 
 
 def test_an_empty_upwork_query_list_clears_rather_than_being_dropped() -> None:
