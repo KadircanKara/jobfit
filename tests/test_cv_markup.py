@@ -5,7 +5,12 @@ in "10% faster" that reached LaTeX raw would comment out the rest of the bullet.
 """
 from __future__ import annotations
 
-from jobhunt.cv import markup
+import shutil
+
+import pytest
+from conftest import FIXTURES
+
+from jobhunt.cv import latex, markup
 
 
 def test_every_latex_special_is_escaped():
@@ -62,3 +67,56 @@ def test_a_url_keeps_its_percent_and_hash_readable_by_hyperref():
 def test_comment_puts_every_line_behind_a_percent():
     assert markup.comment("a\n\nb") == "% a\n%\n% b"
     assert markup.comment("") == ""
+
+
+def test_a_caret_in_a_link_can_never_reach_tex_as_hex_notation():
+    # TeX reads "^^5c" as a backslash while it tokenises a macro argument.
+    assert "^" not in markup.escape_url("https://a.b/^^5cinput")
+    assert "^^" not in markup.rich("[x](https://a.b/^^5cinput)")
+
+
+def test_foreign_url_characters_are_percent_encoded():
+    assert markup.escape_url("https://a.b/c d/é") == r"https://a.b/c\%20d/\%C3\%A9"
+
+
+def test_a_link_keeps_balanced_parentheses():
+    out = markup.rich("[Paper](https://doi.org/10.1016/S0140-6736(20)30183-5) in Lancet")
+
+    assert out == r"\href{https://doi.org/10.1016/S0140-6736(20)30183-5}{Paper} in Lancet"
+
+
+def test_latin1_symbols_never_pass_through_raw():
+    # Raw, these print as the wrong T1 glyph ("·" as "ů") with no error at all.
+    for code in range(0xA0, 0x100):
+        assert markup.escape(chr(code)).isascii(), f"U+{code:04X} left unmapped"
+
+
+def test_common_symbols_become_commands():
+    assert markup.escape("Python · SQL © ≥ ™") == (
+        r"Python \textperiodcentered{} SQL \textcopyright{} $\geq$ \texttrademark{}"
+    )
+
+
+def test_pasted_ligatures_and_decomposed_accents_keep_their_letters():
+    assert markup.escape("e\ufb03cient") == "efficient"
+    assert markup.escape("Ozyeg\u0306in") == r"Ozye\u{g}in"
+
+
+def test_every_line_break_becomes_a_newline_and_controls_are_dropped():
+    assert markup.escape("a\r\nb\rc\u2028d") == "a\nb\nc\nd"
+    assert markup.escape("a\x00b\x0cc\u200bd") == "abcd"
+    assert markup.comment("a\r\nb") == "% a\n% b"
+
+
+@pytest.mark.skipif(shutil.which("lualatex") is None, reason="lualatex is not installed")
+def test_every_mapping_prints_under_the_classic_preamble():
+    """A command that does not exist in T1/TS1 would fail the build, and one that
+    exists but has no glyph would be logged as missing: both are caught here."""
+    preamble = (FIXTURES / "cv" / "master_preamble.tex").read_text(encoding="utf-8")
+    sample = " ".join(markup.escape(char) for char in markup._SYMBOLS)
+    sample += " " + markup.escape("ÀÉÎÕÜÇŞĞİıçşğöüñ Ǎǎ Ő ű Ą ę")
+
+    built = latex.build(preamble + "\\begin{document}\n" + sample + "\n\\end{document}\n")
+
+    assert built.ok, built.log
+    assert "Missing character" not in built.log
