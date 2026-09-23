@@ -36,6 +36,10 @@ class TemplateError(ValueError):
     """A template that cannot be used, phrased for whoever picked it."""
 
 
+class UnknownTemplate(TemplateError):
+    """No template by that id."""
+
+
 @dataclasses.dataclass(frozen=True)
 class Template:
     id: str
@@ -73,7 +77,7 @@ def get(config: Config, template_id: str) -> Template:
     for template in all_templates(config):
         if template.id == template_id:
             return template
-    raise TemplateError(f"there is no template called {template_id!r}")
+    raise UnknownTemplate(f"there is no template called {template_id!r}")
 
 
 def default_id(config: Config) -> str:
