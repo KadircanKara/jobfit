@@ -103,7 +103,7 @@ def engine_of(source: str) -> str:
     """The engine a `% !TEX program = …` line names, if it is one we run."""
     match = _MAGIC.search(source)
     engine = match.group(1).lower() if match else latex.DEFAULT_ENGINE
-    return engine if engine in latex.ENGINES else latex.DEFAULT_ENGINE
+    return latex.known_engine(engine)
 
 
 def self_contained(source: str) -> list[str]:

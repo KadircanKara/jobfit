@@ -25,7 +25,6 @@ from jobhunt.web import agent as agent_module
 UPLOAD_LIMIT = 200_000
 ROUNDS = 3
 AGENT_TIMEOUT = 900.0
-CONTRACT = templates.BUILTIN_DIR / "CONTRACT.md"
 
 # The prompt in, the answer text out.
 Agent = Callable[[str], str]
@@ -115,7 +114,7 @@ def convert(source: str, agent: Agent, check: Check) -> tuple[str, validate.Find
 def _prompt(source: str, feedback: list[str]) -> str:
     example = latex.split_preamble(templates.get_builtin("classic").text())[1]
     prompt = (
-        PROMPT.replace("<<CONTRACT>>", CONTRACT.read_text(encoding="utf-8"))
+        PROMPT.replace("<<CONTRACT>>", templates.CONTRACT_PATH.read_text(encoding="utf-8"))
         .replace("<<EXAMPLE>>", example)
         .replace("<<SOURCE>>", source)
     )

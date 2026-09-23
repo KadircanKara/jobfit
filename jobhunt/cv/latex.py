@@ -134,6 +134,11 @@ def missing(log_file: pathlib.Path) -> tuple[str, ...]:
     return tuple(dict.fromkeys(_MISSING.findall(text)))
 
 
+def known_engine(name: str) -> str:
+    """`name` if it is an engine this app runs, otherwise the default."""
+    return name if name in ENGINES else DEFAULT_ENGINE
+
+
 def page_count(log: str, pdf: bytes) -> int | None:
     # The last line, because a two-pass build logs one per pass.
     found = _PAGES_IN_LOG.findall(log or "")

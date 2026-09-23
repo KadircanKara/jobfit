@@ -17,6 +17,7 @@ import datetime as dt
 import json
 import pathlib
 import re
+import threading
 import unicodedata
 import uuid
 
@@ -30,6 +31,7 @@ BUILTIN_DIR = pathlib.Path(__file__).resolve().parent.parent / "assets" / "cv_te
 DEFAULT_ID = "classic"
 DEFAULT_KEY = "cv.default_template"
 SOURCE_NAME = "template.tex.j2"
+CONTRACT_PATH = BUILTIN_DIR / "CONTRACT.md"
 
 
 class TemplateError(ValueError):
@@ -96,6 +98,9 @@ def default_id(config: Config) -> str:
 
 SAMPLE_NAME = "sample_profile.json"
 NAME_LIMIT = 60
+# Rename and remove touch the same folder: two tabs at once must not leave a
+# removed template half-recreated by a rename that read it a moment earlier.
+_CHANGING = threading.Lock()
 TRASH = ".deleted"
 
 
@@ -114,7 +119,7 @@ def add(config: Config, name: str, source: str, *, engine: str, original: str | 
         cvstore.write_atomic(folder / "original.tex", original)
     meta = {
         "name": name,
-        "engine": engine if engine in latex.ENGINES else latex.DEFAULT_ENGINE,
+        "engine": latex.known_engine(engine),
         "created_at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
         "description": "",
     }
@@ -123,23 +128,29 @@ def add(config: Config, name: str, source: str, *, engine: str, original: str | 
 
 
 def rename(config: Config, template_id: str, name: str) -> Template:
-    template = _upload(config, template_id)
-    path = template.folder / "meta.json"
-    meta = json.loads(path.read_text(encoding="utf-8"))
-    meta["name"] = _clean_name(name)
-    cvstore.write_atomic(path, json.dumps(meta, indent=2) + "\n")
+    name = _clean_name(name)
+    with _CHANGING:
+        template = _upload(config, template_id)
+        path = template.folder / "meta.json"
+        try:
+            meta = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise UnknownTemplate(f"there is no template called {template_id!r}") from exc
+        meta["name"] = name
+        cvstore.write_atomic(path, json.dumps(meta, indent=2) + "\n")
     return get(config, template_id)
 
 
 def remove(config: Config, template_id: str) -> None:
     """Moved aside, never deleted: a template someone relied on can come back."""
-    template = _upload(config, template_id)
-    if default_id(config) == template.id:
-        raise TemplateError("pick another default template before removing this one")
-    trash = user_dir(config) / TRASH
-    trash.mkdir(parents=True, exist_ok=True)
-    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    template.folder.rename(trash / f"{template.id}-{stamp}")
+    with _CHANGING:
+        template = _upload(config, template_id)
+        if default_id(config) == template.id:
+            raise TemplateError("pick another default template before removing this one")
+        trash = user_dir(config) / TRASH
+        trash.mkdir(parents=True, exist_ok=True)
+        stamp = dt.datetime.now().strftime(cvstore.BACKUP_STAMP)
+        template.folder.rename(trash / f"{template.id}-{stamp}")
 
 
 def _upload(config: Config, template_id: str) -> Template:
@@ -187,7 +198,7 @@ def _load(folder: pathlib.Path, source: str) -> Template | None:
         id=folder.name,
         name=str(meta.get("name") or folder.name),
         source=source,
-        engine=engine if engine in latex.ENGINES else latex.DEFAULT_ENGINE,
+        engine=latex.known_engine(engine),
         description=str(meta.get("description") or ""),
         folder=folder,
     )

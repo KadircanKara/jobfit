@@ -134,3 +134,17 @@ def test_a_crashed_ats_check_is_not_a_clean_pass(cfg, tmp_path):
     report = ats.check(cfg, "tex", b"%PDF", runner=lambda argv, cwd: (1, "Traceback\nRuntimeError: bad pdf"))
 
     assert not report.ran and "bad pdf" in report.note
+
+
+def test_a_half_written_cache_entry_is_never_mistaken_for_a_whole_one(cfg, cv_source):
+    save(cfg)
+    runner = Recorder()
+    preview.preview(cfg, "classic", runner=runner)
+    # As if the server died mid-write: a staging folder, never renamed into place.
+    home = next(preview.cache_dir(cfg).glob("classic"))
+    for entry in list(home.iterdir()):
+        entry.rename(home / f".staging-{entry.name}")
+
+    again = preview.preview(cfg, "classic", runner=runner)
+
+    assert again.ok and len(runner.calls) == 4

@@ -204,7 +204,7 @@ def register(app: FastAPI, config: Config) -> None:
 
     @app.get("/api/cv/contract.md")
     def template_contract() -> Any:
-        return FileResponse(templates.BUILTIN_DIR / "CONTRACT.md", media_type="text/markdown; charset=utf-8")
+        return FileResponse(templates.CONTRACT_PATH, media_type="text/markdown; charset=utf-8")
 
     # --- the one-time import ----------------------------------------------
 

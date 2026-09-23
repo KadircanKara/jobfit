@@ -10,7 +10,7 @@ from __future__ import annotations
 import collections
 import dataclasses
 import hashlib
-import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -31,7 +31,6 @@ class Preview:
     pdf: bytes
     png: bytes | None
     log: str
-    missing: tuple[str, ...] = ()
 
 
 def cache_dir(config: Config) -> pathlib.Path:
@@ -48,19 +47,17 @@ def preview(config: Config, template_id: str, *, runner: latex.Runner | None = N
     profile = profile_for(config)
     source = template.text()
     key = hashlib.sha256(f"{source}\0{template.engine}\0{profile.fingerprint()}".encode()).hexdigest()[:16]
-    folder = cache_dir(config) / template.id / key
+    home = cache_dir(config) / template.id
+    folder = home / key
     with _GUARD:
         lock = _LOCKS[template.id]
     with lock:
-        if (folder / "cv.pdf").exists():
+        # A cache entry is a folder that appears whole or not at all, so a
+        # server stopped halfway through a thumbnail leaves nothing to trip on.
+        if folder.is_dir():
             png = folder / "page1.png"
-            return Preview(
-                True,
-                (folder / "cv.pdf").read_bytes(),
-                png.read_bytes() if png.exists() else None,
-                "",
-                tuple(json.loads((folder / "missing.json").read_text(encoding="utf-8"))),
-            )
+            cached_png = png.read_bytes() if png.exists() else None
+            return Preview(True, (folder / "cv.pdf").read_bytes(), cached_png, "")
         try:
             tex = builds.fill(source, profile, trusted=template.trusted)
         except render.RenderError as exc:
@@ -68,15 +65,16 @@ def preview(config: Config, template_id: str, *, runner: latex.Runner | None = N
         built = builds.build(config, tex, engine=template.engine, trusted=template.trusted, runner=runner)
         if not built.ok:
             return Preview(False, b"", None, built.log)
-        # One preview per template: whatever an older profile produced is dropped.
-        shutil.rmtree(cache_dir(config) / template.id, ignore_errors=True)
-        folder.mkdir(parents=True)
-        (folder / "cv.pdf").write_bytes(built.pdf)
         png = thumbnail(built.pdf)
+        # One preview per template: whatever an older profile produced is dropped.
+        shutil.rmtree(home, ignore_errors=True)
+        home.mkdir(parents=True)
+        staging = pathlib.Path(tempfile.mkdtemp(prefix=".staging-", dir=home))
+        (staging / "cv.pdf").write_bytes(built.pdf)
         if png:
-            (folder / "page1.png").write_bytes(png)
-        (folder / "missing.json").write_text(json.dumps(list(built.missing)), encoding="utf-8")
-        return Preview(True, built.pdf, png, built.log, built.missing)
+            (staging / "page1.png").write_bytes(png)
+        os.replace(staging, folder)
+        return Preview(True, built.pdf, png, built.log)
 
 
 def thumbnail(pdf: bytes) -> bytes | None:
