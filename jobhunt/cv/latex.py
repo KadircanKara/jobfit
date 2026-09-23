@@ -25,7 +25,9 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+
+from jobhunt.cv import sandbox
 
 ENGINES = ("lualatex", "pdflatex", "xelatex")
 DEFAULT_ENGINE = "lualatex"
@@ -56,7 +58,14 @@ class Build:
     missing: tuple[str, ...] = ()
 
 
-def build(tex: str, *, engine: str = DEFAULT_ENGINE, runner: Runner | None = None) -> Build:
+def build(
+    tex: str,
+    *,
+    engine: str = DEFAULT_ENGINE,
+    runner: Runner | None = None,
+    sandboxed: bool = False,
+    deny: Iterable[pathlib.Path] = (),
+) -> Build:
     """Build in a scratch directory. Nothing outside it is read or written."""
     if engine not in ENGINES:
         return Build(ok=False, log=f"unknown LaTeX engine {engine!r}. use one of {', '.join(ENGINES)}.")
@@ -68,6 +77,14 @@ def build(tex: str, *, engine: str = DEFAULT_ENGINE, runner: Runner | None = Non
     with tempfile.TemporaryDirectory(prefix="jobhunt-cv-") as raw:
         folder = pathlib.Path(raw)
         (folder / SOURCE).write_text(tex, encoding="utf-8")
+        if sandboxed:
+            if runner is None and not sandbox.available():
+                return Build(
+                    ok=False,
+                    log="uploaded templates only build inside the macOS sandbox (sandbox-exec), "
+                    "which is not available here, so this one was not run.",
+                )
+            argv = sandbox.wrap(argv, folder, deny)
         # A CV usually needs a second pass for its own references to settle.
         code, log = run(argv, folder)
         if code == 0:
@@ -88,17 +105,19 @@ def _run(argv: list[str], cwd: pathlib.Path) -> tuple[int, str]:
     try:
         done = subprocess.run(
             [binary, *argv[1:]], cwd=cwd, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=TIMEOUT, check=False, env=environment(binary),
+            encoding="utf-8", errors="replace", timeout=TIMEOUT, check=False,
+            env=environment(binary, *(arg for arg in argv[1:] if os.path.isabs(arg))),
         )
     except subprocess.TimeoutExpired:
         return 124, f"{argv[0]} ran past {int(TIMEOUT)} seconds and was stopped."
     return done.returncode, done.stdout + done.stderr
 
 
-def environment(binary: str) -> dict[str, str]:
+def environment(*binaries: str) -> dict[str, str]:
     """Only what TeX needs to find itself and its font cache."""
     kept = {key: value for key, value in os.environ.items() if key in _KEEP_ENV or key.startswith(_TEX_ENV)}
-    kept["PATH"] = os.pathsep.join([str(pathlib.Path(binary).parent), "/usr/bin", "/bin"])
+    folders = [str(pathlib.Path(binary).parent) for binary in binaries]
+    kept["PATH"] = os.pathsep.join([*dict.fromkeys(folders), "/usr/bin", "/bin"])
     return kept
 
 
