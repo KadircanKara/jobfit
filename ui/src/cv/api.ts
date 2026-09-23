@@ -79,6 +79,31 @@ export type ProfileBody = {
   import_available: boolean;
 };
 
+export type TemplateRow = {
+  id: string;
+  name: string;
+  source: "builtin" | "upload";
+  engine: string;
+  description: string;
+  builtin: boolean;
+  default: boolean;
+};
+export type UploadState = {
+  state: "idle" | "running" | "done" | "failed";
+  error: string | null;
+  filename: string;
+  suggested_name: string;
+  mode: "" | "template" | "convert";
+  rounds: number;
+  acceptable: boolean;
+  problems: string[];
+  warnings: string[];
+  ats_ran: boolean;
+  ats_note: string;
+  has_preview: boolean;
+  engine: string;
+};
+
 /** A save the server refused, with every problem it found, each keyed by field path. */
 export class ProfileRefused extends Error {
   problems: Problem[];
@@ -111,7 +136,7 @@ async function read<T>(response: Response): Promise<T> {
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
-function send(url: string, method: "POST" | "PUT", body?: unknown): Promise<Response> {
+function send(url: string, method: "POST" | "PUT" | "PATCH" | "DELETE", body?: unknown): Promise<Response> {
   return fetch(url, {
     method,
     headers: JSON_HEADERS,
@@ -155,5 +180,31 @@ export const cvApi = {
   },
   async discardImport(): Promise<ImportState> {
     return read(await send("/api/cv/import/discard", "POST"));
+  },
+  async templates(): Promise<{ default_id: string; templates: TemplateRow[] }> {
+    return read(await fetch("/api/cv/templates"));
+  },
+  async useTemplate(id: string): Promise<MasterStatus> {
+    return read(await send(`/api/cv/templates/${encodeURIComponent(id)}/default`, "POST"));
+  },
+  async renameTemplate(id: string, name: string): Promise<TemplateRow> {
+    return read(await send(`/api/cv/templates/${encodeURIComponent(id)}`, "PATCH", { name }));
+  },
+  async removeTemplate(id: string): Promise<{ removed: boolean }> {
+    return read(await send(`/api/cv/templates/${encodeURIComponent(id)}`, "DELETE"));
+  },
+  async uploadTemplate(file: File): Promise<UploadState> {
+    const body = new FormData();
+    body.append("file", file);
+    return read(await fetch("/api/cv/templates", { method: "POST", body }));
+  },
+  async uploadState(): Promise<UploadState> {
+    return read(await fetch("/api/cv/templates/upload"));
+  },
+  async acceptUpload(name: string): Promise<TemplateRow> {
+    return read(await send("/api/cv/templates/upload/accept", "POST", { name }));
+  },
+  async discardUpload(): Promise<UploadState> {
+    return read(await send("/api/cv/templates/upload/discard", "POST"));
   },
 };

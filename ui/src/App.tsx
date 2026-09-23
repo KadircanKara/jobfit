@@ -17,6 +17,7 @@ import { GatePanel, Log, PhaseStrip, RankPanel, Shortlist, SourceRail } from "./
 import { TailorBatch } from "./Tailor";
 import { ReviseStudio } from "./Revise";
 import { Profile } from "./Profile";
+import { Templates } from "./Templates";
 
 /* Each section of the app is a page with its own URL, so a tab can be linked,
    bookmarked, reopened, and walked back through with the browser's own back
@@ -25,6 +26,7 @@ const PATHS = {
   hunt: "/",
   filters: "/filters",
   profile: "/profile",
+  templates: "/templates",
 } as const;
 
 type Screen = keyof typeof PATHS;
@@ -325,10 +327,14 @@ export default function App() {
           <NavLink screen="profile" current={screen} go={go}>
             Profile
           </NavLink>
+          <NavLink screen="templates" current={screen} go={go}>
+            Templates
+          </NavLink>
         </nav>
 
         <main>
         {screen === "profile" && <Profile />}
+        {screen === "templates" && <Templates />}
 
         {/* Kept mounted whichever screen is up, so an unsaved draft survives a
             trip to the hunt page and back. */}

@@ -1,4 +1,4 @@
-import type { MasterStatus } from "./api";
+import type { MasterStatus, TemplateRow } from "./api";
 
 const LABEL = { empty: "Empty", ready: "Ready", stale: "Out of date" } as const;
 
@@ -14,7 +14,9 @@ export function MasterPanel({
   log,
   missing,
   version,
+  templates,
   onGenerate,
+  onPick,
 }: {
   status: MasterStatus | null;
   dirty: boolean;
@@ -22,7 +24,9 @@ export function MasterPanel({
   log: string | null;
   missing: string[];
   version: number;
+  templates: TemplateRow[];
   onGenerate: () => void;
+  onPick: (id: string) => void;
 }) {
   const available = status?.state === "ready" || status?.state === "stale";
   return (
@@ -36,6 +40,26 @@ export function MasterPanel({
         )}
         {status && <div className="note">{status.template_name}</div>}
       </div>
+      {templates.length > 0 && (
+        <div className="cv-picker">
+          <label htmlFor="cv-template">Template</label>
+          <select
+            id="cv-template"
+            value={status?.template_id ?? ""}
+            onChange={(event) => onPick(event.target.value)}
+            disabled={busy}
+          >
+            {templates.map((row) => (
+              <option key={row.id} value={row.id}>
+                {row.name}
+              </option>
+            ))}
+          </select>
+          <a className="note" href="/templates">
+            all templates
+          </a>
+        </div>
+      )}
       <div className="cv-actions">
         <button className="btn" onClick={onGenerate} disabled={busy}>
           {busy ? "Generating" : dirty ? "Save and generate" : "Generate master CV"}

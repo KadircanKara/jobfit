@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { BackupRow } from "./api";
-import { cvApi, ProfileRefused, type CvProfile, type MasterStatus, type ProfileBody } from "./cv/api";
+import {
+  cvApi,
+  ProfileRefused,
+  type CvProfile,
+  type MasterStatus,
+  type ProfileBody,
+  type TemplateRow,
+} from "./cv/api";
 import { BackupsPanel } from "./cv/BackupsPanel";
 import { blankProfile } from "./cv/blank";
 import type { Errors } from "./cv/Controls";
@@ -28,6 +35,7 @@ export function Profile() {
   const [problem, setProblem] = useState<string | null>(null);
   const [log, setLog] = useState<string | null>(null);
   const [missing, setMissing] = useState<string[]>([]);
+  const [templates, setTemplates] = useState<TemplateRow[]>([]);
   const [version, setVersion] = useState(0);
 
   const dirty = profile !== null && JSON.stringify(profile) !== saved;
@@ -45,6 +53,7 @@ export function Profile() {
     setSaved(next.profile ? JSON.stringify(next.profile) : "");
     clearErrors();
     setStatus(next.profile ? await cvApi.master() : null);
+    setTemplates((await cvApi.templates()).templates);
     setBackups((await cvApi.backups()).backups);
   }, []);
 
@@ -101,6 +110,23 @@ export function Profile() {
       setMissing(result.ok ? result.missing : []);
       setStatus(result.master);
       setVersion((current) => current + 1);
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function pick(id: string) {
+    const row = templates.find((candidate) => candidate.id === id);
+    if (!row || row.default) return;
+    if (!window.confirm(`Switch to ${row.name}? The master CV will be empty until you generate it again.`)) return;
+    setBusy("generating");
+    try {
+      setStatus(await cvApi.useTemplate(id));
+      setLog(null);
+      setMissing([]);
+      setTemplates((await cvApi.templates()).templates);
     } catch (error) {
       setProblem(error instanceof Error ? error.message : String(error));
     } finally {
@@ -172,6 +198,8 @@ export function Profile() {
               busy={busy !== null}
               log={log}
               missing={missing}
+              templates={templates}
+              onPick={pick}
               version={version}
               onGenerate={generate}
             />
