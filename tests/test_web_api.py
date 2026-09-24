@@ -322,13 +322,12 @@ def test_syncing_with_nothing_to_write_is_refused_rather_than_silent(studio):
 # --- results that outlive the process --------------------------------------------
 
 
-def test_with_no_run_in_memory_the_shortlist_is_read_back_from_the_corpus(cfg):
-    """Restarting the server must not lose work that is already on disk."""
+def _a_shortlisted_job(cfg) -> int:
+    """One job in the corpus that the gate scored above the bar."""
     from jobhunt import store
     from jobhunt.db.models import Score
     from jobhunt.db.session import session_scope
     from jobhunt.sources.base import JobPosting
-    from jobhunt.web.app import create_app
 
     with session_scope(cfg.db_path) as session:
         job, _ = store.upsert_posting(session, JobPosting(
@@ -343,7 +342,14 @@ def test_with_no_run_in_memory_the_shortlist_is_read_back_from_the_corpus(cfg):
             deterministic_notes={"passed": True, "boost": 1.0},
             llm_score=0.85, llm_reasoning="close match", llm_model="claude-code-print",
         ))
-        kept = job.id
+        return job.id
+
+
+def test_with_no_run_in_memory_the_shortlist_is_read_back_from_the_corpus(cfg):
+    """Restarting the server must not lose work that is already on disk."""
+    from jobhunt.web.app import create_app
+
+    kept = _a_shortlisted_job(cfg)
 
     body = TestClient(create_app(config=cfg)).get("/api/runs/current").json()
 
@@ -600,3 +606,51 @@ def test_the_run_in_progress_or_paused_cannot_be_deleted(cfg, phase):
 
     assert response.status_code == 409
     assert TestClient(app).get(f"/api/runs/{run_id}").status_code == 200
+
+
+# --- clearing the live shortlist ---------------------------------------------------
+
+
+def test_a_cleared_live_shortlist_stays_empty_until_the_next_run(cfg):
+    _a_shortlisted_job(cfg)
+    client = TestClient(create_app(config=cfg))
+
+    response = client.post("/api/runs/current/clear")
+
+    assert response.status_code == 200
+    body = client.get("/api/runs/current").json()
+    assert body["results"] == []
+    # The Run page still reads as idle after a run, not as "no run yet".
+    assert body["outcome"] == "restored"
+
+
+def test_a_cleared_live_shortlist_survives_a_restart(cfg):
+    _a_shortlisted_job(cfg)
+    TestClient(create_app(config=cfg)).post("/api/runs/current/clear")
+
+    body = TestClient(create_app(config=cfg)).get("/api/runs/current").json()
+
+    assert body["results"] == []
+
+
+def test_starting_a_run_brings_the_live_shortlist_back(cfg, monkeypatch):
+    from jobhunt.web import app as app_module
+    from jobhunt.web import history as history_module
+
+    _a_shortlisted_job(cfg)
+    monkeypatch.setattr(app_module, "build_pipeline", lambda cfg, hooks: _SlowPipeline())
+    client = TestClient(create_app(config=cfg))
+    client.post("/api/runs/current/clear")
+
+    client.post("/api/runs")
+
+    assert history_module.live_cleared(cfg) is False
+
+
+def test_clearing_while_a_run_is_going_is_refused(client, monkeypatch):
+    from jobhunt.web import app as app_module
+
+    monkeypatch.setattr(app_module, "build_pipeline", lambda cfg, hooks: _SlowPipeline())
+    client.post("/api/runs")
+
+    assert client.post("/api/runs/current/clear").status_code == 409

@@ -32,6 +32,11 @@ ID_FORMAT = "%Y%m%d-%H%M%S"
 # would overwrite a name given meanwhile. The suffix keeps it out of the
 # "*.json" globs that list and prune runs.
 NAMES_FILE = "names.map"
+
+# Present while the person has cleared the live shortlist. The live list is not
+# a file but the corpus's current ranking, so clearing it means hiding it until
+# the next run is started, not deleting anything.
+LIVE_CLEARED_FILE = "live.cleared"
 NAME_MAX = 60
 
 
@@ -182,3 +187,17 @@ def _read(path: pathlib.Path) -> dict[str, Any] | None:
         # failing the whole listing over.
         return None
     return body if isinstance(body, dict) else None
+
+
+def clear_live(config: Config) -> None:
+    folder = directory(config)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / LIVE_CLEARED_FILE).write_text(utcnow().isoformat(), encoding="utf-8")
+
+
+def restore_live(config: Config) -> None:
+    (directory(config) / LIVE_CLEARED_FILE).unlink(missing_ok=True)
+
+
+def live_cleared(config: Config) -> bool:
+    return (directory(config) / LIVE_CLEARED_FILE).is_file()

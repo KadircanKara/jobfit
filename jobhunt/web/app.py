@@ -130,12 +130,15 @@ class AppState:
 RESTORED = "restored"
 
 
-def _last_shortlist(config: Config) -> list[dict[str, Any]]:
+def _last_shortlist(config: Config, *, cleared_counts: bool = True) -> list[dict[str, Any]]:
     """The shortlist as it stands on disk, in the shape a run would have left.
 
     Deliberately the same call the run itself makes, so a restored screen and a
-    live one cannot disagree about what is above the bar.
+    live one cannot disagree about what is above the bar. Empty while the person
+    has cleared it, unless `cleared_counts` is False.
     """
+    if cleared_counts and history_module.live_cleared(config):
+        return []
     from jobhunt import preferences as prefs
     from jobhunt.render import review
     from jobhunt.web.engine import NEAR_MISSES, row_from_card
@@ -156,7 +159,9 @@ def _last_shortlist(config: Config) -> list[dict[str, Any]]:
 
 
 def _restored_outcome(config: Config) -> str | None:
-    return RESTORED if _last_shortlist(config) else None
+    # A cleared list still had a run behind it, so the Run page keeps reading
+    # as idle after a run rather than as never run.
+    return RESTORED if _last_shortlist(config, cleared_counts=False) else None
 
 
 def _row_for(state: AppState, job_id: int) -> dict[str, Any] | None:
@@ -481,6 +486,7 @@ def create_app(*, config: Config | None = None) -> FastAPI:
             jh.supervisor.resume()
             return {"started": True, "resumed": True}
 
+        history_module.restore_live(cfg)
         pipeline = build_pipeline(cfg, jh)
         run_id = history_module.new_id()
         jh.supervisor = RunSupervisor(
@@ -516,6 +522,18 @@ def create_app(*, config: Config | None = None) -> FastAPI:
         if body is None:
             return JSONResponse(status_code=404, content={"message": f"no run {run_id} on file"})
         return body
+
+    @app.post("/api/runs/current/clear")
+    def clear_live_shortlist() -> Any:
+        """Empty the live shortlist until the next run starts. Nothing is deleted."""
+        jh: AppState = app.state.jh
+        if jh.supervisor is not None and (jh.supervisor.state.running or jh.supervisor.state.resumable):
+            return JSONResponse(
+                status_code=409,
+                content={"message": "a run is in progress or paused; its shortlist cannot be cleared"},
+            )
+        history_module.clear_live(cfg)
+        return {"cleared": True}
 
     @app.patch("/api/runs/{run_id}")
     def rename_run(run_id: str, payload: dict[str, Any]) -> Any:

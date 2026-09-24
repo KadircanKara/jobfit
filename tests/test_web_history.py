@@ -189,3 +189,28 @@ def test_pruning_a_run_drops_its_name(cfg) -> None:
         history_module.save(cfg, f"202608{day}-090000", a_run(f"202608{day}-090000"))
 
     assert "20260801-090000" not in history_module.names(cfg)
+
+
+def test_the_live_shortlist_is_not_cleared_to_begin_with(cfg) -> None:
+    assert history_module.live_cleared(cfg) is False
+
+
+def test_clearing_the_live_shortlist_is_remembered_until_restored(cfg) -> None:
+    history_module.clear_live(cfg)
+    assert history_module.live_cleared(cfg) is True
+
+    history_module.restore_live(cfg)
+    assert history_module.live_cleared(cfg) is False
+
+
+def test_restoring_a_live_shortlist_that_was_never_cleared_is_harmless(cfg) -> None:
+    history_module.restore_live(cfg)
+
+    assert history_module.live_cleared(cfg) is False
+
+
+def test_the_clear_marker_is_never_listed_as_a_run(cfg) -> None:
+    history_module.save(cfg, "20260822-100000", a_run("20260822-100000"))
+    history_module.clear_live(cfg)
+
+    assert [row["run_id"] for row in history_module.listing(cfg)] == ["20260822-100000"]
