@@ -397,6 +397,14 @@ export const api = {
       }),
     );
   },
+  /** Empty the live shortlist until the next run starts. Nothing is deleted. */
+  async clearLive(): Promise<void> {
+    const response = await fetch("/api/runs/current/clear", { method: "POST" });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.message ?? `could not clear the shortlist (${response.status})`);
+    }
+  },
   async deleteRun(runId: string): Promise<void> {
     const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
     if (!response.ok) {

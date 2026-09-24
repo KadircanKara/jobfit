@@ -143,7 +143,9 @@ export function Shell({
                     )}
                   </a>
                 );
-                if (item.page !== "shortlist" || !hunt.past.length) return link;
+                // The run list shows once there is anything in it: a saved run,
+                // or a live shortlist that can be cleared.
+                if (item.page !== "shortlist" || (!hunt.past.length && !kept)) return link;
                 return (
                   <div key={item.page}>
                     <div className="nav-row">

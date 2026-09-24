@@ -62,6 +62,7 @@ type Hunt = {
   sourcesError: string | null;
 
   run: RunState;
+  refreshRun: () => Promise<void>;
   events: RunEvent[];
   syncSources: Record<string, SourceProgress>;
   past: RunSummary[];
@@ -175,6 +176,14 @@ export function HuntProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(timer);
   }, [run.running]);
 
+  const refreshRun = useCallback(
+    () =>
+      api
+        .run()
+        .then(setRun)
+        .catch(() => undefined),
+    [],
+  );
   const refreshPast = useCallback(
     () =>
       api
@@ -364,6 +373,7 @@ export function HuntProvider({ children }: { children: ReactNode }) {
     savingSources,
     sourcesError,
     run,
+    refreshRun,
     events,
     syncSources,
     past,
