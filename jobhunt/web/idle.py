@@ -2,9 +2,9 @@
 
 The interface is started by hand and left running, so the process outlives the
 terminal that started it. That is the point — marking a job applied an hour
-later has to reach something. But a server left running for days on a laptop is
-also a process nobody asked for, so it retires itself once the browser has gone
-quiet.
+later has to reach something. So the watchdog is off by default, and a server
+only retires itself once the browser has gone quiet when --idle-timeout asks it
+to.
 
 Two conditions, not one. Silence on the socket is not enough: a tailoring batch
 makes no requests for as long as an agent takes to answer, and killing the
@@ -17,8 +17,8 @@ import threading
 import time
 from collections.abc import Callable
 
-# Long enough that a page left open over lunch is still there afterwards.
-DEFAULT_IDLE_SECONDS = 3600.0
+# Off: an API that stops on its own leaves the page up with nothing behind it.
+DEFAULT_IDLE_SECONDS = 0.0
 
 # How often the watchdog looks. Cheap, and it bounds how long past the deadline
 # a shutdown can land.

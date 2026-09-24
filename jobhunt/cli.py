@@ -940,14 +940,14 @@ def serve_cmd(
     idle_timeout: float = typer.Option(
         idle_module.DEFAULT_IDLE_SECONDS,
         "--idle-timeout",
-        help="Stop after this many seconds with no requests and no work running. 0 never stops.",
+        help="Stop after this many seconds with no requests and no work running. 0 (default) never stops.",
     ),
 ) -> None:
     """Run the local web interface.
 
     Binds to loopback, so nothing outside this machine can reach it. A run
-    started here keeps going with the browser closed, and the process only
-    retires itself once nothing has called it for --idle-timeout seconds.
+    started here keeps going with the browser closed, and the process keeps
+    running until it is stopped, unless --idle-timeout asks it to retire.
     """
     try:
         import uvicorn

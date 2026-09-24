@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Start the API and the UI detached from whatever terminal (or agent session)
 # launched them, so closing that terminal does not take the servers with it.
-# They stop themselves after an idle hour — see jobhunt/web/idle.py.
+# They run until scripts/dev-stop.sh stops them. JOBHUNT_IDLE_TIMEOUT=<seconds>
+# makes the API retire itself when idle instead — see jobhunt/web/idle.py.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,7 +30,7 @@ if ! node -e 'process.exit(parseInt(process.versions.node) >= 18 ? 0 : 1)' 2>/de
   fi
 fi
 
-idle="${JOBHUNT_IDLE_TIMEOUT:-3600}"
+idle="${JOBHUNT_IDLE_TIMEOUT:-0}"
 api_port="${JOBHUNT_PORT:-8765}"
 
 start() { # name, pattern that identifies an already-running one, logfile, command...
@@ -50,6 +51,10 @@ start ui "vite" "$logs/ui.log" \
   npm --prefix "$root/ui" run dev
 
 sleep 2
-echo "api: http://127.0.0.1:$api_port  (idle timeout ${idle}s)"
+if [ "$idle" = "0" ]; then
+  echo "api: http://127.0.0.1:$api_port"
+else
+  echo "api: http://127.0.0.1:$api_port  (idle timeout ${idle}s)"
+fi
 echo "ui:  http://localhost:5173"
 echo "stop both: scripts/dev-stop.sh"
