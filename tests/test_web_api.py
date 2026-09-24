@@ -532,3 +532,71 @@ def test_every_page_the_interface_routes_is_served(client, path):
 @pytest.mark.parametrize("path", ["/nowhere", "/tailoring/abc", "/cv/nothing", "/runs/a/b"])
 def test_a_mistyped_path_still_says_it_does_not_exist(client, path):
     assert client.get(path).status_code == 404
+
+
+# --- saved runs: rename and delete -------------------------------------------------
+
+
+def _saved_run(cfg, run_id="20260822-100000"):
+    from jobhunt.web import history as history_module
+
+    body = {"run_id": run_id, "phase": "done", "outcome": "completed", "results": []}
+    history_module.save(cfg, run_id, body)
+    return run_id
+
+
+def test_a_saved_run_can_be_renamed(client, cfg):
+    run_id = _saved_run(cfg)
+
+    response = client.patch(f"/api/runs/{run_id}", json={"name": "Berlin push"})
+
+    assert response.status_code == 200
+    assert client.get("/api/runs").json()["runs"][0]["name"] == "Berlin push"
+
+
+def test_renaming_a_run_not_on_file_is_a_404(client):
+    response = client.patch("/api/runs/20260822-100000", json={"name": "Berlin push"})
+
+    assert response.status_code == 404
+
+
+def test_an_overlong_name_is_refused(client, cfg):
+    from jobhunt.web import history as history_module
+
+    run_id = _saved_run(cfg)
+
+    response = client.patch(f"/api/runs/{run_id}", json={"name": "x" * (history_module.NAME_MAX + 1)})
+
+    assert response.status_code == 422
+
+
+def test_a_saved_run_can_be_deleted(client, cfg):
+    run_id = _saved_run(cfg)
+
+    response = client.delete(f"/api/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert client.get("/api/runs").json()["runs"] == []
+    assert client.get(f"/api/runs/{run_id}").status_code == 404
+
+
+def test_deleting_a_run_not_on_file_is_a_404(client):
+    assert client.delete("/api/runs/20260822-100000").status_code == 404
+
+
+@pytest.mark.parametrize("phase", ["sync", "paused"])
+def test_the_run_in_progress_or_paused_cannot_be_deleted(cfg, phase):
+    from jobhunt.web import events as events_module
+    from jobhunt.web import runs as runs_module
+
+    run_id = _saved_run(cfg)
+    app = create_app(config=cfg)
+    supervisor = runs_module.RunSupervisor(pipeline=None, log=events_module.EventLog())
+    supervisor.state.run_id = run_id
+    supervisor.state.phase = phase
+    app.state.jh.supervisor = supervisor
+
+    response = TestClient(app).delete(f"/api/runs/{run_id}")
+
+    assert response.status_code == 409
+    assert TestClient(app).get(f"/api/runs/{run_id}").status_code == 200

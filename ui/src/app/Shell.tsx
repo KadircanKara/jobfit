@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   Activity as ActivityIcon,
+  ChevronRight,
   FileText,
   LayoutTemplate,
   ListChecks,
@@ -13,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { followLink, href, type Page, type Route } from "./router";
+import { RunHistory } from "./RunHistory";
 import { PHASE_LABEL, runStatus, useHunt } from "./store";
 
 type Nav = { page: Page; label: string; icon: typeof Play; to: Route };
@@ -51,6 +53,11 @@ export function Shell({
   const hunt = useHunt();
   const [mode, setMode] = useState(() => stored("jh-mode") ?? preferredMode());
   const [navOpen, setNavOpen] = useState(false);
+  // The run list opens by itself on the pages it belongs to; a click on the
+  // chevron overrides that until the next page change.
+  const [historyPick, setHistoryPick] = useState<boolean | null>(null);
+  const historyOpen = historyPick ?? (route.page === "shortlist" || route.page === "run");
+  useEffect(() => setHistoryPick(null), [route.page]);
 
   useEffect(() => {
     document.documentElement.dataset.mode = mode;
@@ -107,12 +114,12 @@ export function Shell({
               {group.items.map((item) => {
                 const Icon = item.icon;
                 const count = counts[item.page];
-                return (
+                const link = (
                   <a
                     key={item.page}
                     className="nav-item"
                     href={href(item.to)}
-                    aria-current={route.page === item.page ? "page" : undefined}
+                    aria-current={route.page === item.page && !isPast(route) ? "page" : undefined}
                     onClick={(event) => followLink(event, () => go(item.to))}
                   >
                     <Icon className="icon" />
@@ -124,6 +131,24 @@ export function Shell({
                       </span>
                     )}
                   </a>
+                );
+                if (item.page !== "shortlist" || !hunt.past.length) return link;
+                return (
+                  <div key={item.page}>
+                    <div className="nav-row">
+                      {link}
+                      <button
+                        type="button"
+                        className="nav-toggle"
+                        aria-label={historyOpen ? "Hide past runs" : "Show past runs"}
+                        aria-expanded={historyOpen}
+                        onClick={() => setHistoryPick(!historyOpen)}
+                      >
+                        <ChevronRight aria-hidden="true" />
+                      </button>
+                    </div>
+                    {historyOpen && <RunHistory route={route} go={go} />}
+                  </div>
                 );
               })}
             </div>
@@ -172,6 +197,11 @@ export function Shell({
       </div>
     </div>
   );
+}
+
+/** A past run is highlighted in the run list, not on the Run or Shortlist row. */
+function isPast(route: Route) {
+  return (route.page === "shortlist" || route.page === "run") && Boolean(route.runId);
 }
 
 const TITLES: Record<Page, string> = {

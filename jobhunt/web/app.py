@@ -517,6 +517,34 @@ def create_app(*, config: Config | None = None) -> FastAPI:
             return JSONResponse(status_code=404, content={"message": f"no run {run_id} on file"})
         return body
 
+    @app.patch("/api/runs/{run_id}")
+    def rename_run(run_id: str, payload: dict[str, Any]) -> Any:
+        name = payload.get("name")
+        if name is not None and not isinstance(name, str):
+            return JSONResponse(status_code=422, content={"message": "name must be text"})
+        try:
+            stored = history_module.rename(cfg, run_id, name or "")
+        except LookupError:
+            return JSONResponse(status_code=404, content={"message": f"no run {run_id} on file"})
+        except ValueError as exc:
+            return JSONResponse(status_code=422, content={"message": str(exc)})
+        return {"run_id": run_id, "name": stored}
+
+    @app.delete("/api/runs/{run_id}")
+    def delete_run(run_id: str) -> Any:
+        # The run held in memory still writes to its file; deleting it while it
+        # runs or waits to resume would only see the file come back.
+        jh: AppState = app.state.jh
+        current = jh.supervisor.state if jh.supervisor is not None else None
+        if current is not None and current.run_id == run_id and (current.running or current.resumable):
+            return JSONResponse(
+                status_code=409,
+                content={"message": "this run is in progress or paused; stop it before deleting it"},
+            )
+        if not history_module.delete(cfg, run_id):
+            return JSONResponse(status_code=404, content={"message": f"no run {run_id} on file"})
+        return {"deleted": run_id}
+
     @app.post("/api/runs/current/pause")
     def pause_run() -> dict[str, Any]:
         jh: AppState = app.state.jh

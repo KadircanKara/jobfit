@@ -62,6 +62,7 @@ type Hunt = {
   events: RunEvent[];
   syncSources: Record<string, SourceProgress>;
   past: RunSummary[];
+  refreshPast: () => Promise<void>;
   runError: string | null;
   start: () => Promise<boolean>;
   stop: () => Promise<void>;
@@ -163,12 +164,17 @@ export function HuntProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(timer);
   }, [run.running]);
 
+  const refreshPast = useCallback(
+    () =>
+      api
+        .runs()
+        .then((body) => setPast(body.runs))
+        .catch(() => undefined),
+    [],
+  );
   useEffect(() => {
-    api
-      .runs()
-      .then((body) => setPast(body.runs))
-      .catch(() => undefined);
-  }, [run.phase, run.outcome]);
+    void refreshPast();
+  }, [run.phase, run.outcome, refreshPast]);
 
   const syncSources = useMemo(() => progressFrom(events), [events]);
 
@@ -348,6 +354,7 @@ export function HuntProvider({ children }: { children: ReactNode }) {
     events,
     syncSources,
     past,
+    refreshPast,
     runError,
     start,
     stop,
@@ -411,6 +418,11 @@ function progressFrom(events: RunEvent[]) {
     sources[event.source] = row;
   }
   return sources;
+}
+
+/** What a run is called on screen: its given name, or when it started. */
+export function runLabel(past: RunSummary[], runId: string): string {
+  return past.find((row) => row.run_id === runId)?.name || stamp(runId);
 }
 
 /** A run id is its start time: "20260822-100000". */

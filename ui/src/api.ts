@@ -180,6 +180,8 @@ export type RunState = {
 /** One row in the run picker. */
 export type RunSummary = {
   run_id: string;
+  /** What the person called it; null until they name it. */
+  name: string | null;
   started_at: string | null;
   finished_at: string | null;
   phase: string;
@@ -385,6 +387,22 @@ export const api = {
   },
   async runs(): Promise<{ runs: RunSummary[] }> {
     return json(await fetch("/api/runs"));
+  },
+  async renameRun(runId: string, name: string): Promise<{ run_id: string; name: string | null }> {
+    return json(
+      await fetch(`/api/runs/${encodeURIComponent(runId)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name }),
+      }),
+    );
+  },
+  async deleteRun(runId: string): Promise<void> {
+    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.message ?? `could not delete the run (${response.status})`);
+    }
   },
   async pastRun(runId: string): Promise<RunState> {
     return json(await fetch(`/api/runs/${runId}`));

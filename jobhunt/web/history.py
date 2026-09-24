@@ -27,6 +27,13 @@ KEEP = 5
 # unique enough for one machine running one run at a time.
 ID_FORMAT = "%Y%m%d-%H%M%S"
 
+# Names the person gave their runs, keyed by run id. Kept beside the run files,
+# not inside them: a live run rewrites its own file on every phase change and
+# would overwrite a name given meanwhile. The suffix keeps it out of the
+# "*.json" globs that list and prune runs.
+NAMES_FILE = "names.map"
+NAME_MAX = 60
+
 
 def new_id() -> str:
     return utcnow().strftime(ID_FORMAT)
@@ -58,6 +65,7 @@ def _prune(folder: pathlib.Path) -> None:
     saved = sorted(folder.glob("*.json"), reverse=True)
     for stale in saved[KEEP:]:
         stale.unlink(missing_ok=True)
+    _forget_missing(folder)
 
 
 def listing(config: Config) -> list[dict[str, Any]]:
@@ -65,6 +73,7 @@ def listing(config: Config) -> list[dict[str, Any]]:
     folder = directory(config)
     if not folder.is_dir():
         return []
+    given = _read_names(folder)
     rows = []
     for path in sorted(folder.glob("*.json"), reverse=True)[:KEEP]:
         body = _read(path)
@@ -72,6 +81,7 @@ def listing(config: Config) -> list[dict[str, Any]]:
             continue
         rows.append({
             "run_id": path.stem,
+            "name": given.get(path.stem),
             "started_at": body.get("started_at"),
             "finished_at": body.get("finished_at"),
             "phase": body.get("phase"),
@@ -87,10 +97,81 @@ def listing(config: Config) -> list[dict[str, Any]]:
 
 def load(config: Config, run_id: str) -> dict[str, Any] | None:
     """One run's whole state, or None if it has been pruned away."""
+    path = _path(config, run_id)
+    return _read(path) if path else None
+
+
+def names(config: Config) -> dict[str, str]:
+    return _read_names(directory(config))
+
+
+def rename(config: Config, run_id: str, name: str) -> str | None:
+    """Give a saved run a name, or clear it with a blank one.
+
+    Raises LookupError when the run is not on file and ValueError when the name
+    is too long.
+    """
+    path = _path(config, run_id)
+    if path is None or not path.is_file():
+        raise LookupError(f"no run {run_id} on file")
+    clean = " ".join(name.split())
+    if len(clean) > NAME_MAX:
+        raise ValueError(f"a run name is at most {NAME_MAX} characters")
+    folder = path.parent
+    given = _read_names(folder)
+    if clean:
+        given[run_id] = clean
+    else:
+        given.pop(run_id, None)
+    _write_names(folder, given)
+    return clean or None
+
+
+def delete(config: Config, run_id: str) -> bool:
+    """Remove a saved run and its name. False when there was nothing to remove.
+
+    Only the run's own record goes: the jobs it found, the CVs cut for them and
+    what was applied to all live elsewhere and stay.
+    """
+    path = _path(config, run_id)
+    if path is None or not path.is_file():
+        return False
+    path.unlink()
+    _forget_missing(path.parent)
+    return True
+
+
+def _path(config: Config, run_id: str) -> pathlib.Path | None:
     # A run id reaches this from a URL, so it may not be a run id at all.
     if not run_id or "/" in run_id or "\\" in run_id or run_id.startswith("."):
         return None
-    return _read(directory(config) / f"{run_id}.json")
+    return directory(config) / f"{run_id}.json"
+
+
+def _read_names(folder: pathlib.Path) -> dict[str, str]:
+    try:
+        body = json.loads((folder / NAMES_FILE).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(body, dict):
+        return {}
+    return {str(key): str(value) for key, value in body.items() if isinstance(value, str)}
+
+
+def _write_names(folder: pathlib.Path, given: dict[str, str]) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / NAMES_FILE
+    staging = target.with_suffix(".writing")
+    staging.write_text(json.dumps(given, ensure_ascii=False, indent=2), encoding="utf-8")
+    staging.replace(target)
+
+
+def _forget_missing(folder: pathlib.Path) -> None:
+    """Drop names whose run file is gone, so the names file never outgrows the runs."""
+    given = _read_names(folder)
+    kept = {run_id: name for run_id, name in given.items() if (folder / f"{run_id}.json").is_file()}
+    if kept != given:
+        _write_names(folder, kept)
 
 
 def _read(path: pathlib.Path) -> dict[str, Any] | None:

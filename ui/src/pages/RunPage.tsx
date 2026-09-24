@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { ArrowRight, History, Info, Pause, Play, RotateCcw, Square, TriangleAlert } from "lucide-react";
+import { ArrowRight, Info, Pause, Play, RotateCcw, Square, TriangleAlert } from "lucide-react";
 import { SourcePicker, sourceLabel } from "../Filters";
 import { GatePanel, Log, Pipeline, RankPanel, SourceRail, plural } from "../Run";
 import { followLink, href, type Route } from "../app/router";
-import { runStatus, runTone, stamp, useHunt, useShownRun } from "../app/store";
+import { runLabel, runStatus, runTone, stamp, useHunt, useShownRun } from "../app/store";
 
 const TONE: Record<string, string> = {
   running: "accent",
@@ -113,49 +113,20 @@ export function RunPage({ runId, go }: { runId?: string; go: (to: Route | string
         {hunt.filters && (
           <SourcePicker value={hunt.sources} onChange={hunt.pickSources} saving={hunt.savingSources} />
         )}
-        {hunt.past.length > 0 && (
-          <>
-            <span className="sep" aria-hidden="true" />
-            <span className="lbl">
-              <History className="icon" aria-hidden="true" style={{ verticalAlign: -3, width: 14 }} /> Runs
-            </span>
-            <div className="seg" role="group" aria-label="Which run">
-              <a
-                href="/"
-                aria-current={!runId ? "page" : undefined}
-                onClick={(e) => followLink(e, () => go({ page: "run" }))}
-              >
-                Live
-              </a>
-              {hunt.past.map((row) => (
-                <a
-                  key={row.run_id}
-                  href={href({ page: "run", runId: row.run_id })}
-                  aria-current={runId === row.run_id ? "page" : undefined}
-                  title={`${row.jobs_total.toLocaleString()} jobs fetched`}
-                  onClick={(e) => followLink(e, () => go({ page: "run", runId: row.run_id }))}
-                >
-                  {stamp(row.run_id)}
-                  <span className="sub">{row.resumable ? "paused" : `${row.shortlisted} kept`}</span>
-                </a>
-              ))}
-            </div>
-          </>
-        )}
       </div>
       {hunt.sourcesError && <div className="err">{hunt.sourcesError}</div>}
 
       {missing && (
         <div className="notice" data-tone="warn" style={{ marginBottom: 16 }}>
           <TriangleAlert className="icon" aria-hidden="true" />
-          <span className="grow">There is no saved run {stamp(missing)} any more.</span>
+          <span className="grow">There is no saved run {stamp(missing)} any more. It may have been deleted.</span>
         </div>
       )}
       {saved && !missing && !lastRun && (
         <div className="notice" style={{ marginBottom: 16 }}>
           <Info className="icon" aria-hidden="true" />
           <span className="grow">
-            Showing the run from <b>{stamp(runId ?? "")}</b>.
+            Showing the run <b>{runLabel(hunt.past, runId ?? "")}</b>.
           </span>
           <a href="/" onClick={(e) => followLink(e, () => go({ page: "run" }))}>
             Back to live

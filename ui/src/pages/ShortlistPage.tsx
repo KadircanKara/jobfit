@@ -6,7 +6,7 @@ import { TemplateStep } from "../cv/TemplateStep";
 import { api } from "../api";
 import { followLink, href, type Route } from "../app/router";
 import { Sheet } from "../app/Sheet";
-import { stamp, useHunt, useShownRun } from "../app/store";
+import { runLabel, useHunt, useShownRun } from "../app/store";
 
 export function ShortlistPage({
   runId,
@@ -57,27 +57,27 @@ export function ShortlistPage({
         <span className="badge">
           {run.outcome === "stopped_early" ? `${kept} · stopped early` : `${kept} above the bar`}
         </span>
+        {runId && (
+          <span className="sub">
+            from the run <b>{runLabel(hunt.past, runId)}</b>
+          </span>
+        )}
         <div className="page-actions">
-          {hunt.past.length > 0 && (
-            <div className="seg" role="group" aria-label="Which run">
-              <a
-                href={href({ page: "shortlist" })}
-                aria-current={!runId ? "page" : undefined}
-                onClick={(e) => followLink(e, () => go({ page: "shortlist" }))}
-              >
-                Live
-              </a>
-              {hunt.past.map((row) => (
-                <a
-                  key={row.run_id}
-                  href={href({ page: "shortlist", runId: row.run_id })}
-                  aria-current={runId === row.run_id ? "page" : undefined}
-                  onClick={(e) => followLink(e, () => go({ page: "shortlist", runId: row.run_id }))}
-                >
-                  {stamp(row.run_id)}
-                </a>
-              ))}
-            </div>
+          <a
+            className="btn ghost sm"
+            href={href({ page: "run", runId })}
+            onClick={(e) => followLink(e, () => go({ page: "run", runId }))}
+          >
+            Run details
+          </a>
+          {runId && (
+            <a
+              className="btn ghost sm"
+              href={href({ page: "shortlist" })}
+              onClick={(e) => followLink(e, () => go({ page: "shortlist" }))}
+            >
+              Back to live
+            </a>
           )}
         </div>
       </header>
