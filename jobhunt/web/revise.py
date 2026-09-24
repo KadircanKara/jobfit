@@ -22,16 +22,15 @@ from __future__ import annotations
 
 import base64
 import dataclasses
-import json
 import pathlib
-import re
 import shutil
 import threading
 from typing import Any, Protocol
 
 from jobhunt.config import Config
+from jobhunt.cv import latex as cv_latex
+from jobhunt.cv import tailored
 from jobhunt.web import agent as agent_module
-from jobhunt.web.tailor import TailorError
 
 # Two pages is what the batch cuts to. Past that in the studio it is the user's
 # document, so this only ever warns.
@@ -40,11 +39,9 @@ MAX_PAGES = 2
 # The compiled artefacts a sync replaces in the shipped folder. The named PDF is
 # what the tailoring skill hands to an employer, so a sync that refreshed cv.pdf
 # and left it stale would be the worst possible half-write.
-TEX_NAME = "cv.tex"
-PDF_NAME = "cv.pdf"
+TEX_NAME = tailored.TEX_NAME
+PDF_NAME = tailored.PDF_NAME
 
-_PAGES_IN_LOG = re.compile(r"Output written on .*?\((\d+) pages?", re.S)
-_PAGE_OBJECT = re.compile(rb"/Type\s*/Page[^s]")
 
 
 class ReviseError(RuntimeError):
@@ -111,6 +108,9 @@ class Session:
     pages: int | None = None
     thinking: bool = False
     error: str | None = None
+    # The master this CV was cut from: the folder's own copy, rendered in the
+    # template picked for the job, or the global one for older folders.
+    master: str = ""
 
     @property
     def ahead(self) -> int:
@@ -162,8 +162,7 @@ class ReviseDesk:
     ) -> None:
         self.config = config
         self.agent = agent or ClaudeAgent(config)
-        self.latex = latex or PdfLatex()
-        self.master = str(config.get("tailoring", "master_tex") or "")
+        self.latex = latex or TailoredLatex(config)
         self._root = pathlib.Path(str(config.data_dir)) / "revise"
         self._sessions: dict[int, Session] = {}
         self._lock = threading.Lock()
@@ -203,6 +202,7 @@ class ReviseDesk:
             title=title,
             company=company,
             fit=fit,
+            master=str(tailored.master_for(self.config, source)),
         )
         _keep_version(draft, 1)
         session.pages = self._pages_of(draft)
@@ -269,7 +269,7 @@ class ReviseDesk:
         tex = draft / TEX_NAME
         before = tex.read_text(encoding="utf-8")
 
-        answer = self.agent.revise(draft=session.draft, message=message, master=self.master)
+        answer = self.agent.revise(draft=session.draft, message=message, master=session.master)
         text = _said(answer)
         changes = [str(item) for item in (answer.get("changes") or [])]
         kind = _kind_of(answer, changes)
@@ -312,14 +312,14 @@ class ReviseDesk:
                     changes=changes,
                     build="failed",
                     version=session.version,
-                    log=_tail(log),
+                    log=cv_latex.excerpt(log),
                 )
             )
             return
 
         session.version += 1
         _keep_version(draft, session.version)
-        session.pages = _page_count(log, pdf)
+        session.pages = cv_latex.page_count(log, pdf)
         session.turns.append(
             Turn(
                 role="agent",
@@ -357,7 +357,7 @@ class ReviseDesk:
             named.write_bytes(pdf)
 
         session.synced_version = session.version
-        session.pages = _page_count(log, pdf)
+        session.pages = cv_latex.page_count(log, pdf)
         return session
 
     def discard(self, job_id: int) -> Session:
@@ -383,8 +383,8 @@ class ReviseDesk:
         session = self._require(job_id)
         ok, log, pdf = self.latex.build(pathlib.Path(session.draft) / TEX_NAME)
         if not ok:
-            return {"ok": False, "log": _tail(log), "pdf": None, "pages": session.pages}
-        session.pages = _page_count(log, pdf)
+            return {"ok": False, "log": cv_latex.excerpt(log), "pdf": None, "pages": session.pages}
+        session.pages = cv_latex.page_count(log, pdf)
         return {
             "ok": True,
             "log": "",
@@ -405,7 +405,7 @@ class ReviseDesk:
 
     def _pages_of(self, draft: pathlib.Path) -> int | None:
         ok, log, pdf = self.latex.build(draft / TEX_NAME)
-        return _page_count(log, pdf) if ok else None
+        return cv_latex.page_count(log, pdf) if ok else None
 
 
 # --- helpers ----------------------------------------------------------------
@@ -452,29 +452,6 @@ def _kind_of(answer: dict[str, Any], changes: list[str]) -> str:
     if answer.get("refused"):
         return "refusal"
     return "edit" if changes else "answer"
-
-
-def _page_count(log: str, pdf: bytes) -> int | None:
-    """Pages in the built PDF, from the log if it says, else from the file."""
-    found = _PAGES_IN_LOG.search(log or "")
-    if found:
-        return int(found.group(1))
-    pages = len(_PAGE_OBJECT.findall(pdf or b""))
-    return pages or None
-
-
-def _tail(log: str, lines: int = 12) -> str:
-    """The part of a LaTeX log worth reading.
-
-    That is the first line starting with "!" and what follows it, not the end of
-    the file: pdflatex signs off with a page of memory statistics that say
-    nothing about what went wrong.
-    """
-    kept = [line for line in (log or "").splitlines() if line.strip()]
-    for index, line in enumerate(kept):
-        if line.startswith("!"):
-            return "\n".join(kept[index : index + lines])
-    return "\n".join(kept[-lines:])
 
 
 # --- the real agent and the real toolchain ----------------------------------
@@ -544,32 +521,23 @@ class ClaudeAgent:
 
 
 def _json_object(raw: str) -> dict[str, Any]:
-    start, end = raw.find("{"), raw.rfind("}")
-    if start < 0 or end <= start:
-        raise ReviseError("the agent did not say what it changed")
     try:
-        return json.loads(raw[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise ReviseError("the agent's answer was not readable") from exc
+        return agent_module.json_object(raw)
+    except agent_module.NotJson as exc:
+        if exc.found:
+            raise ReviseError("the agent's answer was not readable") from exc
+        raise ReviseError("the agent did not say what it changed") from exc
 
 
-class PdfLatex:
-    """Builds in place, because a CV folder carries its own assets."""
+class TailoredLatex:
+    """Builds a draft the way every tailored CV is built: in the sandbox, with
+    the engine of the template its master came from. The revise agent has no
+    shell, and a build is the one place its edits run as code."""
+
+    def __init__(self, config: Config, runner: cv_latex.Runner | None = None) -> None:
+        self.config = config
+        self.runner = runner
 
     def build(self, tex: pathlib.Path) -> tuple[bool, str, bytes]:
-        import subprocess
-
-        binary = shutil.which("pdflatex") or shutil.which("xelatex")
-        if binary is None:
-            raise TailorError("no LaTeX toolchain found. install MacTeX or TeX Live.")
-        done = subprocess.run(
-            [binary, "-interaction=nonstopmode", "-halt-on-error",
-             f"-output-directory={tex.parent}", str(tex)],
-            capture_output=True, text=True, timeout=180.0, check=False,
-            cwd=str(tex.parent),
-        )
-        pdf = tex.with_suffix(".pdf")
-        log = done.stdout + done.stderr
-        if done.returncode != 0 or not pdf.exists():
-            return False, log, b""
-        return True, log, pdf.read_bytes()
+        built = tailored.build(self.config, tex, runner=self.runner)
+        return built.ok, built.log, built.pdf

@@ -9,27 +9,61 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import pathlib
+import re
+import threading
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
 
 from jobhunt import preferences as prefs_module
 from jobhunt.config import Config
 from jobhunt.config import load as load_config
-from jobhunt.db.models import utcnow
+from jobhunt.db.models import Board, utcnow
+from jobhunt.db.session import session_scope
+from jobhunt.discovery import categories as categories_module
+from jobhunt.outreach import poller as outreach_poller
+from jobhunt.outreach import unipile as outreach_unipile
 from jobhunt.web import agent as agent_module
+from jobhunt.web import applied as applied_module
+from jobhunt.web import cv as cv_routes
 from jobhunt.web import filters as webfilters
 from jobhunt.web import history as history_module
-from jobhunt.web import profile as profile_module
+from jobhunt.web import idle as idle_module
+from jobhunt.web import outreach as outreach_routes
 from jobhunt.web import revise as revise_module
 from jobhunt.web import tailor as tailor_module
 from jobhunt.web import vocab as vocab_module
 from jobhunt.web.events import EventLog, to_sse
-from jobhunt.web.runs import RunSupervisor
+from jobhunt.web.runs import DEFAULT_GATE_ROUNDS, RunSupervisor
 
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
+
+# Addresses the built interface routes to itself. Mirrors PATHS in ui/src/App.tsx;
+# a page added there without a line here 404s on refresh but works when clicked.
+# Every address the interface routes, mirroring ui/src/app/router.ts, plus the
+# paths from before the redesign, which the interface redirects.
+SPA_PATHS = re.compile(
+    r"^/(shortlist|tailoring(/\d+)?|runs/[\w-]+|search(/boards|/upwork)?|cv(/templates)?|filters|profile|templates)$"
+)
+
+
+class _BadFeedRequest(Exception):
+    """The `approve`/`retire` payload could not be turned into board selections.
+
+    Covers both a provider the vocabulary does not know and every shape
+    FastAPI's own `dict[str, Any]` validation does not check: a non-list
+    value, a row that is not an object, a provider or token that is not a
+    string. All of them are the caller's fault, not the server's, so all of
+    them become one clean 422 rather than an unhandled 500 — a non-string
+    token in particular would otherwise reach SQLite and raise there.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
 
 
 class AppState:
@@ -42,6 +76,15 @@ class AppState:
         self.batch: tailor_module.TailorBatch | None = None
         # Revision sessions outlive the tab, the same way a run does.
         self.desk = revise_module.ReviseDesk(config)
+        self.idle = idle_module.IdleClock()
+
+    def busy(self) -> bool:
+        """Whether anything would be lost by stopping the process now."""
+        if self.supervisor is not None and self.supervisor.state.running:
+            return True
+        if self.batch is not None and self.batch.running:
+            return True
+        return bool(self.desk.sessions())
 
     def state_dict(self) -> dict[str, Any]:
         if self.supervisor is None:
@@ -72,7 +115,11 @@ class AppState:
             "gate": dataclasses.asdict(state.gate, dict_factory=_without_payload)
             if state.gate
             else None,
-            "results": list(state.results),
+            # A finished run's list is a snapshot, and the corpus moves under
+            # it: a rescore, a gate ingest or an edit to the filters all change
+            # what belongs on screen. While the run is still going its own rows
+            # are the live ones, so only a finished run is rebuilt.
+            "results": list(state.results) if state.running else _last_shortlist(self.config),
             "stopping": self.supervisor.stopping,
             "last_seq": self.log.latest_seq(),
         }
@@ -118,25 +165,24 @@ def _row_for(state: AppState, job_id: int) -> dict[str, Any] | None:
 
 
 def _name_the_rows(config: Config, batch: Any) -> None:
-    """Give each row a title and a company, so the studio has something to call
-    it. One query for the whole batch, before any work starts."""
-    from sqlalchemy import select
-
+    """Give each row a title, a company and the posting link, so the batch has
+    something to call it and a way back to the source. One query for the whole
+    batch, before any work starts."""
     from jobhunt.db.models import Company, Job
-    from jobhunt.db.session import session_scope
 
     ids = [row.job_id for row in batch.rows]
     with session_scope(config.db_path) as session:
         found = session.execute(
-            select(Job.id, Job.title, Company.name)
+            select(Job.id, Job.title, Company.name, Job.apply_url)
             .join(Company, Job.company_id == Company.id, isouter=True)
             .where(Job.id.in_(ids))
         ).all()
-    named = {job_id: (title, company) for job_id, title, company in found}
+    named = {job_id: (title, company, url) for job_id, title, company, url in found}
     for row in batch.rows:
-        title, company = named.get(row.job_id, ("", ""))
+        title, company, url = named.get(row.job_id, ("", "", None))
         row.title = title or ""
         row.company = company or ""
+        row.url = url or None
 
 
 def _run_payload(state: Any, jh: AppState) -> dict[str, Any]:
@@ -201,8 +247,23 @@ def build_pipeline(config: Config, state: AppState) -> Any:
         if state.supervisor is not None:
             state.supervisor.state.rank = report
 
+    def on_degraded(source: str, detail: str | None) -> None:
+        # A source that finished without doing the job. It reaches the same
+        # `degraded` list an unreachable source lands in, so the page shows one
+        # notion of "this run is not what it looks like" rather than two.
+        if state.supervisor is not None:
+            if source not in state.supervisor.state.degraded:
+                state.supervisor.state.degraded.append(source)
+        state.log.emit(
+            phase="sync",
+            source=source,
+            message=f"{source} finished degraded · {detail or 'no detail'}",
+            level="warning",
+        )
+
     pipeline.on_board = on_board
     pipeline.on_rank = on_rank
+    pipeline.on_degraded = on_degraded
     pipeline.should_stop = lambda: bool(state.supervisor and state.supervisor.stopping)
     return pipeline
 
@@ -219,6 +280,13 @@ def create_app(*, config: Config | None = None) -> FastAPI:
     agent_module.check(cfg)
     app = FastAPI(title="jobhunt", docs_url=None, redoc_url=None)
     app.state.jh = AppState(cfg)
+
+    @app.middleware("http")
+    async def _mark_activity(request: Any, call_next: Any) -> Any:
+        # Every request counts, including the poll behind an open tab: a page
+        # someone is looking at is a server someone is using.
+        app.state.jh.idle.touch()
+        return await call_next(request)
 
     # --- filters ------------------------------------------------------
 
@@ -245,6 +313,158 @@ def create_app(*, config: Config | None = None) -> FastAPI:
             "title_impact": {"matched": matched, "total": total},
         }
 
+    # --- saved title groups -------------------------------------------
+
+    @app.post("/api/title-groups")
+    def save_title_group(payload: dict[str, Any]) -> Any:
+        """Name the titles the form currently holds.
+
+        Deliberately not `/api/filters`: naming a set worth returning to should
+        never change what the next run searches for.
+        """
+        prefs, _ = prefs_module.load(cfg)
+        try:
+            updated = prefs_module.set_group(
+                prefs, str(payload.get("name") or ""), list(payload.get("titles") or [])
+            )
+        except prefs_module.PreferenceError as exc:
+            # Tagged against the titles field, because that is the input the
+            # group was built from and the only one the form can mark.
+            return JSONResponse(status_code=422, content={"field": "titles", "message": str(exc)})
+        prefs_module.save(cfg, updated)
+        return {"title_groups": updated.title_groups}
+
+    @app.delete("/api/title-groups/{name}")
+    def delete_title_group(name: str) -> Any:
+        prefs, _ = prefs_module.load(cfg)
+        try:
+            updated = prefs_module.delete_group(prefs, name)
+        except prefs_module.PreferenceError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        prefs_module.save(cfg, updated)
+        return {"title_groups": updated.title_groups}
+
+    # --- applied ------------------------------------------------------
+
+    @app.get("/api/applied")
+    def read_applied() -> dict[str, Any]:
+        return {"applied": applied_module.applied_job_ids(cfg)}
+
+    @app.post("/api/applied/{job_id}")
+    def set_applied(job_id: int, payload: dict[str, Any]) -> Any:
+        """Record that an application went out, or take that back.
+
+        The only action that removes a job from the shortlist for good, so it
+        toggles rather than committing one way.
+        """
+        wanted = payload.get("applied")
+        if not isinstance(wanted, bool):
+            return JSONResponse(
+                status_code=422,
+                content={"message": "'applied' must be true or false"},
+            )
+        try:
+            state = applied_module.set_applied(cfg, job_id, wanted)
+        except applied_module.UnknownJob as exc:
+            return JSONResponse(
+                status_code=422, content={"message": f"no job {exc.job_id}"}
+            )
+        return {"job_id": job_id, "applied": state}
+
+    # --- outreach -------------------------------------------------------
+
+    # Routes plus the queue that releases a DM once its invite lands.
+    # `build_sender` defaults to the stub; only outreach.provider: unipile in
+    # config, plus its environment variables, makes this reach LinkedIn for real.
+    outreach_sender = outreach_unipile.build_sender(cfg)
+    app.state.outreach_sender = outreach_sender
+    outreach_routes.register(app, cfg, outreach_sender)
+    # The CV builder: profile, master CV, and the one-time import of master.tex.
+    cv_routes.register(app, cfg)
+    # The event is kept so the thread can be stopped: a `create_app` per test, or
+    # per reload, would otherwise leave a daemon thread polling behind it.
+    app.state.outreach_stop = threading.Event()
+    app.state.outreach_thread = outreach_poller.watch(
+        cfg, outreach_sender, stop=app.state.outreach_stop
+    )
+    app.router.on_shutdown.append(app.state.outreach_stop.set)
+
+    # --- feeds --------------------------------------------------------
+
+    def _feeds_payload() -> dict[str, Any]:
+        prefs, _ = prefs_module.load(cfg)
+        proposals = categories_module.propose(cfg, prefs)
+        with session_scope(cfg.db_path) as session:
+            approved = session.execute(
+                select(
+                    Board.provider, Board.token, Board.status,
+                    Board.last_job_count, Board.last_fetched_at,
+                ).where(
+                    Board.discovered_via == categories_module.DISCOVERED_VIA,
+                    # Deliberately not filtered on status: this feature ships
+                    # no prober, and the promise that replaces one is that the
+                    # panel reports what happened to every approved feed. A
+                    # guess that died has to stay visible reading "did not
+                    # resolve", or the user re-approves it forever. Retired
+                    # feeds drop out by note instead, since retiring is a
+                    # decision rather than a failure.
+                    Board.notes == categories_module.APPROVED_NOTE,
+                )
+            ).all()
+        return {
+            # `propose` returns nothing for an empty title list whatever is on
+            # disk, so the panel needs to know which of the two empty states it
+            # is looking at before it can tell the user what to do about it.
+            "has_titles": bool(prefs.titles),
+            "proposals": [dataclasses.asdict(p) for p in proposals if not p.registered],
+            "approved": [
+                {
+                    "provider": provider, "token": token, "status": status,
+                    "last_job_count": last_job_count,
+                    "last_fetched_at": last_fetched_at.isoformat() if last_fetched_at else None,
+                }
+                for provider, token, status, last_job_count, last_fetched_at in approved
+            ],
+        }
+
+    @app.get("/api/feeds")
+    def read_feeds() -> dict[str, Any]:
+        return _feeds_payload()
+
+    @app.post("/api/feeds")
+    def write_feeds(payload: dict[str, Any]) -> Any:
+        def pairs(key: str) -> list[tuple[str, str]]:
+            rows = payload.get(key) or []
+            if not isinstance(rows, list):
+                raise _BadFeedRequest(f"{key!r} must be a list")
+            out = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise _BadFeedRequest(f"each entry in {key!r} must be an object")
+                provider, token = row.get("provider"), row.get("token")
+                if not provider:
+                    raise _BadFeedRequest(f"each entry in {key!r} needs a provider")
+                if not isinstance(provider, str):
+                    raise _BadFeedRequest(f"each provider in {key!r} must be a string")
+                if provider not in categories_module.VOCABULARY:
+                    raise _BadFeedRequest(f"{provider} is not a source that can be narrowed")
+                # A dict or list token binds straight into a SQL parameter
+                # and raises deep in the driver, so the shape is refused here
+                # where it can still become the 422 this class promises.
+                if token is not None and not isinstance(token, str):
+                    raise _BadFeedRequest(f"each token in {key!r} must be a string")
+                if token:
+                    out.append((provider, token))
+            return out
+
+        try:
+            to_approve, to_retire = pairs("approve"), pairs("retire")
+        except _BadFeedRequest as exc:
+            return JSONResponse(status_code=422, content={"message": exc.message})
+        categories_module.approve(cfg, to_approve)
+        categories_module.retire(cfg, to_retire)
+        return _feeds_payload()
+
     # --- runs ---------------------------------------------------------
 
     @app.post("/api/runs")
@@ -268,6 +488,9 @@ def create_app(*, config: Config | None = None) -> FastAPI:
             log=jh.log,
             store=lambda state: history_module.save(cfg, state.run_id, _run_payload(state, jh)),
             clock=lambda: utcnow().isoformat(),
+            max_gate_rounds=int(
+                cfg.get("ranking", "max_gate_rounds", default=DEFAULT_GATE_ROUNDS)
+            ),
         )
         jh.supervisor.start(run_id=run_id)
         return {"started": True}
@@ -293,6 +516,34 @@ def create_app(*, config: Config | None = None) -> FastAPI:
         if body is None:
             return JSONResponse(status_code=404, content={"message": f"no run {run_id} on file"})
         return body
+
+    @app.patch("/api/runs/{run_id}")
+    def rename_run(run_id: str, payload: dict[str, Any]) -> Any:
+        name = payload.get("name")
+        if name is not None and not isinstance(name, str):
+            return JSONResponse(status_code=422, content={"message": "name must be text"})
+        try:
+            stored = history_module.rename(cfg, run_id, name or "")
+        except LookupError:
+            return JSONResponse(status_code=404, content={"message": f"no run {run_id} on file"})
+        except ValueError as exc:
+            return JSONResponse(status_code=422, content={"message": str(exc)})
+        return {"run_id": run_id, "name": stored}
+
+    @app.delete("/api/runs/{run_id}")
+    def delete_run(run_id: str) -> Any:
+        # The run held in memory still writes to its file; deleting it while it
+        # runs or waits to resume would only see the file come back.
+        jh: AppState = app.state.jh
+        current = jh.supervisor.state if jh.supervisor is not None else None
+        if current is not None and current.run_id == run_id and (current.running or current.resumable):
+            return JSONResponse(
+                status_code=409,
+                content={"message": "this run is in progress or paused; stop it before deleting it"},
+            )
+        if not history_module.delete(cfg, run_id):
+            return JSONResponse(status_code=404, content={"message": f"no run {run_id} on file"})
+        return {"deleted": run_id}
 
     @app.post("/api/runs/current/pause")
     def pause_run() -> dict[str, Any]:
@@ -349,56 +600,6 @@ def create_app(*, config: Config | None = None) -> FastAPI:
         )
 
 
-    # --- the master CV ------------------------------------------------
-
-    @app.get("/api/profile")
-    def read_profile() -> Any:
-        try:
-            master = profile_module.read(cfg)
-        except profile_module.ProfileError as exc:
-            return JSONResponse(status_code=404, content={"message": str(exc)})
-        return {
-            "path": str(master.path),
-            "text": master.text,
-            "modified_at": master.modified_at.isoformat(),
-        }
-
-    @app.post("/api/profile")
-    def save_profile(payload: dict[str, Any]) -> Any:
-        try:
-            backup = profile_module.write(cfg, str(payload.get("text", "")))
-        except profile_module.ProfileError as exc:
-            return JSONResponse(status_code=422, content={"field": "text", "message": str(exc)})
-        return {"saved": True, "backup": backup.name if backup else None}
-
-    @app.get("/api/profile/backups")
-    def list_backups() -> dict[str, Any]:
-        return {
-            "backups": [
-                {"name": b.name, "taken_at": b.taken_at.isoformat(), "size": b.size}
-                for b in profile_module.backups(cfg)
-            ]
-        }
-
-    @app.post("/api/profile/restore")
-    def restore_backup(payload: dict[str, Any]) -> Any:
-        try:
-            profile_module.restore(cfg, str(payload.get("name", "")))
-        except profile_module.ProfileError as exc:
-            return JSONResponse(status_code=422, content={"field": "name", "message": str(exc)})
-        return {"restored": True}
-
-    @app.post("/api/profile/compile")
-    def compile_profile(payload: dict[str, Any]) -> dict[str, Any]:
-        import base64
-
-        result = profile_module.compile_tex(cfg, text=payload.get("text"))
-        return {
-            "ok": result.ok,
-            "log": result.log,
-            "pdf": base64.b64encode(result.pdf_bytes).decode() if result.ok else None,
-        }
-
     # --- batch tailoring ----------------------------------------------
 
     @app.get("/api/tailor")
@@ -422,8 +623,12 @@ def create_app(*, config: Config | None = None) -> FastAPI:
                 status_code=409,
                 content={"started": False, "message": "a tailoring batch is already going"},
             )
+        try:
+            chosen = tailor_module.choose_templates(cfg, job_ids, payload.get("templates"))
+        except tailor_module.TemplateChoice as exc:
+            return JSONResponse(status_code=422, content={"field": exc.field, "message": str(exc)})
         jh.batch = tailor_module.TailorBatch(
-            job_ids=job_ids, steps=tailor_module.ClaudeSteps(cfg), log=jh.log
+            job_ids=job_ids, steps=tailor_module.ClaudeSteps(cfg), log=jh.log, picks=chosen
         )
         _name_the_rows(cfg, jh.batch)
         jh.batch.start()
@@ -530,8 +735,7 @@ def create_app(*, config: Config | None = None) -> FastAPI:
     if (STATIC_DIR / "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
-    @app.get("/")
-    def index() -> Any:
+    def shell() -> Any:
         page = STATIC_DIR / "index.html"
         if not page.exists():
             return JSONResponse(
@@ -539,5 +743,19 @@ def create_app(*, config: Config | None = None) -> FastAPI:
                 content={"message": "the interface is not built yet. run: npm --prefix ui run build"},
             )
         return FileResponse(page)
+
+    @app.get("/")
+    def index() -> Any:
+        return shell()
+
+    # The interface is one bundle across several addresses, so every page it
+    # routes needs a server route too - otherwise a refresh or a pasted link on
+    # anything but "/" is a 404 before the app ever loads. Named rather than a
+    # catch-all: a mistyped path should still say it does not exist.
+    @app.get("/{page:path}")
+    def spa_page(page: str) -> Any:
+        if not SPA_PATHS.match(f"/{page}"):
+            raise HTTPException(status_code=404, detail=f"no page at /{page}")
+        return shell()
 
     return app

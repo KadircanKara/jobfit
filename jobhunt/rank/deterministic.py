@@ -38,6 +38,7 @@ PACKAGED_FILTERS = pathlib.Path(__file__).resolve().parent.parent / "assets" / F
 # summary can count. Without the code a histogram would have one bar per
 # distinct salary figure.
 REASON_LABELS: dict[str, str] = {
+    "source_excluded": "source not selected",
     "age": "older than the age limit",
     "company_blocked": "company blocklisted",
     "title_excluded": "title matches an excluded pattern",
@@ -48,6 +49,10 @@ REASON_LABELS: dict[str, str] = {
     "seniority_high": "seniority above the ceiling",
     "salary_unstated": "salary not stated",
     "salary_below": "salary below the floor",
+    "rate_below": "freelance rate below the floor",
+    "client_no_spend": "client has never spent anything",
+    "client_low_spend": "client spent less than the minimum",
+    "client_unverified": "client has not verified payment",
     "tz_overlap": "timezone overlap below the minimum",
 }
 
@@ -55,7 +60,8 @@ REASON_LABELS: dict[str, str] = {
 # so telling the user to adjust them from the browser would be a lie.
 TUNABLE_REASONS = frozenset(
     {"age", "title_unmatched", "field_mismatch", "seniority_low", "seniority_high",
-     "salary_unstated", "salary_below"}
+     "salary_unstated", "salary_below", "rate_below",
+     "client_no_spend", "client_low_spend", "client_unverified"}
 )
 
 
@@ -109,6 +115,7 @@ def evaluate(
 
     haystack = _haystack(job)
 
+    _check_source(job, global_rules, verdict)
     _check_age(job, global_rules, now, verdict)
     _check_excluded_company(company, global_rules, verdict)
     _check_excluded_titles(job, global_rules, verdict)
@@ -117,6 +124,8 @@ def evaluate(
     _check_hard_excludes(haystack, profile, verdict)
     _check_seniority(job, profile, verdict)
     _check_salary(job, profile, verdict)
+    _check_rate(job, profile, verdict)
+    _check_client(job, profile, verdict)
     _check_timezone(job, profile, verdict)
     _apply_boosts(job, company, profile, verdict)
 
@@ -134,6 +143,23 @@ def _haystack(job: Job) -> str:
     """
     body = (job.description_text or job.description_md or "")[:4000]
     return f"{job.title}\n{job.location_raw or ''}\n{body}".lower()
+
+
+def _check_source(job: Job, rules: dict[str, Any], verdict: Verdict) -> None:
+    """Drop anything the user did not ask to draw from.
+
+    Absent means unrestricted: a filter document written before this key existed
+    must keep meaning "every source", never "no source".
+    """
+    allowed = rules.get("sources")
+    # Key absent means unrestricted, so a document written before this key existed
+    # keeps meaning "every source". Key present and empty is a different statement -
+    # nothing was selected - and must drop everything rather than quietly re-open
+    # the corpus the fetch pass just refused to fill.
+    if allowed is None:
+        return
+    if job.source not in set(allowed):
+        verdict.drop("source_excluded", f"source {job.source} is not selected")
 
 
 def _check_age(job: Job, rules: dict[str, Any], now: dt.datetime, verdict: Verdict) -> None:
@@ -224,23 +250,39 @@ def _phrase_pattern(phrase: str) -> re.Pattern[str]:
 
 
 def _check_seniority(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
+    minimum = profile.get("seniority_min")
+    maximum = profile.get("seniority_max")
+
     if not job.seniority or job.seniority not in SENIORITY_ORDER:
+        # Unknown is normally not a rejection: most postings never state a level,
+        # and dropping them all would empty the corpus. Asking for exactly one
+        # level is a different request, though - "internships, nothing else"
+        # cannot be honoured while every unclassified senior role sails through -
+        # so a band of one level, and only that, reads unknown as a miss.
+        if minimum and minimum == maximum and minimum in SENIORITY_ORDER:
+            stated = job.seniority or "unstated"
+            verdict.drop("seniority_unstated", f"seniority {stated} is not {minimum}")
         return
+
     level = SENIORITY_ORDER.index(job.seniority)
 
-    minimum = profile.get("seniority_min")
     if minimum in SENIORITY_ORDER and level < SENIORITY_ORDER.index(str(minimum)):
         verdict.drop("seniority_low", f"seniority {job.seniority} below {minimum}")
 
     # A ceiling is not symmetry for its own sake: a senior engineer applying to a
     # principal or VP-level posting wastes a gate call and an application.
-    maximum = profile.get("seniority_max")
     if maximum in SENIORITY_ORDER and level > SENIORITY_ORDER.index(str(maximum)):
         verdict.drop("seniority_high", f"seniority {job.seniority} above {maximum}")
 
 
 # Everything is compared as an annual figure. A job stating a monthly or hourly
 # band is converted with these, which are hours and months, not exchange rates.
+#
+# "fixed" (a freelance project budget) is deliberately absent here, not a gap
+# to fill in later: there is no number of fixed-price projects per year that
+# means anything, so a project budget must never be annualised. `_check_salary`
+# treats a missing factor as "unknown" and returns, which is exactly what a
+# fixed-price figure is to a salaried floor.
 _PERIOD_TO_ANNUAL = {
     "annual": 1.0, "monthly": 12.0, "weekly": 52.0, "daily": 260.0, "hourly": 2080.0,
 }
@@ -303,6 +345,49 @@ def _convert(amount: float, frm: str, to: str, rates: dict[str, Any]) -> float |
     if source <= 0:
         return None
     return amount / source * target
+
+
+def _check_rate(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
+    """Judge a freelance rate against its own floor, never the salary floor.
+
+    An hourly rate and an annual salary are not the same quantity, and 2080
+    hours is a fiction for contract work: a $60/hr gig is not a $125k offer.
+    """
+    rules = profile.get("rate") or {}
+    period = (job.salary_period or "").lower()
+    floor = rules.get("min_hourly") if period == "hourly" else rules.get("min_fixed")
+    if not floor or period not in ("hourly", "fixed"):
+        return
+    top = job.salary_max or job.salary_min
+    if top is None:
+        return  # unstated is never a rejection
+    if float(top) < float(floor):
+        verdict.drop("rate_below", f"{period} rate {top:g} below {float(floor):g}")
+
+
+def _check_client(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
+    """Judge who is paying, when the user has asked to be picky about it.
+
+    Every rule here defaults off, so a filters.yaml written before they existed
+    keeps exactly the corpus it had. Both follow the house rule that unknown is
+    never a rejection: `client_verified` and `client_total_spent` are null on
+    every source but Upwork, and null there means the fetch never learned the
+    value - not that the client is unverified or has spent nothing. Reading a
+    null as a zero would silently drop the entire rest of the corpus the moment
+    either switch was turned on.
+    """
+    rules = profile.get("client") or {}
+
+    floor = rules.get("min_spend")
+    spent = job.client_total_spent
+    if floor and spent is not None and spent < float(floor):
+        verdict.drop("client_low_spend", f"client has spent ${spent:,.0f}, under ${float(floor):,.0f}")
+    elif rules.get("require_spend") and spent is not None and spent <= 0:
+        # A filters.yaml written before `min_spend` existed and not saved since.
+        verdict.drop("client_no_spend", "client has never spent on this platform")
+
+    if rules.get("require_verified") and job.client_verified is False:
+        verdict.drop("client_unverified", "client has not verified a payment method")
 
 
 def _check_timezone(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:

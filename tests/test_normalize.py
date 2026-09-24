@@ -97,6 +97,54 @@ def test_html_to_markdown_strips_scripts_and_em_dashes() -> None:
     assert "—" not in md
 
 
+# --- html_to_text: block boundaries --------------------------------------------
+#
+# `jobhunt.extract.quality.assess` scores whole paragraphs (a blank-line split),
+# so these boundaries are not cosmetic: get them wrong and a short EEO trigger
+# phrase can condemn an entire JD as boilerplate, or a run-on paragraph can trip
+# the truncation-tail check. Every case here was checked against the pre-fix
+# helper (the one-liner `_WS.sub(" ", soup.get_text(" ")).strip()`, no <br> or
+# block-tag handling at all) and fails there: an inline tag around a comma-joined
+# span would have merged into one word-spaced run, <br> would have vanished
+# rather than break a line, and every paragraph boundary below would have been a
+# single space instead of a break.
+
+
+def test_html_to_text_inline_tags_add_no_newline() -> None:
+    """Inline markup inside a paragraph must not itself break lines - only the
+    paragraph's own boundary (checked here against a second paragraph) should.
+    Pre-fix, neither this paragraph boundary nor the (absent) inline breaks
+    existed: everything, block and inline alike, collapsed to one space-joined
+    line."""
+    html_in = (
+        "<p>Build <a href='x'>APIs</a> and <strong>own</strong> the "
+        "<em>pipeline</em> <span>fast</span></p><p>Ship it</p>"
+    )
+    assert norm.html_to_text(html_in) == "Build APIs and own the pipeline fast\n\nShip it"
+
+
+def test_html_to_text_br_is_one_newline_not_a_paragraph_break() -> None:
+    text = norm.html_to_text("<p>Line one<br>Line two</p>")
+    assert text == "Line one\nLine two"
+
+
+def test_html_to_text_consecutive_paragraphs_get_a_blank_line_between() -> None:
+    text = norm.html_to_text("<p>First paragraph.</p><p>Second paragraph.</p>")
+    assert text == "First paragraph.\n\nSecond paragraph."
+
+
+def test_html_to_text_nested_div_p_does_not_double_break() -> None:
+    text = norm.html_to_text("<div><p>First paragraph.</p></div><div><p>Second paragraph.</p></div>")
+    assert text == "First paragraph.\n\nSecond paragraph."
+
+
+def test_html_to_text_definition_list_breaks_term_from_definition() -> None:
+    """Some ATS render requirement lists as <dl>: pre-fix, <dl><dt>/<dd> were not
+    block tags at all, so this flattened to "Term Definition" on one line."""
+    text = norm.html_to_text("<dl><dt>Term</dt><dd>Definition</dd></dl>")
+    assert text == "Term\n\nDefinition"
+
+
 @pytest.mark.parametrize(
     ("raw", "country", "remote"),
     [

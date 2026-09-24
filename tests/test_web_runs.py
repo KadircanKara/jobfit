@@ -23,18 +23,27 @@ class FakePipeline:
         failing_source=None,
         rank_raises=False,
         unreadable_batch=None,
+        gate_rounds=1,
     ):
-        self.sources = sources or ["greenhouse", "ashby"]
+        self._sources = sources or ["greenhouse", "ashby"]
         self.boards = boards
         self.failing_source = failing_source
         self.rank_raises = rank_raises
         # The label of a batch the gate cannot read, as a live one behaves.
         self.unreadable_batch = unreadable_batch
+        # How many rounds of work the backlog holds. The live `emit` returns
+        # the next unscored slice each call and eventually returns nothing;
+        # this drains the same way so a looping gate can terminate.
+        self.gate_rounds = gate_rounds
+        self.rounds_served = 0
         self.fetched: list[tuple[str, int]] = []
         self.ranked = False
         self.gated: list[int] = []
         self.shortlisted = False
         self.on_fetch = None
+
+    def sources(self):
+        return self._sources
 
     def boards_for(self, source):
         return list(range(self.boards))
@@ -65,6 +74,9 @@ class FakePipeline:
         )
 
     def gate_batches(self):
+        if self.rounds_served >= self.gate_rounds:
+            return runs_module.GatePlan()
+        self.rounds_served += 1
         return runs_module.GatePlan(
             batches=[
                 runs_module.GateBatch(label="eu", size=2, payload=[1, 2]),
@@ -376,10 +388,14 @@ def test_only_jobs_above_the_bar_are_counted_as_shortlisted():
 def test_verdicts_do_not_grow_without_bound():
     pipeline = FakePipeline()
     big = list(range(runs_module.VERDICT_CAP * 2))
-    pipeline.gate_batches = lambda: runs_module.GatePlan(
-        batches=[runs_module.GateBatch(label="eu", size=len(big), payload=big)],
-        jobs=len(big),
-    )
+    slices = [
+        runs_module.GatePlan(
+            batches=[runs_module.GateBatch(label="eu", size=len(big), payload=big)],
+            jobs=len(big),
+        )
+    ]
+    # One slice, then dry - the way `emit` behaves once every job has a verdict.
+    pipeline.gate_batches = lambda: slices.pop() if slices else runs_module.GatePlan()
     sup = supervisor(pipeline)
 
     sup.run()
@@ -419,3 +435,84 @@ def test_a_paused_run_is_saved_so_it_survives_a_restart():
 
     assert saved[-1].phase == "paused"
     assert saved[-1].finished_at is None, "a paused run has not finished"
+
+
+# --- the gate keeps going until the backlog is drained -------------------------
+#
+# A run used to gate one slice and stop, leaving every other job that passed the
+# deterministic filter sitting unscored until someone pressed Start again. With
+# 382 passed jobs and a batch of 20 that is nineteen runs to see them all.
+
+
+def test_the_gate_keeps_pulling_slices_until_there_is_nothing_left():
+    pipeline = FakePipeline(gate_rounds=3)
+    sup = supervisor(pipeline)
+
+    sup.run()
+
+    assert pipeline.gated == [2, 2, 2, 2, 2, 2], "three rounds of two batches"
+    assert sup.state.gate.rounds == 3
+
+
+def test_the_round_cap_stops_a_run_before_it_drains_everything():
+    pipeline = FakePipeline(gate_rounds=10)
+    sup = runs_module.RunSupervisor(
+        pipeline=pipeline, log=events_module.EventLog(), max_gate_rounds=2
+    )
+
+    sup.run()
+
+    assert sup.state.gate.rounds == 2
+    assert pipeline.gated == [2, 2, 2, 2], "stopped at the cap with backlog left"
+
+
+def test_a_round_that_scores_nothing_stops_the_loop_rather_than_spinning():
+    """The guard against an unreadable slice being re-emitted forever.
+
+    An unreadable batch leaves its jobs unscored, so the next `emit` hands back
+    the very same jobs. Without this stop the run would burn every remaining
+    round on the same slice it already cannot read.
+    """
+    pipeline = FakePipeline(gate_rounds=10, unreadable_batch="eu")
+    pipeline.gate = lambda batch: []  # every batch unreadable
+    sup = runs_module.RunSupervisor(
+        pipeline=pipeline, log=events_module.EventLog(), max_gate_rounds=10
+    )
+
+    sup.run()
+
+    assert sup.state.gate.rounds == 1, "one round, then stop - not ten"
+
+
+def test_scored_counts_accumulate_across_rounds():
+    pipeline = FakePipeline(gate_rounds=3)
+    sup = supervisor(pipeline)
+
+    sup.run()
+
+    assert sup.state.gate.scored == 12, "four jobs a round, three rounds"
+
+
+def test_the_plan_reports_every_job_gated_across_the_run():
+    pipeline = FakePipeline(gate_rounds=3)
+    sup = supervisor(pipeline)
+
+    sup.run()
+
+    assert sup.state.gate.plan.jobs == 12
+
+
+def test_a_stop_lands_mid_loop_and_does_not_start_another_round():
+    pipeline = FakePipeline(gate_rounds=10)
+    sup = supervisor(pipeline)
+    original = pipeline.gate
+
+    def stop_after_first(batch):
+        sup.request_stop()
+        return original(batch)
+
+    pipeline.gate = stop_after_first
+    sup.run()
+
+    assert sup.state.outcome == "killed"
+    assert sup.state.gate.rounds <= 1

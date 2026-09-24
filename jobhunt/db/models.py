@@ -138,6 +138,23 @@ class Job(Base):
     apply_url: Mapped[str | None] = mapped_column(Text)
     source_url: Mapped[str | None] = mapped_column(Text)
 
+    # Named by the posting itself. Worth more than any inferred contact when
+    # writing the message, and absent far more often than present.
+    poster_name: Mapped[str | None] = mapped_column(String(200))
+    poster_profile_url: Mapped[str | None] = mapped_column(Text)
+
+    # Who is paying, and whether they ever have. Upwork clients are anonymous,
+    # so these two are most of what can be known about one before contact:
+    # payment verification is a fact Upwork asserts, and lifetime spend
+    # separates a client with a history from an account that has never hired.
+    # Null on every other source, and null means unknown - never "zero".
+    client_verified: Mapped[bool | None] = mapped_column(Boolean)
+    client_total_spent: Mapped[float | None] = mapped_column(Float)
+    # The client's state or region, spelled out ("California", not "CA").
+    # Country alone is too coarse to pin a company name on LinkedIn, and the
+    # abbreviation is worse than useless: "CA" resolves to Canada there.
+    client_region: Mapped[str | None] = mapped_column(String(100))
+
     canonical_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), index=True)
     first_seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
@@ -181,6 +198,67 @@ class Application(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     skip_reason: Mapped[str | None] = mapped_column(Text)
     last_status_change: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Contact(Base):
+    """A person, not a person-for-a-job.
+
+    A recruiter who posts four roles is one row. Keeping identity separate from
+    the attempt is what will later make "you messaged them on Tuesday"
+    answerable across jobs, which a per-job contact row could never do.
+    """
+
+    __tablename__ = "contacts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    full_name: Mapped[str] = mapped_column(String(200))
+    headline: Mapped[str | None] = mapped_column(String(500))
+    # Unique when present. A contact entered by hand from two different jobs is
+    # the same person and must collapse to one row; a contact with only a name
+    # is allowed and simply does not dedupe.
+    profile_url: Mapped[str | None] = mapped_column(Text, unique=True)
+    provider_id: Mapped[str | None] = mapped_column(String(120))
+    company_id: Mapped[int | None] = mapped_column(ForeignKey("companies.id"))
+    origin: Mapped[str] = mapped_column(String(20), default="manual")  # job_poster | manual
+    # Null means never checked. Treated as "not connected" by the routing tree,
+    # which is the branch that offers a choice rather than assuming a free send.
+    is_connection: Mapped[bool | None] = mapped_column(Boolean)
+    can_send_inmail: Mapped[bool | None] = mapped_column(Boolean)
+    status_checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Outreach(Base):
+    """One attempt to reach one person about one job. The unit the user approves.
+
+    Deliberately not part of the application state machine: messaging a recruiter
+    is not applying, and folding the two together would put jobs into `applied`
+    that were never sent.
+    """
+
+    __tablename__ = "outreach"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), index=True)
+    contact_id: Mapped[int] = mapped_column(ForeignKey("contacts.id"), index=True)
+    route: Mapped[str | None] = mapped_column(String(20))
+    state: Mapped[str] = mapped_column(String(20), default="none")
+    body: Mapped[str | None] = mapped_column(Text)
+    # Reserved for the 300-character invite note when it differs from the DM
+    # body. Splitting it later would be a migration; dropping it is not.
+    note_body: Mapped[str | None] = mapped_column(Text)
+    drafted_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+    approved_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+    sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+    invited_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+    accepted_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+    provider_ref: Mapped[str | None] = mapped_column(String(120))
+    failure: Mapped[str | None] = mapped_column(Text)
+    last_state_change: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "contact_id", name="uq_outreach_job_contact"),
+    )
 
 
 class Run(Base):

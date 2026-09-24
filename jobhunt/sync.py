@@ -21,12 +21,14 @@ from typing import Any
 import httpx
 from sqlalchemy import select
 
+from jobhunt import preferences as prefs_module
 from jobhunt import sources as source_registry
 from jobhunt import store
 from jobhunt.config import Config
-from jobhunt.db.models import Board, Run, utcnow
+from jobhunt.db.models import Board, Job, Run, utcnow
 from jobhunt.db.session import session_scope
 from jobhunt.pipeline.dedupe import apply_clustering
+from jobhunt.sources import upwork as upwork_source
 from jobhunt.sources.base import BoardRef
 
 
@@ -45,6 +47,12 @@ class SourceResult:
     dead_boards: int = 0
     rejected: int = 0
     errors: int = 0
+    # Refs whose fetch ended early - a crawl guard refused, or the source did.
+    # Not an error: nothing failed, we simply did not see the whole listing.
+    truncated: int = 0
+    # Refs a fetch budget kept off the wire entirely. Also not an error, but a
+    # run made of these does no work at all and must never report a bare `ok`.
+    refused: int = 0
     status: str = "ok"
     error_detail: str | None = None
 
@@ -53,7 +61,8 @@ class SourceResult:
             f"{self.source}: {self.status} boards={self.boards} fetched={self.raw_fetched} "
             f"normalized={self.normalized} new={self.new} updated={self.updated} "
             f"unchanged={self.unchanged} deactivated={self.deactivated} "
-            f"clustered={self.clustered} errors={self.errors} "
+            f"clustered={self.clustered} errors={self.errors} truncated={self.truncated} "
+            f"refused={self.refused} "
             f"rejected={self.rejected} dead_boards={self.dead_boards} run={self.run_key}"
         )
 
@@ -168,6 +177,56 @@ class SyncLock:
         return age.total_seconds() < LOCK_STALE_SECONDS
 
 
+def build_adapter(config: Config, source: str):
+    """Construct one adapter.
+
+    LinkedIn and Upwork are the only sources whose work units come from saved
+    preferences rather than from seeded boards, and the only ones whose fetch
+    needs the corpus to know which detail pages it can skip. Every other
+    adapter takes no arguments at all, so that difference is confined to this
+    one function instead of being special-cased at each call site.
+
+    Without this branch, `jobhunt sync --source upwork` would build the
+    adapter, get zero refs from the inherited `discover()` (which yields
+    nothing without `set_refs`), and silently do nothing while reporting no
+    error - a working-looking source that never fetches a job.
+    """
+    cls = source_registry.get(source)
+    if source not in ("linkedin", "upwork"):
+        return cls()
+    prefs, _ = prefs_module.load(config)
+    board_prefs = prefs.upwork if source == "upwork" else prefs
+    known = _known_ids_for(config, source, newest=_KNOWN_ID_LIMITS.get(source))
+    adapter = cls(config=config, known_ids=known)
+    adapter.set_refs(adapter.board_refs(board_prefs))
+    return adapter
+
+
+# Sources whose known ids are capped, and at what. Upwork's are inlined into an
+# agent prompt once per ref, so the whole corpus in there grows without bound;
+# LinkedIn's are only compared in Python, where the full set costs nothing and
+# an id dropped from it would mean re-fetching a detail page over the network.
+_KNOWN_ID_LIMITS = {"upwork": upwork_source.KNOWN_IDS_LIMIT}
+
+
+def _known_ids_for(config: Config, source: str, newest: int | None = None) -> set[str]:
+    """External ids already in the corpus for one source.
+
+    Shared by every generated-ref adapter that skips re-fetching a detail it
+    already has - LinkedIn's guest HTML pages and Upwork's `get` calls alike.
+
+    `newest` caps the result at that many most-recently-seen ids. Recency is the
+    right axis to cut on: these adapters search by recency too, so an id old
+    enough to be dropped is one this run is unlikely to see again.
+    """
+    with session_scope(config.db_path) as session:
+        query = select(Job.external_id).where(Job.source == source)
+        if newest is not None:
+            query = query.order_by(Job.last_seen_at.desc()).limit(newest)
+        rows = session.scalars(query).all()
+    return set(rows)
+
+
 # --- pass 1: fetch ------------------------------------------------------------
 
 
@@ -191,7 +250,7 @@ def fetch_pass(
     `should_stop` is checked before each board so a stop request lands within
     one fetch rather than at the end of the source.
     """
-    adapter = source_registry.get(source)()
+    adapter = build_adapter(config, source)
     out_dir = raw_dir(config, source, run_key)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -205,7 +264,7 @@ def fetch_pass(
         for index, ref in enumerate(refs):
             if should_stop is not None and should_stop():
                 break
-            if index:
+            if index and adapter.still_fetching():
                 adapter.rate_limit.sleep()
             try:
                 payload = adapter.fetch(ref, client)
@@ -224,6 +283,14 @@ def fetch_pass(
                 "board_id": ref.extra.get("board_id"),
                 "fetched_at": utcnow().isoformat(),
                 "payload": payload,
+                # From the adapter, not from `payload`: `payload` is a verbatim
+                # third-party response body on several adapters, and a bare
+                # `truncated` key there would collide with anything upstream
+                # ever happens to name the same way. See `_is_truncated`.
+                "truncated": adapter.was_truncated(),
+                # Same reasoning, different question: this ref never went out at
+                # all. See SourceAdapter.was_refused.
+                "refused": adapter.was_refused(),
             }
             (out_dir / f"{ref.key}.json").write_text(
                 json.dumps(envelope, ensure_ascii=False), encoding="utf-8"
@@ -296,10 +363,32 @@ def load_raw(config: Config, source: str, run_key: str) -> list[dict[str, Any]]:
     ]
 
 
+def _is_truncated(envelope: dict[str, Any]) -> bool:
+    """Whether this payload's fetch ended before it saw the whole listing.
+
+    The flag lives on the envelope, written by `fetch_pass` from the adapter's
+    `was_truncated()` - never inside `payload`, which is the verbatim
+    third-party response body on several adapters (see remotive, jobicy,
+    greenhouse, arbeitnow) and could ship its own top-level `truncated` field
+    by coincidence. Only the LinkedIn adapter has ever reported this; every
+    other fetch always sees a complete listing or an error.
+
+    A stored envelope written before the flag moved to the top level (only
+    LinkedIn ever set it, and only inside `payload`) has no top-level key at
+    all, so that shape is read as a fallback rather than misread as complete.
+    """
+    if "truncated" in envelope:
+        return bool(envelope.get("truncated"))
+    if envelope.get("source") == "linkedin":
+        payload = envelope.get("payload")
+        return bool(isinstance(payload, dict) and payload.get("truncated"))
+    return False
+
+
 def normalize_pass(
     config: Config, source: str, run_key: str, dry_run: bool = False
 ) -> SourceResult:
-    adapter = source_registry.get(source)()
+    adapter = build_adapter(config, source)
     result = SourceResult(source=source, run_key=run_key)
     envelopes = load_raw(config, source, run_key)
     result.boards = len(envelopes)
@@ -320,6 +409,9 @@ def normalize_pass(
     # through keeps the boards already done.
     for envelope in envelopes:
         ref = BoardRef(envelope["provider"], envelope["token"], envelope["market"])
+        truncated = _is_truncated(envelope)
+        if envelope.get("refused"):
+            result.refused += 1
         with session_scope(config.db_path) as session:
             board = store.get_or_create_board(
                 session, ref.provider, ref.token, "sync", ref.market
@@ -333,7 +425,13 @@ def normalize_pass(
                 count += 1
                 setattr(result, outcome, getattr(result, outcome) + 1)
             result.normalized += count
-            result.deactivated += store.deactivate_missing(session, board, seen)
+            # A partial listing is not evidence that anything disappeared from it.
+            # Retiring jobs on the strength of a fetch that was cut short is how a
+            # source that keeps getting refused loses its whole corpus.
+            if truncated:
+                result.truncated += 1
+            else:
+                result.deactivated += store.deactivate_missing(session, board, seen)
             _record_board_outcome(board, count)
 
     with session_scope(config.db_path) as session:
@@ -390,9 +488,30 @@ def sync_source(
     try:
         if from_raw is None:
             limit = int(config.get("sync", "max_boards_per_run", default=200))
-            refs = due_boards(
-                config, source, force, limit, only_status=only_status, market=market
-            )
+            # A generated-ref source (LinkedIn) has no Board rows to query: its
+            # refs come from preferences, fresh every run, via its own
+            # `discover()`. Everything else is still owed its fetch by
+            # `due_boards()`. The cap applies either way, so a preference set
+            # with forty titles cannot turn into a four-hundred-search run.
+            adapter_cls = source_registry.get(source)
+            if adapter_cls.generates_refs:
+                # `only_status="candidate"` means "prove out unvalidated board
+                # guesses" (jobhunt boards --validate, jobhunt discover); a
+                # generated ref is never a candidate board, so there is nothing
+                # to validate here. A `market` filter (e.g. `sync --market yc`)
+                # is meant to narrow which boards run; a generated source has
+                # no per-ref market to narrow, only its own fixed one, so it
+                # runs only when the filter already matches it. Either way this
+                # must stay a no-op rather than kick off a full preference-
+                # driven crawl from a command whose contract is "just boards".
+                if only_status is not None or (market is not None and market != adapter_cls.market):
+                    refs = []
+                else:
+                    refs = list(build_adapter(config, source).discover())[:limit]
+            else:
+                refs = due_boards(
+                    config, source, force, limit, only_status=only_status, market=market
+                )
             result.boards = len(refs)
             if not refs:
                 result.status = "ok"
@@ -409,7 +528,10 @@ def sync_source(
             result.errors = len(failed_tokens) - result.rejected
 
         normalized = normalize_pass(config, source, run_key, dry_run=dry_run)
-        for field in ("normalized", "new", "updated", "unchanged", "deactivated", "clustered"):
+        for field in (
+            "normalized", "new", "updated", "unchanged", "deactivated", "clustered", "truncated",
+            "refused",
+        ):
             setattr(result, field, getattr(normalized, field))
         if from_raw is not None:
             result.boards = normalized.boards
@@ -419,6 +541,23 @@ def sync_source(
             result.status = "degraded"
         elif result.errors:
             result.status = "failed"
+        # A run that stopped fetching partway through did not fail, but it did not
+        # do the job either, and "ok" is the one thing it must not claim.
+        if result.truncated:
+            result.status = "failed" if result.status == "failed" else "degraded"
+            messages.append(
+                f"{result.truncated} of {result.boards} searches ended early "
+                f"(crawl guard or the source refused); their jobs were left active"
+            )
+        # A budget refusal writes the same empty envelope a search that found
+        # nothing writes, so without this a run that spent its whole allowance
+        # before starting reports `ok` with zero jobs and no reason.
+        if result.refused:
+            result.status = "failed" if result.status == "failed" else "degraded"
+            messages.append(
+                f"{result.refused} of {result.boards} searches never ran "
+                f"(the fetch budget refused them); nothing was fetched for those"
+            )
         result.error_detail = "\n".join(messages) or None
     except Exception as exc:  # noqa: BLE001 - source isolation
         result.status = "failed"

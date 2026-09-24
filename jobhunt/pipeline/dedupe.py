@@ -156,7 +156,20 @@ def records_from_db(session: Session, only_ids: list[int] | None = None) -> list
 
     records = []
     for job, company in session.execute(stmt).all():
-        key = (company.domain or company.normalized_name) if company else f"__job{job.id}"
+        if job.source == "upwork":
+            # A freelance gig is never posted to a second board, so cross-source
+            # clustering buys nothing here - and most Upwork clients never give
+            # their name, so `normalize` falls back to one constant company
+            # ("Upwork client") for all of them. Without this escape every
+            # anonymous gig would share that one company key, and `grouping_key`
+            # (company, normalized title) would collapse every "react developer"
+            # gig from every client into one cluster. Escaping every Upwork row,
+            # not just the anonymous ones, is deliberate: wrongly merging two
+            # real gigs from the same client is worse than missing the rare case
+            # of one client's job also being posted to an ATS board.
+            key = f"__job{job.id}"
+        else:
+            key = (company.domain or company.normalized_name) if company else f"__job{job.id}"
         records.append(
             DedupeRecord(
                 id=job.id,

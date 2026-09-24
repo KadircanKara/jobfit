@@ -1,0 +1,415 @@
+"""Outreach rows: one attempt per person per job, and the states it moves through.
+
+The unit the user approves is a job-and-contact pair, so the schema has to make
+a second live attempt at the same person about the same job impossible rather
+than merely discouraged.
+"""
+from __future__ import annotations
+
+import pytest
+from sqlalchemy.exc import IntegrityError
+
+from jobhunt.db.models import Contact, Job, Outreach
+from jobhunt.db.session import session_scope
+from jobhunt.outreach import caps, provider, service, stub
+
+
+def make_job(cfg, external_id: str = "ext-1") -> int:
+    with session_scope(cfg.db_path) as session:
+        job = Job(
+            external_id=external_id,
+            source="greenhouse",
+            market="global_remote",
+            title="Backend Engineer",
+            title_normalized="backend engineer",
+            is_active=True,
+        )
+        session.add(job)
+        session.flush()
+        return job.id
+
+
+def make_contact(cfg, name: str = "Deniz Aksoy", url: str | None = "linkedin.com/in/denizaksoy") -> int:
+    with session_scope(cfg.db_path) as session:
+        contact = Contact(full_name=name, profile_url=url, origin="manual")
+        session.add(contact)
+        session.flush()
+        return contact.id
+
+
+def test_outreach_defaults_to_no_route_and_no_state(cfg):
+    job_id = make_job(cfg)
+    contact_id = make_contact(cfg)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    with session_scope(cfg.db_path) as session:
+        row = session.query(Outreach).one()
+        assert row.state == "none"
+        assert row.route is None
+        assert row.body is None
+
+
+def test_one_outreach_row_per_job_and_contact(cfg):
+    job_id = make_job(cfg)
+    contact_id = make_contact(cfg)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    with pytest.raises(IntegrityError):
+        with session_scope(cfg.db_path) as session:
+            session.add(Outreach(job_id=job_id, contact_id=contact_id))
+
+
+def test_profile_url_is_unique_across_contacts(cfg):
+    make_contact(cfg)
+    with pytest.raises(IntegrityError):
+        make_contact(cfg, name="Someone Else")
+
+
+def test_contacts_without_a_profile_url_do_not_collide(cfg):
+    make_contact(cfg, name="No URL One", url=None)
+    make_contact(cfg, name="No URL Two", url=None)
+    with session_scope(cfg.db_path) as session:
+        assert session.query(Contact).count() == 2
+
+
+def sender(cfg) -> stub.StubProvider:
+    return stub.StubProvider(cfg)
+
+
+def connected_contact(cfg, **flags) -> int:
+    contact_id = make_contact(cfg, url=None)
+    with session_scope(cfg.db_path) as session:
+        contact = session.get(Contact, contact_id)
+        for key, value in flags.items():
+            setattr(contact, key, value)
+    return contact_id
+
+
+def test_adding_a_contact_creates_the_outreach_row(cfg):
+    job_id = make_job(cfg)
+    body = service.add_contact(cfg, job_id, full_name="Marit Lindqvist")
+    assert body["full_name"] == "Marit Lindqvist"
+    assert body["state"] == "none"
+    assert body["origin"] == "manual"
+
+
+def test_adding_the_same_profile_twice_reuses_the_person(cfg):
+    first = make_job(cfg, "ext-1")
+    second = make_job(cfg, "ext-2")
+    url = "linkedin.com/in/marit"
+    a = service.add_contact(cfg, first, full_name="Marit", profile_url=url)
+    b = service.add_contact(cfg, second, full_name="Marit", profile_url=url)
+    assert a["contact_id"] == b["contact_id"]
+    with session_scope(cfg.db_path) as session:
+        assert session.query(Outreach).count() == 2
+
+
+def test_a_connection_drafts_against_the_dm_route(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    body = service.draft(cfg, job_id, contact_id, sender(cfg))
+    assert body["route"] == provider.DM
+    assert body["state"] == "drafted"
+    assert body["body"]
+
+
+def test_an_edited_body_survives_a_route_change(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=False, can_send_inmail=False)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_THEN_DM)
+    service.save_body(cfg, job_id, contact_id, "three careful sentences")
+    service.set_status(cfg, contact_id, is_connection=True)
+    body = service.for_job(cfg, job_id, sender(cfg))["contacts"][0]
+    assert body["body"] == "three careful sentences"
+    assert body["route"] == provider.DM
+
+
+def test_saving_a_body_with_a_route_sets_it_and_keeps_the_body(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=False, can_send_inmail=False)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    body = service.save_body(
+        cfg, job_id, contact_id, "picked this route on purpose", route=provider.INVITE_NOTE
+    )
+    assert body["route"] == provider.INVITE_NOTE
+    assert body["body"] == "picked this route on purpose"
+
+
+def test_saving_a_body_with_a_route_not_allowed_for_the_status_is_refused(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=False, can_send_inmail=False)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    with pytest.raises(service.IllegalTransition):
+        service.save_body(cfg, job_id, contact_id, "not connected yet", route=provider.DM)
+
+
+def test_a_body_over_the_note_limit_is_refused(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=False, can_send_inmail=False)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.save_body(cfg, job_id, contact_id, "x" * 400)
+    with pytest.raises(service.TooLong):
+        service.approve(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_NOTE)
+
+
+def test_approving_a_dm_marks_it_sent(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+    body = service.approve(cfg, job_id, contact_id, sender(cfg))
+    assert body["state"] == "sent"
+    assert body["provider_ref"].startswith("stub:")
+
+
+def test_approving_invite_then_dm_queues_rather_than_sends(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=False, can_send_inmail=False)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_THEN_DM)
+    body = service.approve(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_THEN_DM)
+    assert body["state"] == "queued"
+    assert body["invited_at"] is not None
+    assert body["sent_at"] is None
+
+
+def test_redrafting_a_failed_row_clears_the_stale_failure(cfg):
+    """A retried row has not failed yet - the old failure text must not ride along
+    onto a row that goes on to send successfully."""
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+
+    class RefusingSender(stub.StubProvider):
+        def send_dm(self, contact, body):
+            return provider.SendResult(ok=False, failure="POST /api/v1/chats returned 422: nope")
+
+    body = service.approve(cfg, job_id, contact_id, RefusingSender(cfg))
+    assert body["state"] == "failed"
+    assert body["failure"]
+
+    redrafted = service.draft(cfg, job_id, contact_id, sender(cfg))
+    assert redrafted["state"] == "drafted"
+    assert redrafted["failure"] is None
+
+    sent = service.approve(cfg, job_id, contact_id, sender(cfg))
+    assert sent["state"] == "sent"
+    assert sent["failure"] is None
+
+
+def test_a_refused_send_lands_in_failed_with_the_failure_text(cfg):
+    """A refused send (e.g. no resolvable LinkedIn identifier) must not commit `sent`.
+
+    `sent` has no outgoing transition, so a send the provider never actually made
+    would otherwise be terminal and unretriable.
+    """
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+
+    class RefusingSender(stub.StubProvider):
+        def send_dm(self, contact, body):
+            return provider.SendResult(ok=False, failure="Jane Doe has no LinkedIn identifier to send to.")
+
+    body = service.approve(cfg, job_id, contact_id, RefusingSender(cfg))
+    assert body["state"] == "failed"
+    assert "no LinkedIn identifier" in body["failure"]
+    with session_scope(cfg.db_path) as session:
+        row = session.query(Outreach).one()
+        assert row.state == "failed"
+        assert row.sent_at is None
+
+
+def test_a_provider_error_lands_in_failed_with_the_failure_text(cfg):
+    """A provider error (e.g. a 422 from Unipile) must land in `failed`, not `sent`."""
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+
+    class ErroringSender(stub.StubProvider):
+        def send_dm(self, contact, body):
+            return provider.SendResult(ok=False, failure="POST /api/v1/chats returned 422: nope")
+
+    body = service.approve(cfg, job_id, contact_id, ErroringSender(cfg))
+    assert body["state"] == "failed"
+    assert "422" in body["failure"]
+
+
+def test_a_refused_invite_lands_in_failed_not_queued(cfg):
+    """The `queued` target of invite-then-dm is just as provisional as `sent`."""
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=False, can_send_inmail=False)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_THEN_DM)
+
+    class RefusingInvite(stub.StubProvider):
+        def send_invite(self, contact, note):
+            return provider.SendResult(ok=False, failure="invite blocked")
+
+    body = service.approve(
+        cfg, job_id, contact_id, RefusingInvite(cfg), route=provider.INVITE_THEN_DM
+    )
+    assert body["state"] == "failed"
+    assert body["failure"] == "invite blocked"
+    assert body["invited_at"] is None
+
+
+def test_a_successful_send_still_reaches_sent_after_the_failure_branch_exists(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+    body = service.approve(cfg, job_id, contact_id, sender(cfg))
+    assert body["state"] == "sent"
+    assert body["failure"] is None
+
+
+def test_a_sent_row_cannot_be_approved_again(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+    service.approve(cfg, job_id, contact_id, sender(cfg))
+    with pytest.raises(service.IllegalTransition):
+        service.approve(cfg, job_id, contact_id, sender(cfg))
+
+
+def test_approving_at_the_cap_is_refused(cfg):
+    cfg.raw["outreach"]["max_daily_dms"] = 0
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+    with pytest.raises(caps.CapReached):
+        service.approve(cfg, job_id, contact_id, sender(cfg))
+
+
+def test_cancelling_a_queued_row_stops_the_deferred_send(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=False, can_send_inmail=False)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_THEN_DM)
+    service.approve(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_THEN_DM)
+    body = service.cancel(cfg, job_id, contact_id)
+    assert body["state"] == "cancelled"
+
+
+def test_a_queued_row_cannot_have_its_body_rewritten(cfg):
+    """The queued body is the exact message the user approved for a deferred send."""
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=False, can_send_inmail=False)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_THEN_DM)
+    service.approve(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_THEN_DM)
+    with pytest.raises(service.IllegalTransition):
+        service.save_body(cfg, job_id, contact_id, "something else entirely")
+
+
+def test_a_sent_row_cannot_have_its_body_or_route_rewritten(cfg):
+    """`sent` is the record a message reached a person, route included: rewriting
+    the route would move the row between budgets and hand a spent credit back."""
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+    service.approve(cfg, job_id, contact_id, sender(cfg))
+    with pytest.raises(service.IllegalTransition):
+        service.save_body(cfg, job_id, contact_id, "rewritten after the fact")
+    with session_scope(cfg.db_path) as session:
+        assert session.query(Outreach).one().route == provider.DM
+
+
+def test_a_cancelled_row_cannot_be_edited_without_being_redrafted(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+    service.cancel(cfg, job_id, contact_id)
+    with pytest.raises(service.IllegalTransition):
+        service.save_body(cfg, job_id, contact_id, "back from the dead")
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+    assert service.save_body(cfg, job_id, contact_id, "written again")["body"] == "written again"
+
+
+def test_a_second_claim_on_a_claimed_row_never_reaches_the_provider(cfg):
+    """Two transactions can both read `drafted` and both decide to send.
+
+    The provider here is the assertion: the loser of the conditional UPDATE must
+    refuse before a message goes out, not after.
+    """
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=True)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg))
+
+    class RacingSender(stub.StubProvider):
+        sends: list[str] = []
+
+        def status(self, contact):
+            # Stands in for the other request: it claims the row after this one
+            # has read it as drafted, and before this one reaches the claim.
+            with session_scope(cfg.db_path) as session:
+                session.query(Outreach).one().state = "sent"
+            return super().status(contact)
+
+        def send_dm(self, contact, body):
+            RacingSender.sends.append(body)
+            return super().send_dm(contact, body)
+
+    with pytest.raises(service.IllegalTransition):
+        service.approve(cfg, job_id, contact_id, RacingSender(cfg))
+    assert RacingSender.sends == []
+
+
+def test_two_spellings_of_one_profile_url_are_one_contact(cfg):
+    first = make_job(cfg, "ext-1")
+    second = make_job(cfg, "ext-2")
+    a = service.add_contact(
+        cfg, first, full_name="Marit", profile_url="https://www.linkedin.com/in/Marit/?utm=x"
+    )
+    b = service.add_contact(cfg, second, full_name="Marit", profile_url="linkedin.com/in/marit")
+    assert a["profile_url"] == "linkedin.com/in/marit"
+    assert a["contact_id"] == b["contact_id"]
+    with session_scope(cfg.db_path) as session:
+        assert session.query(Contact).count() == 1
+
+
+def test_removing_a_contact_reports_the_state_that_blocks_it(cfg):
+    job_id = make_job(cfg)
+    contact_id = connected_contact(cfg, is_connection=False, can_send_inmail=False)
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_THEN_DM)
+    service.approve(cfg, job_id, contact_id, sender(cfg), route=provider.INVITE_THEN_DM)
+    with pytest.raises(service.IllegalTransition) as excinfo:
+        service.remove_contact(cfg, contact_id)
+    assert excinfo.value.current == "queued"
+
+
+def test_an_unknown_job_is_refused(cfg):
+    with pytest.raises(service.UnknownJob):
+        service.add_contact(cfg, 9999, full_name="Nobody")

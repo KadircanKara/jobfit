@@ -11,9 +11,11 @@ preserved byte for byte, so hand edits and the wizard can coexist.
 """
 from __future__ import annotations
 
+import copy
 import dataclasses
 import pathlib
 import re
+import typing
 from typing import Any
 
 import yaml
@@ -27,11 +29,103 @@ MANAGED_KEY = "_managed_by_jobhunt_config"
 
 WORK_MODELS = ("remote", "hybrid", "onsite")
 EMPLOYMENT_TYPES = norm.EMPLOYMENT_TYPES
-DEFAULT_MARKETS = ("global_remote", "yc", "tr_local")
+DEFAULT_MARKETS = ("global_remote", "yc", "tr_local", "upwork")
+
+# `ats` is a group, not an adapter: ticking twelve boxes is not the feature the
+# user asked for. `upwork` is its own adapter with its own query settings below.
+SOURCE_CHOICES: tuple[str, ...] = ("ats", "linkedin", "upwork")
+LINKEDIN_SOURCE = "linkedin"
+UPWORK_SOURCE = "upwork"
+UPWORK_JOB_TYPES = ("hourly", "fixed")
+UPWORK_EXPERIENCE = ("entry_level", "intermediate", "expert")
+UPWORK_WORKLOAD = ("full_time", "part_time", "as_needed")
+UPWORK_SORTS = ("relevance", "recency", "client_total_charge", "client_rating")
+# The query a feed ref carries in place of a search term. Reserved: a keyword
+# search spelled this way would be read back as the feed. See upwork_query.
+UPWORK_FEED_QUERY = "@feed"
+
+
+def _ats_sources() -> tuple[str, ...]:
+    # Imported here, not at module scope: the linkedin adapter reaches back into
+    # this module, and a top-level import would close that circle.
+    from jobhunt import sources as source_registry
+
+    # Upwork answers to its own explicit group, not the "everything else" one:
+    # once it is in REGISTRY, ticking ATS in the browser must not silently start
+    # an Upwork agent subprocess nobody asked for.
+    excluded = {LINKEDIN_SOURCE, UPWORK_SOURCE}
+    return tuple(sorted(name for name in source_registry.REGISTRY if name not in excluded))
+
+
+def adapters_for(selection: list[str]) -> list[str]:
+    """Group names to the adapter ids a run may actually call."""
+    names: list[str] = []
+    for group in selection:
+        if group == "ats":
+            names.extend(_ats_sources())
+        elif group == LINKEDIN_SOURCE:
+            names.append(LINKEDIN_SOURCE)
+        elif group == UPWORK_SOURCE:
+            names.append(UPWORK_SOURCE)
+    return sorted(set(names))
 
 
 class PreferenceError(ValueError):
     """A preference the user can fix, phrased for them rather than for a log."""
+
+
+@dataclasses.dataclass
+class UpworkPreferences:
+    """What to ask Upwork for. Not an override of the salaried settings.
+
+    Upwork is a different market with a different vocabulary: there is no
+    location (every gig is remote), no seniority ladder, and a rate rather than
+    a salary. Mirroring the shared fields here would give two places to answer
+    one question.
+    """
+
+    queries: list[str] = dataclasses.field(default_factory=list)
+    job_types: list[str] = dataclasses.field(default_factory=lambda: list(UPWORK_JOB_TYPES))
+    min_hourly: float | None = None
+    min_fixed: float | None = None
+    experience_level: list[str] = dataclasses.field(default_factory=list)
+    verified_payment_only: bool = True
+    # Drop postings whose client has verified no payment method, locally, after
+    # the fetch. Distinct from `verified_payment_only` above, which is a search
+    # parameter Upwork applies server-side: that one shapes what comes back,
+    # this one is a rule over what did. Both are wanted - the pushdown keeps the
+    # page from filling with dead weight, and the rule still holds if Upwork
+    # ignores the parameter or a row was stored before it was set.
+    # How Upwork orders the results. "relevance" is the website's own "Best
+    # match" and what makes a query mean anything: measured live on the same
+    # query with the same filters, relevance and recency returned ten results
+    # each with *zero* titles in common - recency gave virtual-assistant
+    # postings that merely mention AI, relevance gave the engineering roles.
+    sort: str = "relevance"
+    require_verified_client: bool = False
+    # Drop postings whose client has spent less than this many dollars, after
+    # the fetch - Upwork has no search parameter for spend. Not the same signal
+    # as verification: every client in the first real run was VERIFIED, yet 14
+    # of 40 had spent $0.00 - a verified card is not a hiring history. None is
+    # no rule; 1 is "has spent something", which is what the retired
+    # `require_client_spend` switch meant (see `_migrate_upwork`).
+    client_min_spend: float | None = None
+    workload: list[str] = dataclasses.field(default_factory=list)
+    proposals_max: int | None = None
+    client_min_hires: int | None = None
+    client_max_hires: int | None = None
+    # As Upwork spells them ("United States", "Europe"). One search per entry,
+    # because `location` takes a single value per call. Empty is anywhere.
+    client_locations: list[str] = dataclasses.field(default_factory=list)
+    # Also read Upwork's personalised Most Recent feed (`smart_search`), the one
+    # Upwork search that honours a date.
+    recommended_feed: bool = False
+    # Two pages of 10, not three: every result on every page is echoed back
+    # verbatim through the fetch prompt, so a page is output tokens the model
+    # retypes, not a cheap extra request. See DETAIL_BUDGET in sources/upwork.py
+    # for the measurement. Recency-sorted, page three is also the least likely
+    # to hold anything the cutoff has not already excluded.
+    max_pages: int = 2
 
 
 @dataclasses.dataclass
@@ -47,6 +141,17 @@ class Preferences:
     include_unstated_salary: bool = True
     max_age_days: int = 30
     top_n: int = 15
+    # Named selections of `titles`, so a set worth returning to can be picked
+    # again after the field is cleared. Only the browser writes these; the
+    # wizard neither shows nor asks about them.
+    title_groups: dict[str, list[str]] = dataclasses.field(default_factory=dict)
+    # Which corpora a run may fetch from and shortlist out of. Both, deliberately:
+    # a run that fetches only LinkedIn but shortlists everything cannot show what
+    # LinkedIn alone is worth.
+    sources: list[str] = dataclasses.field(default_factory=lambda: ["ats", "linkedin"])
+    # Upwork's own query. Nested rather than flattened because none of these
+    # keys mean anything to the other twelve sources.
+    upwork: UpworkPreferences = dataclasses.field(default_factory=UpworkPreferences)
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -92,6 +197,14 @@ def _split(value: str) -> list[str]:
     return [part.strip() for part in str(value).split(",") if part.strip()]
 
 
+def _unique(items: list[str]) -> list[str]:
+    """Each item once, compared without case, keeping the first spelling."""
+    kept: dict[str, str] = {}
+    for item in items:
+        kept.setdefault(item.lower(), item)
+    return list(kept.values())
+
+
 def _seniority(value: str) -> str:
     """Accept how a person says it: "senior", "senior+", "Senior"."""
     text = str(value).strip().lower().rstrip("+")
@@ -129,14 +242,113 @@ def _job_types(values: list[str]) -> list[str]:
     return out
 
 
+def _sources(values: list[str]) -> list[str]:
+    """Validate a source selection, here and only here.
+
+    A selection that expands to no adapter at all - nothing ticked - is rejected
+    rather than stored: the run would fetch nothing while the shortlist
+    restricted nothing, so the two would silently disagree about what the
+    corpus is. The browser disables Save on an empty pick, but
+    `jobhunt config set` and PUT /api/filters reach the same state and the
+    backend has to answer for itself.
+    """
+    out = []
+    for value in values:
+        text = value.strip().lower()
+        if text not in SOURCE_CHOICES:
+            raise PreferenceError(
+                f"unknown source {value!r}. use one of: {', '.join(SOURCE_CHOICES)}"
+            )
+        out.append(text)
+    if not adapters_for(out):
+        usable = [choice for choice in SOURCE_CHOICES if adapters_for([choice])]
+        raise PreferenceError(
+            f"that leaves no sources to search. use one or more of: {', '.join(usable)}"
+        )
+    return out
+
+
+def _restricted(values: list[str], allowed: tuple[str, ...], label: str) -> list[str]:
+    out = []
+    for value in values:
+        text = value.strip().lower()
+        if text not in allowed:
+            raise PreferenceError(f"unknown {label} {value!r}. use one of: {', '.join(allowed)}")
+        out.append(text)
+    return out
+
+
+# Derived, not a second hand-written list: a field added to `UpworkPreferences`
+# and forgotten here would otherwise round-trip silently instead of raising.
+UPWORK_KEYS = {f.name for f in dataclasses.fields(UpworkPreferences)}
+
+
+def _apply_upwork(target: UpworkPreferences, name: str, value: str) -> None:
+    if name not in UPWORK_KEYS:
+        raise PreferenceError(
+            f"unknown setting upwork.{name!r}. known: "
+            f"{', '.join(f'upwork.{k}' for k in sorted(UPWORK_KEYS))}"
+        )
+    blank = value in ("", "any", "none", "-")
+
+    if name == "queries":
+        queries = [] if blank else _split(value)
+        if UPWORK_FEED_QUERY in (q.lower() for q in queries):
+            raise PreferenceError(
+                f"upwork.queries: {UPWORK_FEED_QUERY!r} is reserved for the Most Recent feed"
+            )
+        target.queries = queries
+    elif name == "job_types":
+        target.job_types = list(UPWORK_JOB_TYPES) if blank else _restricted(
+            _split(value), UPWORK_JOB_TYPES, "upwork job type"
+        )
+    elif name == "min_hourly":
+        target.min_hourly = None if blank else _number(value)
+    elif name == "min_fixed":
+        target.min_fixed = None if blank else _number(value)
+    elif name == "experience_level":
+        target.experience_level = [] if blank else _restricted(
+            _split(value), UPWORK_EXPERIENCE, "upwork experience level"
+        )
+    elif name == "verified_payment_only":
+        target.verified_payment_only = value.lower() not in ("false", "no", "0")
+    elif name == "sort":
+        target.sort = "relevance" if blank else _restricted(
+            [value.strip().lower()], UPWORK_SORTS, "upwork sort"
+        )[0]
+    elif name == "require_verified_client":
+        target.require_verified_client = value.lower() in ("true", "yes", "1", "on")
+    elif name == "workload":
+        target.workload = [] if blank else _restricted(_split(value), UPWORK_WORKLOAD, "upwork workload")
+    elif name == "client_min_spend":
+        amount = None if blank else _number(value)
+        if amount is not None and amount < 0:
+            raise PreferenceError("upwork.client_min_spend has to be 0 or more")
+        target.client_min_spend = amount or None
+    elif name in ("proposals_max", "client_min_hires", "client_max_hires"):
+        count = None if blank else int(_number(value))
+        if count is not None and count < 0:
+            raise PreferenceError(f"upwork.{name} has to be 0 or more")
+        setattr(target, name, count)
+    elif name == "client_locations":
+        target.client_locations = [] if blank else _unique(_split(value))
+    elif name == "recommended_feed":
+        target.recommended_feed = value.lower() in ("true", "yes", "1", "on")
+    elif name == "max_pages":
+        target.max_pages = 2 if blank else int(_number(value))
+
+
 def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
     """Apply `key=value` pairs from the CLI. Unknown keys are a loud error."""
     known = {
         "titles", "locations", "work_model", "job_types", "experience",
         "experience_max", "min_salary", "currency", "include_unstated_salary",
-        "max_age_days", "top_n",
+        "max_age_days", "top_n", "sources",
     }
     for key, raw in updates.items():
+        if key.startswith("upwork."):
+            _apply_upwork(prefs.upwork, key.removeprefix("upwork."), str(raw).strip())
+            continue
         if key not in known:
             raise PreferenceError(f"unknown setting {key!r}. known: {', '.join(sorted(known))}")
         value = str(raw).strip()
@@ -156,6 +368,10 @@ def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
             prefs.work_model = [] if blank else _work_model(_split(value))
         elif key == "job_types":
             prefs.job_types = [] if blank else _job_types(_split(value))
+        elif key == "sources":
+            # No `blank` shortcut: "none" is a request for an empty corpus, which
+            # `_sources` is the one place that refuses.
+            prefs.sources = _sources([] if blank else _split(value))
         elif key == "experience":
             prefs.experience_min = None if blank else _seniority(value)
         elif key == "experience_max":
@@ -176,6 +392,19 @@ def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
             raise PreferenceError(
                 f"experience {prefs.experience_min} is above the ceiling {prefs.experience_max}"
             )
+
+    upwork = prefs.upwork
+    if (
+        upwork.client_min_hires is not None
+        and upwork.client_max_hires is not None
+        and upwork.client_min_hires > upwork.client_max_hires
+    ):
+        # Named against the maximum, the field the web form marks. Never the
+        # word "ceiling": `web.filters._field_for` sends that to experience_max.
+        raise PreferenceError(
+            f"upwork.client_max_hires: {upwork.client_max_hires} is below the minimum of "
+            f"{upwork.client_min_hires} hires"
+        )
     return prefs
 
 
@@ -193,6 +422,50 @@ def _number(value: str) -> float:
 # --- translation to filter rules ----------------------------------------------
 
 
+def set_group(prefs: Preferences, name: str, titles: list[str]) -> Preferences:
+    """Save `titles` under `name`, replacing a group of that name if there is one.
+
+    Names collide case-insensitively: "test" and "Test" are one group, because
+    two chips reading the same word with different capitals is a trap rather
+    than a feature. The spelling last saved is the one kept.
+    """
+    label = name.strip()
+    if not label:
+        raise PreferenceError("A title group needs a name.")
+    members = _dedupe_titles(titles)
+    if not members:
+        raise PreferenceError("A title group needs at least one title.")
+    groups = {
+        key: value for key, value in prefs.title_groups.items() if key.lower() != label.lower()
+    }
+    groups[label] = members
+    prefs.title_groups = groups
+    return prefs
+
+
+def delete_group(prefs: Preferences, name: str) -> Preferences:
+    """Forget one group. The titles currently in the field are untouched."""
+    label = name.strip().lower()
+    groups = {key: value for key, value in prefs.title_groups.items() if key.lower() != label}
+    if len(groups) == len(prefs.title_groups):
+        raise PreferenceError(f"There is no title group called {name!r}.")
+    prefs.title_groups = groups
+    return prefs
+
+
+def _dedupe_titles(titles: list[str]) -> list[str]:
+    """Keep the first spelling of each title, compared case-insensitively."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for title in titles:
+        text = str(title).strip()
+        if not text or text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        out.append(text)
+    return out
+
+
 def title_patterns(titles: list[str]) -> list[str]:
     """One case-insensitive, word-bounded alternation over the titles given.
 
@@ -205,6 +478,97 @@ def title_patterns(titles: list[str]) -> list[str]:
     return [rf"(?i)(?<!\w)({alternatives})"]
 
 
+# Levels whose postings name themselves differently from a permanent role:
+# "Backend Intern" never contains "Backend Engineer", so the role titles alone
+# never find it. Only the bottom two are listed. A senior or staff posting
+# spells the role out in full, and a "senior" alternative would earn nothing
+# while matching "Senior Manager, International Indirect Tax".
+SENIORITY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "intern": ("intern", "interns", "internship", "internships", "working student",
+               "werkstudent", "trainee", "stajyer"),
+    "junior": ("junior", "graduate", "grad", "new grad", "entry level", "entry-level"),
+}
+
+# Words that say nothing about the role. Left in, "full" would match "Full Time
+# Intern" and "engineer" would match "Manufacturing Engineering Internship" -
+# real internships, in fields nobody here asked for.
+_GENERIC_TITLE_WORDS = frozenset({
+    "engineer", "engineers", "engineering", "developer", "developers", "dev",
+    "full", "senior", "junior", "intern", "internship", "staff", "lead", "principal",
+    "the", "and", "of", "i", "ii", "iii",
+})
+
+
+def _role_tokens(titles: list[str]) -> list[str]:
+    """The distinctive words of the titles asked for, in first-seen order.
+
+    "Software Engineer" contributes "software": that is the half that survives
+    in "Software Engineering Intern", where the role word has been declined into
+    something the plain pattern would still catch but "Backend Intern" would not.
+    """
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for title in titles:
+        for word in re.split(r"[^\w+#]+", title.lower()):
+            if len(word) < 2 or word in _GENERIC_TITLE_WORDS or word in seen:
+                continue
+            seen.add(word)
+            tokens.append(word)
+    return tokens
+
+
+def _bounded(alternatives: tuple[str, ...] | list[str]) -> str:
+    """An alternation matched as whole words, at both ends.
+
+    The trailing boundary is the whole point here and is deliberately not what
+    `title_patterns` does: "intern" without it matches "International", while
+    "Software Engineer" *needs* the loose end to match "Software Engineering".
+    """
+    joined = "|".join(re.escape(str(value)) for value in alternatives)
+    return rf"(?<!\w)(?:{joined})(?!\w)"
+
+
+def title_patterns_for(prefs: Preferences) -> list[str]:
+    """The title patterns for these preferences, seniority included.
+
+    The keywords are generated here rather than written into `prefs.titles`, so
+    what the user typed stays what the user typed and this rule can change
+    later without a migration.
+    """
+    patterns = title_patterns(prefs.titles)
+    if not patterns:
+        return patterns
+
+    tokens = _role_tokens(prefs.titles)
+    if not tokens:
+        return patterns
+
+    floor = prefs.experience_min or SENIORITY_ORDER[0]
+    ceiling = prefs.experience_max or SENIORITY_ORDER[-1]
+    typed = " ".join(prefs.titles).lower()
+
+    for level, keywords in SENIORITY_KEYWORDS.items():
+        if not _level_in_range(level, floor, ceiling):
+            continue
+        # Asked for by hand already: the plain pattern covers it, and a second
+        # alternative would only widen what that spelling was meant to pin down.
+        if any(re.search(_bounded([keyword]), typed) for keyword in keywords):
+            continue
+        patterns.append(
+            rf"(?i)^(?=.*{_bounded(keywords)})(?=.*{_bounded(tokens)}).*$"
+        )
+    return patterns
+
+
+def _level_in_range(level: str, floor: str, ceiling: str) -> bool:
+    if level not in SENIORITY_ORDER:
+        return False
+    at = SENIORITY_ORDER.index(level)
+    low = SENIORITY_ORDER.index(floor) if floor in SENIORITY_ORDER else 0
+    high = SENIORITY_ORDER.index(ceiling) if ceiling in SENIORITY_ORDER else len(SENIORITY_ORDER) - 1
+    return low <= at <= high
+
+
 def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -> dict[str, Any]:
     """The managed block: exactly the keys this module owns, and nothing else."""
     codes, worldwide = regions.resolve(prefs.locations)
@@ -212,6 +576,41 @@ def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -
     profiles: dict[str, Any] = {}
     for market in markets:
         rules: dict[str, Any] = {}
+        if market == UPWORK_SOURCE:
+            # A gig has no country or employment type worth filtering on, and
+            # Upwork's entry/intermediate/expert levels rate the contract's
+            # difficulty, not a career stage: mapping them onto the salaried
+            # seniority ladder would silently filter gigs. The rate floor is a
+            # different quantity, handled where the adapter reads it.
+            # `[".*"]`, unconditionally: the fetch query *is* the title filter
+            # here, and Upwork applies it server-side against the whole posting.
+            # Re-deriving a title-only pattern from the same queries locally can
+            # only subtract - it drops "AI Engineer for chatbot" and "Need a
+            # Django dev to fix my scraper", both of which Upwork itself matched
+            # and returned - and would show a large `title_unmatched` bar on a
+            # source that fetched perfectly. The overriding empty profile is
+            # still needed: without it the salaried global pattern (engineer,
+            # developer, ...) empties the market instead.
+            rules["require_titles_regex"] = [".*"]
+            if prefs.upwork.min_hourly or prefs.upwork.min_fixed:
+                rate: dict[str, Any] = {}
+                if prefs.upwork.min_hourly:
+                    rate["min_hourly"] = prefs.upwork.min_hourly
+                if prefs.upwork.min_fixed:
+                    rate["min_fixed"] = prefs.upwork.min_fixed
+                rules["rate"] = rate
+            client: dict[str, Any] = {}
+            if prefs.upwork.require_verified_client:
+                client["require_verified"] = True
+            if prefs.upwork.client_min_spend:
+                client["min_spend"] = prefs.upwork.client_min_spend
+            # Omitted entirely when neither is on, for the reason `sources` is:
+            # an always-present key churns the filter fingerprint and re-gates
+            # the corpus every time the document is rewritten.
+            if client:
+                rules["client"] = client
+            profiles[market] = rules
+            continue
         hard_requires: dict[str, Any] = {}
         if prefs.work_model:
             hard_requires["remote_type"] = list(prefs.work_model)
@@ -238,14 +637,59 @@ def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -
         if rules:
             profiles[market] = rules
 
+    selected = adapters_for(prefs.sources)
+    everything = adapters_for(["ats", LINKEDIN_SOURCE])
+    global_rules: dict[str, Any] = {
+        "require_titles_regex": title_patterns_for(prefs),
+        "max_age_days": prefs.max_age_days,
+    }
+    # Omitted when nothing is restricted, so an unchanged selection does not
+    # churn the filter fingerprint every time an adapter is added.
+    if selected != everything:
+        global_rules["sources"] = selected
+
     return {
         "profiles": profiles,
-        "global": {
-            "require_titles_regex": title_patterns(prefs.titles),
-            "max_age_days": prefs.max_age_days,
-        },
+        "global": global_rules,
         "digest": {"limit": prefs.top_n},
     }
+
+
+def _coerce(declared: Any, value: Any) -> Any:
+    """Rebuild a nested dataclass the YAML round trip flattened into a dict.
+
+    `from_filters` reads a verbatim `dataclasses.asdict` mirror, so a nested
+    field comes back as a plain dict. Left alone it would satisfy every type
+    check and then fail on first attribute access, deep inside an adapter's
+    `except Exception` - an empty corpus rather than a traceback.
+    """
+    origin = getattr(declared, "__origin__", None)
+    if origin is dict and isinstance(value, dict):
+        _, item_type = declared.__args__
+        return {key: _coerce(item_type, item) for key, item in value.items()}
+    if origin is list and isinstance(value, list):
+        (item_type,) = declared.__args__
+        return [_coerce(item_type, item) for item in value]
+    if dataclasses.is_dataclass(declared) and isinstance(value, dict):
+        fields = {f.name: f for f in dataclasses.fields(declared)}
+        known = {k: _coerce(fields[k].type, v) for k, v in value.items() if k in fields}
+        return declared(**known)
+    return value
+
+
+def _migrate_upwork(raw: Any) -> Any:
+    """Carry a retired Upwork setting across to the key that replaced it.
+
+    `require_client_spend: true` meant "the client has spent something", which
+    is a minimum spend of $1. Only when the new key is absent, so a document
+    written after the change is never second-guessed. `_coerce` drops the old
+    key afterwards, and the next save stops writing it.
+    """
+    if not isinstance(raw, dict) or "client_min_spend" in raw:
+        return raw
+    if raw.get("require_client_spend") is True:
+        return {**raw, "client_min_spend": 1.0}
+    return raw
 
 
 def from_filters(filters: dict[str, Any]) -> Preferences:
@@ -257,9 +701,16 @@ def from_filters(filters: dict[str, Any]) -> Preferences:
     """
     managed = (filters or {}).get(MANAGED_KEY) or {}
     prefs = Preferences()
+    # `Preferences` uses `from __future__ import annotations`, so a bare
+    # `field.type` is a string. Resolve the hints once so `_coerce` can
+    # dispatch on real types instead of silently doing nothing on a string.
+    hints = typing.get_type_hints(Preferences)
     for field in dataclasses.fields(Preferences):
         if field.name in managed:
-            setattr(prefs, field.name, managed[field.name])
+            value = managed[field.name]
+            if field.name == "upwork":
+                value = _migrate_upwork(value)
+            setattr(prefs, field.name, _coerce(hints[field.name], value))
     return prefs
 
 
@@ -278,6 +729,29 @@ def load(config: Config) -> tuple[Preferences, dict[str, Any]]:
     return from_filters(document), document
 
 
+def _packaged_profile(market: str) -> dict[str, Any]:
+    """The shipped defaults for a market profile the user's file does not have.
+
+    A profile this writer creates from nothing used to be created empty, and
+    `save` only ever writes the keys it owns - which do not include
+    `llm_gate_prompt` or `min_score_to_surface`. So turning on a market the
+    user's existing filters.yaml predates (Upwork, for anyone whose file was
+    installed before it existed) produced a profile with no gate prompt and no
+    surfacing bar: `runner._prompt_text` returned "" and the whole batch was
+    gated with no market instructions at all. `install_user_copies` cannot fix
+    that - it never overwrites a filters.yaml that already exists.
+
+    Only the creation path reads this. A profile the user already has, however
+    they edited it, is left exactly as it is.
+    """
+    try:
+        packaged = yaml.safe_load(PACKAGED_FILTERS.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    profile = (packaged.get("profiles") or {}).get(market)
+    return copy.deepcopy(profile) if isinstance(profile, dict) else {}
+
+
 def save(config: Config, prefs: Preferences) -> pathlib.Path:
     """Merge the managed block into filters.yaml, preserving everything else."""
     _, document = load(config)
@@ -285,16 +759,32 @@ def save(config: Config, prefs: Preferences) -> pathlib.Path:
 
     document.setdefault("profiles", {})
     for market, rules in generated["profiles"].items():
-        profile = document["profiles"].setdefault(market, {})
+        if market not in document["profiles"]:
+            document["profiles"][market] = _packaged_profile(market)
+        profile = document["profiles"][market]
         # Replace only the keys this module owns. A gate prompt path, a surface
         # threshold, or a hand-written hard_excludes list stays untouched.
-        for key in ("hard_requires", "seniority_min", "seniority_max", "salary", "allow_worldwide"):
+        owned = ["hard_requires", "seniority_min", "seniority_max", "salary", "allow_worldwide"]
+        if market == UPWORK_SOURCE:
+            # Upwork only ever owns its title pattern, rate floor and client
+            # rules: a regenerated profile must replace the old ones rather than
+            # merge. `client` has to be listed here or a switch could be turned
+            # on but never off - `update` adds keys and never removes them.
+            owned = ["require_titles_regex", "rate", "client"]
+        for key in owned:
             profile.pop(key, None)
         profile.update(rules)
     for market in generated["profiles"]:
-        document["profiles"].setdefault(market, {})
+        if market not in document["profiles"]:
+            document["profiles"][market] = _packaged_profile(market)
 
-    document.setdefault("global", {}).update(generated["global"])
+    # `update` can add a key but never remove one, and `to_filters` signals "no
+    # source restriction" by omitting `sources` entirely. Without the pop, a
+    # narrowed selection could never be widened again: the fetch path reads
+    # preferences and resumes fetching ATS while the shortlist reads the stale
+    # document and drops all of it as source_excluded.
+    document.setdefault("global", {}).pop("sources", None)
+    document["global"].update(generated["global"])
     document.setdefault("digest", {}).update(generated["digest"])
     document[MANAGED_KEY] = prefs.as_dict()
 
@@ -328,7 +818,7 @@ def title_impact(config: Config, prefs: Preferences) -> tuple[int, int]:
     from jobhunt.db.models import Job
     from jobhunt.db.session import session_scope
 
-    patterns = [_re.compile(p) for p in title_patterns(prefs.titles)]
+    patterns = [_re.compile(p) for p in title_patterns_for(prefs)]
     with session_scope(config.db_path) as session:
         titles = [
             title

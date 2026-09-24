@@ -1,0 +1,5 @@
+{
+  "name": "Classic",
+  "engine": "lualatex",
+  "description": "Single column, sans serif, grey section rules. The master CV as it has always looked, preamble unchanged."
+}

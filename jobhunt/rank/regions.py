@@ -74,6 +74,28 @@ COUNTRY_NAMES: dict[str, str] = {
 }
 
 
+# The first spelling listed for each code above, which is the one to show a
+# person or hand to another service. Built by walking COUNTRY_NAMES in order
+# and keeping the first name seen per code, so "united states" wins over "usa"
+# and "america" without a second table to maintain alongside the first.
+_NAME_OF_CODE: dict[str, str] = {}
+for _name, _code in COUNTRY_NAMES.items():
+    _NAME_OF_CODE.setdefault(_code, _name.title())
+
+
+def country_name(code: str | None) -> str | None:
+    """An ISO code spelled out, or None if this module cannot spell it.
+
+    The inverse of the table above, for the places a code has to leave this
+    program: a two-letter code is ambiguous to anything that does not know it
+    is a country code - LinkedIn's own location lookup reads "CA" as Canada
+    and "IN" as India - so it is spelled out before it is sent anywhere.
+    """
+    if not code:
+        return None
+    return _NAME_OF_CODE.get(code.strip().upper())
+
+
 def resolve(names: list[str]) -> tuple[list[str], bool]:
     """Names -> (sorted ISO codes, worldwide_allowed).
 

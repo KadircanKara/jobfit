@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from jobhunt.db.models import Board, Company, Job, Meta, utcnow
 from jobhunt.pipeline import normalize as norm
 from jobhunt.pipeline import simhash
+from jobhunt.pipeline.client_identity import COMPANY_NAME_PLACEHOLDER
 from jobhunt.sources.base import JobPosting
 
 
@@ -96,16 +97,108 @@ def upsert_posting(
         session.flush()
         return job, "new"
 
-    outcome = "unchanged" if existing.content_hash == content_hash else "updated"
     # A job that went inactive and came back under the same external_id is a repost.
     if not existing.is_active:
         existing.repost_count += 1
+    suppressed = _absent_fields(posting) + _downgrade_fields(posting, existing)
+    if "description_text" in suppressed:
+        # The stored body is the one that survives this refresh, so the hash that
+        # decides "did anything change" has to be computed against it. Hashing the
+        # withheld body instead reports `updated` on a run that changed nothing -
+        # and stores a hash describing a row that does not exist.
+        content_hash = norm.content_hash(
+            posting.title, posting.location_raw, existing.description_text
+        )
+        fields["content_hash"] = content_hash
+    outcome = "unchanged" if existing.content_hash == content_hash else "updated"
+    for key in suppressed:
+        fields.pop(key, None)
     for key, value in fields.items():
         setattr(existing, key, value)
     existing.last_seen_at = now
     existing.missed_runs = 0
     existing.is_active = True
     return existing, outcome
+
+
+# Absent has to mean "unchanged", not "gone". The LinkedIn adapter deliberately
+# skips the detail fetch for an id already in the corpus, so the second run yields
+# that job with no description and no poster at all; writing those over the stored
+# row would erase exactly what the detail fetch was paid for, leaving the ranker a
+# title-only corpus and the outreach drawer no hiring contact. Every other adapter
+# re-sends its description each run, so nothing else changes shape here.
+_DESCRIPTION_FIELDS = (
+    "description_html",
+    "description_text",
+    "description_md",
+    "description_lang",
+    "jd_completeness",
+    "jd_source",
+    "jd_extracted_at",
+    "description_hash",
+)
+_POSTER_FIELDS = ("poster_name", "poster_profile_url")
+
+
+def _absent_fields(posting: JobPosting) -> tuple[str, ...]:
+    """Field names a refresh must leave alone because the posting carries nothing.
+
+    The description group moves as a unit: pairing a stored body with a freshly
+    parsed completeness flag would describe a row that never existed.
+    """
+    absent: tuple[str, ...] = ()
+    if not (posting.description_html or posting.description_text or posting.description_md):
+        absent += _DESCRIPTION_FIELDS
+    absent += tuple(name for name in _POSTER_FIELDS if getattr(posting, name) is None)
+    return absent
+
+
+_SALARY_FIELDS = (
+    "salary_min",
+    "salary_max",
+    "salary_currency",
+    "salary_period",
+    "salary_is_stated",
+)
+
+
+def _downgrade_fields(posting: JobPosting, existing: Job) -> tuple[str, ...]:
+    """Field names a refresh must leave alone because the stored row knows more.
+
+    `_absent_fields` only catches a posting that carries *nothing*, which is the
+    LinkedIn shape. Upwork always carries something: `description_md` is the
+    metadata trailer even with no body, and `description_text` falls back to the
+    search snippet, so on the second run - where the corpus already holds the id
+    and the detail fetch is deliberately skipped - a truthy-but-poorer posting
+    would overwrite everything the first run's detail call paid for: the full
+    JD, the hourly rate that exists only in the detail, and the client company
+    the description was mined for. Losing the last one is the worst of the
+    three: it silently turns "Find contacts" back into a LinkedIn search for a
+    company literally named "Upwork client".
+
+    Withholding the trailer in `upwork.normalize` would fix the second run by
+    breaking the first, where a snippet-only posting is the whole truth we have.
+    Whether a value is a downgrade is a question about the stored row, so it is
+    answered here, where the stored row is in scope.
+
+    The cost, accepted knowingly: `norm.completeness` calls anything under 400
+    characters a snippet, so an ATS that genuinely rewrites a full JD down to
+    two sentences is refused too, and the stale body stays. A stale body on a
+    rare rewrite is cheaper than discarding a paid-for detail fetch on every
+    Upwork gig on every run.
+    """
+    downgraded: tuple[str, ...] = ()
+    if existing.jd_completeness == "full" and posting.jd_completeness != "full":
+        downgraded += _DESCRIPTION_FIELDS
+    if existing.salary_is_stated and not posting.salary_is_stated:
+        downgraded += _SALARY_FIELDS
+    if posting.company_name == COMPANY_NAME_PLACEHOLDER and existing.company_id is not None:
+        # An extraction that found a real client once and nothing the next run is
+        # a poorer look at the same gig, not a client that became anonymous.
+        stored = existing.company
+        if stored is not None and stored.name != COMPANY_NAME_PLACEHOLDER:
+            downgraded += ("company_id",)
+    return downgraded
 
 
 def _row_fields(
@@ -147,6 +240,11 @@ def _row_fields(
         "posted_at": posting.posted_at,
         "apply_url": posting.apply_url,
         "source_url": posting.source_url,
+        "poster_name": posting.poster_name,
+        "poster_profile_url": posting.poster_profile_url,
+        "client_verified": posting.client_verified,
+        "client_total_spent": posting.client_total_spent,
+        "client_region": posting.client_region,
     }
 
 

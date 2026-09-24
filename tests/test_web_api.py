@@ -95,6 +95,7 @@ def test_the_app_serves_the_ui_route(client):
 
 
 def test_starting_a_run_reports_it_as_running(client, monkeypatch):
+
     from jobhunt.web import app as app_module
 
     monkeypatch.setattr(app_module, "build_pipeline", lambda cfg, hooks: _SlowPipeline())
@@ -105,6 +106,7 @@ def test_starting_a_run_reports_it_as_running(client, monkeypatch):
 
 
 def test_a_second_start_while_one_runs_is_refused(client, monkeypatch):
+
     from jobhunt.web import app as app_module
 
     monkeypatch.setattr(app_module, "build_pipeline", lambda cfg, hooks: _SlowPipeline())
@@ -117,6 +119,7 @@ def test_a_second_start_while_one_runs_is_refused(client, monkeypatch):
 
 def test_a_run_cannot_start_while_the_filters_are_broken(client, monkeypatch):
     """A broken filter set would waste the whole run, so it never reaches the engine."""
+
     from jobhunt.web import app as app_module
 
     monkeypatch.setattr(app_module, "build_pipeline", lambda cfg, hooks: _SlowPipeline())
@@ -128,7 +131,8 @@ def test_a_run_cannot_start_while_the_filters_are_broken(client, monkeypatch):
 class _SlowPipeline:
     """Enough of the Protocol to start, slow enough to still be running."""
 
-    sources = ["greenhouse"]
+    def sources(self):
+        return ["greenhouse"]
 
     def boards_for(self, source):
         return list(range(50))
@@ -150,53 +154,6 @@ class _SlowPipeline:
 
     def shortlist(self):
         return []
-
-
-# --- profile ---------------------------------------------------------------
-
-
-def _with_master(cfg, tmp_path):
-    path = tmp_path / "CV_Source" / "master.tex"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n", encoding="utf-8")
-    cfg.raw.setdefault("tailoring", {})["master_tex"] = str(path)
-    return path
-
-
-def test_the_master_cv_can_be_read(cfg, tmp_path):
-    _with_master(cfg, tmp_path)
-    client = TestClient(create_app(config=cfg))
-
-    body = client.get("/api/profile").json()
-
-    assert "documentclass" in body["text"]
-
-
-def test_saving_the_master_takes_a_backup(cfg, tmp_path):
-    _with_master(cfg, tmp_path)
-    client = TestClient(create_app(config=cfg))
-
-    client.post("/api/profile", json={"text": "\\documentclass{article}\\begin{document}y\\end{document}"})
-
-    assert client.get("/api/profile/backups").json()["backups"]
-
-
-def test_an_empty_master_is_refused_by_the_server(cfg, tmp_path):
-    _with_master(cfg, tmp_path)
-    client = TestClient(create_app(config=cfg))
-
-    response = client.post("/api/profile", json={"text": "  "})
-
-    assert response.status_code == 422
-
-
-def test_restoring_a_path_outside_the_backup_folder_is_refused(cfg, tmp_path):
-    _with_master(cfg, tmp_path)
-    client = TestClient(create_app(config=cfg))
-
-    response = client.post("/api/profile/restore", json={"name": "../../etc/passwd"})
-
-    assert response.status_code == 422
 
 
 # --- tailoring -------------------------------------------------------------
@@ -480,3 +437,166 @@ def test_resuming_with_no_paused_run_is_refused(client):
 
     assert response.status_code == 409
     assert "no paused run" in response.json()["message"]
+
+
+def test_a_request_touches_the_idle_clock(client) -> None:
+    """The watchdog measures requests, so every route has to count as one."""
+    state = client.app.state.jh
+    state.idle._last -= 500.0
+    before = state.idle.idle_for()
+    client.get("/api/applied")
+    assert state.idle.idle_for() < before
+
+
+def test_a_running_batch_counts_as_busy(client) -> None:
+    state = client.app.state.jh
+    assert not state.busy()
+
+    class Batch:
+        running = True
+
+    state.batch = Batch()
+    assert state.busy()
+
+
+# --- a finished run goes stale ------------------------------------------------
+
+
+def test_a_finished_run_reflects_scores_written_after_it(cfg, client) -> None:
+    """The shortlist a finished run left behind is a snapshot, and the corpus
+    moves under it: a rescore, a gate ingest or an edit to the filters all
+    change what should be on screen. Reloading the page has to show that,
+    rather than serving the same frozen list until the process restarts.
+    """
+    from jobhunt.db.models import Job, Score
+    from jobhunt.db.session import session_scope
+
+    state = client.app.state.jh
+
+    class FinishedRun:
+        phase, running, outcome, error = "done", False, "completed", None
+        degraded, counters, results = [], {}, []
+        run_id, started_at, finished_at = "r1", "t0", "t1"
+        resumable, rank, gate = False, None, None
+
+    class FinishedSupervisor:
+        pausing = stopping = False
+        state = FinishedRun()
+
+    state.supervisor = FinishedSupervisor()
+    assert client.get("/api/runs/current").json()["results"] == []
+
+    with session_scope(cfg.db_path) as session:
+        job = Job(
+            external_id="late-1", source="ashby", market="global_remote",
+            title="AI Engineer", title_normalized="ai engineer", is_active=True,
+        )
+        session.add(job)
+        session.flush()
+        session.add(
+            Score(
+                job_id=job.id, profile="global_remote", deterministic_pass=True,
+                deterministic_notes={"passed": True, "reasons": [], "codes": []},
+                llm_score=0.9, llm_reasoning="fits",
+            )
+        )
+
+    titles = [row["title"] for row in client.get("/api/runs/current").json()["results"]]
+    assert "AI Engineer" in titles
+
+
+# --- pages ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/",
+        "/shortlist",
+        "/tailoring",
+        "/tailoring/79273",
+        "/runs/20260923-170200",
+        "/search",
+        "/cv",
+        "/cv/templates",
+        "/filters",
+        "/profile",
+        "/templates",
+    ],
+)
+def test_every_page_the_interface_routes_is_served(client, path):
+    """A refresh or a pasted link on any page must load the app, not a 404."""
+    assert client.get(path).status_code in (200, 503)
+
+
+@pytest.mark.parametrize("path", ["/nowhere", "/tailoring/abc", "/cv/nothing", "/runs/a/b"])
+def test_a_mistyped_path_still_says_it_does_not_exist(client, path):
+    assert client.get(path).status_code == 404
+
+
+# --- saved runs: rename and delete -------------------------------------------------
+
+
+def _saved_run(cfg, run_id="20260822-100000"):
+    from jobhunt.web import history as history_module
+
+    body = {"run_id": run_id, "phase": "done", "outcome": "completed", "results": []}
+    history_module.save(cfg, run_id, body)
+    return run_id
+
+
+def test_a_saved_run_can_be_renamed(client, cfg):
+    run_id = _saved_run(cfg)
+
+    response = client.patch(f"/api/runs/{run_id}", json={"name": "Berlin push"})
+
+    assert response.status_code == 200
+    assert client.get("/api/runs").json()["runs"][0]["name"] == "Berlin push"
+
+
+def test_renaming_a_run_not_on_file_is_a_404(client):
+    response = client.patch("/api/runs/20260822-100000", json={"name": "Berlin push"})
+
+    assert response.status_code == 404
+
+
+def test_an_overlong_name_is_refused(client, cfg):
+    from jobhunt.web import history as history_module
+
+    run_id = _saved_run(cfg)
+
+    response = client.patch(f"/api/runs/{run_id}", json={"name": "x" * (history_module.NAME_MAX + 1)})
+
+    assert response.status_code == 422
+
+
+def test_a_saved_run_can_be_deleted(client, cfg):
+    run_id = _saved_run(cfg)
+
+    response = client.delete(f"/api/runs/{run_id}")
+
+    assert response.status_code == 200
+    assert client.get("/api/runs").json()["runs"] == []
+    assert client.get(f"/api/runs/{run_id}").status_code == 404
+
+
+def test_deleting_a_run_not_on_file_is_a_404(client):
+    assert client.delete("/api/runs/20260822-100000").status_code == 404
+
+
+@pytest.mark.parametrize("phase", ["sync", "paused"])
+def test_the_run_in_progress_or_paused_cannot_be_deleted(cfg, phase):
+    from jobhunt.web import events as events_module
+    from jobhunt.web import runs as runs_module
+
+    run_id = _saved_run(cfg)
+    app = create_app(config=cfg)
+    supervisor = runs_module.RunSupervisor(pipeline=None, log=events_module.EventLog())
+    supervisor.state.run_id = run_id
+    supervisor.state.phase = phase
+    app.state.jh.supervisor = supervisor
+
+    response = TestClient(app).delete(f"/api/runs/{run_id}")
+
+    assert response.status_code == 409
+    assert TestClient(app).get(f"/api/runs/{run_id}").status_code == 200

@@ -17,6 +17,7 @@ fact, which an inline call would not be.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import pathlib
 from collections.abc import Callable
@@ -24,9 +25,11 @@ from typing import Any
 
 from sqlalchemy import select
 
+from jobhunt import store
 from jobhunt.config import Config
 from jobhunt.db.models import Company, Job, Score, utcnow
 from jobhunt.db.session import session_scope
+from jobhunt.pipeline import client_identity
 from jobhunt.rank import deterministic, profile
 
 # The gate reads a truncated description. PLAN.md section 7 says roughly 1500
@@ -38,6 +41,9 @@ DEFAULT_BATCH = 20
 # batch, which wastes the gate on variations of one decision. Seen live: 11 of
 # a 12 job batch were one translation agency's freelance listings.
 MAX_PER_COMPANY = 3
+# Not an employer: the name every anonymous Upwork client shares. Exempt from
+# the cap above, which only means anything for a company that is one company.
+PLACEHOLDER_COMPANY = client_identity.COMPANY_NAME_PLACEHOLDER
 
 
 # How often a long pass reports in. Small enough that the browser sees the
@@ -71,6 +77,30 @@ class DeterministicResult:
         )
 
 
+# The rules the last full pass ran under. A verdict outlives the rules that
+# produced it, and skipping already-scored jobs is what makes a repeat run cheap
+# - so the cheap path has to know when it is no longer honest. Narrowing the
+# search to internships and widening it again is exactly the case that left
+# stale passes on the shortlist.
+FILTERS_FINGERPRINT_KEY = "rank_filters_fingerprint"
+
+
+def filters_fingerprint(filters: dict[str, Any]) -> str:
+    """A stable digest of the rules a pass would apply.
+
+    Exchange rates are excluded: they move on their own every day, and a new
+    snapshot is not a change to what the user asked for.
+    """
+    scrubbed = json.loads(json.dumps(filters, sort_keys=True, default=str))
+    for profile_rules in (scrubbed.get("profiles") or {}).values():
+        salary = profile_rules.get("salary")
+        if isinstance(salary, dict):
+            salary.pop("rates", None)
+    return hashlib.sha256(
+        json.dumps(scrubbed, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def run_deterministic(
     config: Config,
     market: str | None = None,
@@ -97,8 +127,14 @@ def run_deterministic(
                 salary["rates"] = rates
     result = DeterministicResult()
     passed_by_market: dict[str, int] = {}
+    fingerprint = filters_fingerprint(filters)
+    # A pass over part of the corpus leaves the rest on the old rules, so it
+    # neither trusts nor records the fingerprint.
+    whole_corpus = market is None and limit is None
 
     with session_scope(config.db_path) as session:
+        if not rescore and whole_corpus:
+            rescore = store.meta_get(session, FILTERS_FINGERPRINT_KEY) != fingerprint
         stmt = (
             select(Job, Company)
             .join(Company, Job.company_id == Company.id, isouter=True)
@@ -143,6 +179,11 @@ def run_deterministic(
                 result.failed += 1
             for code in verdict.codes:
                 result.reasons[code] = result.reasons.get(code, 0) + 1
+
+        if whole_corpus:
+            # Recorded inside the same transaction as the verdicts it describes,
+            # so a pass that dies halfway does not claim the corpus is current.
+            store.meta_set(session, FILTERS_FINGERPRINT_KEY, fingerprint)
 
     result.by_market = passed_by_market
     if progress:
@@ -205,7 +246,15 @@ def emit(
         for job, company, score in session.execute(stmt).all():
             if taken >= limit:
                 break
-            key = company.id if company else f"job:{job.id}"
+            # An Upwork client who never names itself gets the one placeholder
+            # company every other anonymous client also gets, so counting it as
+            # an employer makes thousands of unrelated gigs look like one firm
+            # posting thousands of roles. Seen live: 112 of 116 Upwork jobs
+            # shared it, the cap cut every batch to three, and 82 jobs went
+            # ungated. `dedupe` escapes the same placeholder for the same
+            # reason. A client whose real name was extracted keeps the cap.
+            anonymous = company is None or company.name == PLACEHOLDER_COMPANY
+            key = f"job:{job.id}" if anonymous else company.id
             if max_per_company and per_company.get(key, 0) >= max_per_company:
                 held += 1
                 continue

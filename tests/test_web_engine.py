@@ -5,14 +5,39 @@ engine keeps its own vocabulary rather than growing web concepts.
 """
 from __future__ import annotations
 
+import pytest
+
+from jobhunt import preferences as prefs_module
+from jobhunt import sources as source_registry
 from jobhunt.web import engine as engine_module
 
 
 def test_the_sources_are_the_registered_ones(cfg):
     pipeline = engine_module.EnginePipeline(cfg)
 
-    assert "greenhouse" in pipeline.sources
-    assert "ashby" in pipeline.sources
+    assert "greenhouse" in pipeline.sources()
+    assert "ashby" in pipeline.sources()
+
+
+def test_the_engine_fetches_only_from_selected_sources(cfg) -> None:
+    """Selecting linkedin alone must exclude the twelve ats adapters, and include
+    only linkedin - not a silent fall-back to every ats adapter."""
+    prefs, _ = prefs_module.load(cfg)
+    prefs.sources = ["linkedin"]
+    prefs_module.save(cfg, prefs)
+    assert engine_module.EnginePipeline(cfg).sources() == ["linkedin"]
+
+
+def test_the_engine_fetches_every_ats_adapter_by_default(cfg) -> None:
+    """`adapters_for` names linkedin unconditionally, whether or not an adapter
+    for it is registered — so the honest expectation intersects with the
+    registry. Today that intersection is the twelve ats adapters; once Task 7
+    registers linkedin, it becomes thirteen, and this assertion still holds
+    without needing an edit."""
+    names = engine_module.EnginePipeline(cfg).sources()
+    assert "greenhouse" in names and "ashby" in names
+    expected = set(prefs_module.adapters_for(["ats", "linkedin"])) & set(source_registry.REGISTRY)
+    assert set(names) == expected
 
 
 def test_fetching_a_source_reports_boards_through_the_progress_hook(cfg, monkeypatch):
@@ -53,6 +78,57 @@ def test_a_degraded_source_comes_back_as_a_failure_rather_than_an_exception(cfg,
     result = pipeline.fetch_source("greenhouse")
 
     assert result.status == "degraded"
+
+
+def test_a_failed_source_raises_out_of_fetch_board(cfg, monkeypatch):
+    """`sync_source` reports "failed", never "error" - the string the guard used
+    to compare against. While it did, every hard failure returned a job count
+    like a healthy fetch, and the run finished `completed` with nothing in it.
+    That is exactly how a whole Upwork run of fetch timeouts reported clean."""
+    monkeypatch.setattr(
+        engine_module.sync, "sync_source",
+        lambda config, source, **kw: _failed_result(source),
+    )
+    pipeline = engine_module.EnginePipeline(cfg)
+
+    with pytest.raises(RuntimeError, match="everything timed out"):
+        pipeline.fetch_board("upwork", "upwork")
+
+
+def test_a_degraded_source_is_announced_rather_than_swallowed(cfg, monkeypatch):
+    """Degraded fetched something, so it must not raise and lose the count - but
+    the run has to hear about it, or a half-empty sync reads as a whole one."""
+    monkeypatch.setattr(
+        engine_module.sync, "sync_source",
+        lambda config, source, **kw: _degraded_result(source),
+    )
+    pipeline = engine_module.EnginePipeline(cfg)
+    heard = []
+    pipeline.on_degraded = lambda source, detail: heard.append((source, detail))
+
+    assert pipeline.fetch_board("greenhouse", "greenhouse") == 0
+    assert heard == [("greenhouse", "boom")]
+
+
+def test_a_healthy_source_announces_nothing(cfg, monkeypatch):
+    monkeypatch.setattr(
+        engine_module.sync, "sync_source",
+        lambda config, source, **kw: _blank_result(source),
+    )
+    pipeline = engine_module.EnginePipeline(cfg)
+    heard = []
+    pipeline.on_degraded = lambda source, detail: heard.append(source)
+
+    pipeline.fetch_board("greenhouse", "greenhouse")
+
+    assert heard == []
+
+
+def _failed_result(source):
+    result = _blank_result(source)
+    result.status = "failed"
+    result.error_detail = "everything timed out"
+    return result
 
 
 def _blank_result(source):

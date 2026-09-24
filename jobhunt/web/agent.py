@@ -22,10 +22,12 @@ from typing import Any
 
 from jobhunt.config import Config
 
-# The four phases that cost a model call. Sync and deterministic ranking are not
+# The phases that cost a model call. Sync and deterministic ranking are not
 # here because they never call one: sync is HTTP, ranking is Python and a
-# filters file.
-PHASES = ("gate", "tailor", "review", "revise")
+# filters file. "upwork" is the exception to "sync is HTTP" - its fetch has no
+# HTTP client of its own, only the Upwork MCP reached through this same `claude
+# -p` mechanism, so its effort needs the same startup validation as the rest.
+PHASES = ("gate", "tailor", "review", "revise", "upwork", "import", "template")
 
 # What `claude --effort` accepts. Naming one this project does not know would be
 # passed straight to the CLI and fail every call in that phase.
@@ -69,11 +71,12 @@ def check(config: Config) -> None:
         )
 
 
-def argv_for(config: Config, phase: str, *, tools: str) -> list[str]:
+def argv_for(config: Config, phase: str, *, tools: str, disallowed: str = "") -> list[str]:
     binary = shutil.which("claude") or "claude"
     return [
         binary, "-p", "--output-format", "json",
         "--allowedTools", tools,
+        *(["--disallowedTools", disallowed] if disallowed else []),
         *flags(config, phase),
     ]
 
@@ -84,16 +87,37 @@ def run(
     prompt: str,
     *,
     tools: str,
+    disallowed: str = "",
     timeout: float = DEFAULT_TIMEOUT,
 ) -> str:
     """One model call for one phase. Returns the answer text, not the envelope."""
     done = subprocess.run(
-        argv_for(config, phase, tools=tools),
+        argv_for(config, phase, tools=tools, disallowed=disallowed),
         input=prompt, capture_output=True, text=True, timeout=timeout, check=False,
     )
     if done.returncode != 0:
         raise AgentError(done.stderr.strip() or f"claude exited {done.returncode}")
     return text_of(done.stdout)
+
+
+class NotJson(ValueError):
+    """An answer with no JSON object in it, or one that does not parse."""
+
+    def __init__(self, found: bool) -> None:
+        super().__init__("unreadable JSON" if found else "no JSON object")
+        self.found = found
+
+
+def json_object(raw: str) -> Any:
+    """The JSON object in a model's answer. Models wrap it in prose often
+    enough that "from the first brace to the last" is the reliable reading."""
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end <= start:
+        raise NotJson(found=False)
+    try:
+        return json.loads(raw[start : end + 1])
+    except json.JSONDecodeError as exc:
+        raise NotJson(found=True) from exc
 
 
 def text_of(raw: str) -> str:

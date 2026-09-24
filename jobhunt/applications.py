@@ -60,6 +60,29 @@ SETTLED = frozenset({
 })
 
 
+# The tailoring skill ships the CV as "<Name>-CV.pdf" beside cv.tex; older
+# folders spell the separator with an underscore. Either one is proof the CV was
+# actually compiled, which a folder on its own is not: a run that died after
+# prepare() leaves jd.txt and nothing else, and refusing that job forever means
+# it can never be tailored again.
+CV_PDF_GLOBS = ("*-CV.pdf", "*_CV.pdf")
+
+
+def tailored_cv(folder: pathlib.Path | str | None) -> pathlib.Path | None:
+    """The compiled CV in an application folder, or None if there is not one."""
+    if not folder:
+        return None
+    path = pathlib.Path(folder)
+    if not path.is_dir():
+        return None
+    for pattern in CV_PDF_GLOBS:
+        for found in sorted(path.glob(pattern)):
+            # A zero-byte file is a failed compile, not a CV.
+            if found.is_file() and found.stat().st_size > 0:
+                return found
+    return None
+
+
 class ApplyBlocked(Exception):
     """Raised when applying would hand the tailoring skill something unusable."""
 
@@ -103,11 +126,16 @@ def apply(
 
     existing = _application_for(session, job)
     if existing is not None and existing.status in ACTED_ON:
-        where = existing.folder_path or "no folder"
-        raise ApplyBlocked(
-            f"job {job_id} is already recorded as {existing.status} ({where}). "
-            f"use `jobhunt status {job_id} <next>` to move it along"
-        )
+        # "tailored" only claims a folder was prepared. If the CV never came out
+        # of it the job is not done, so let this run finish what the last one
+        # started. Every other acted-on status is a real decision and still refuses.
+        resuming = existing.status == "tailored" and tailored_cv(existing.folder_path) is None
+        if not resuming:
+            where = existing.folder_path or "no folder"
+            raise ApplyBlocked(
+                f"job {job_id} is already recorded as {existing.status} ({where}). "
+                f"use `jobhunt status {job_id} <next>` to move it along"
+            )
 
     extraction: ladder.Result | None = None
     if job.jd_completeness != "full":
@@ -122,7 +150,14 @@ def apply(
     # the corpus reach here with no quality score at all. Score it now rather
     # than treating the missing value as a failure: a job the source handed over
     # complete must not need a manual paste to get through.
-    if job.jd_quality_score is None:
+    #
+    # A cached score below the gate is never trusted as final: it may predate a
+    # normalize.py change (e.g. the html_to_text paragraph-break fix) that would
+    # score the same description_text higher today, and there is no version tag
+    # on the cache to tell a stale failing verdict from a fresh one. A passing
+    # score needs no such defense, so only the failing case pays for the
+    # recompute.
+    if job.jd_quality_score is None or job.jd_quality_score < MIN_QUALITY:
         job.jd_quality_score = quality.assess(job.description_text or job.description_md).score
     if job.jd_quality_score < MIN_QUALITY:
         raise ApplyBlocked(
@@ -136,15 +171,14 @@ def apply(
     ).first()
 
     handoff = tailoring.prepare(config, job, company, score, dry_run=dry_run)
-    if handoff.folder.exists() and any(handoff.folder.iterdir()) and not dry_run:
-        # prepare() created it, so "already had content" means a previous run.
-        pre_existing = set(handoff.folder.iterdir()) - {
-            handoff.folder / name for name in handoff.files
-        }
-        if pre_existing:
+    if not dry_run:
+        # What is worth protecting is the compiled CV, not the folder. Leftovers
+        # from a run that never produced one (jd.txt, a half-written cv.tex) are
+        # what this run is here to replace.
+        cv = tailored_cv(handoff.folder)
+        if cv is not None:
             raise ApplyBlocked(
-                f"folder already exists with other files: {handoff.folder}. "
-                "refusing to overwrite"
+                f"folder already has a tailored CV: {cv}. refusing to overwrite"
             )
 
     if not dry_run:
@@ -357,7 +391,14 @@ def record_applied(session: Session, job_id: int, folder: str | None = None) -> 
     if job is None:
         raise ApplyBlocked(f"no job {job_id}")
     row = _application_for(session, job)
-    if row is not None and row.status in ACTED_ON:
+    # SETTLED, not ACTED_ON. ACTED_ON also holds `tailored`, and a tailored job
+    # is the one case this has to let through: the CV is cut, the application is
+    # not sent, and recording that it now has been is the whole point. Guarding
+    # on ACTED_ON made this a silent no-op for exactly those jobs while
+    # `csv mark-applied` flipped the column, so the file said applied and the
+    # shortlist kept offering the job. SETTLED still protects a job that has
+    # moved past applying - screening, interview, offer - from being dragged back.
+    if row is not None and row.status in SETTLED:
         return row
     row = row or Application(job_id=job.id)
     row.job_id = row.job_id or job.id

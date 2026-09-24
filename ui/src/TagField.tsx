@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { X } from "lucide-react";
 import type { VocabRow } from "./api";
 
 type Props = {
@@ -6,10 +7,16 @@ type Props = {
   wide?: boolean;
   tags: string[];
   vocab: VocabRow[];
+  // False for a fixed list of suggestions with no corpus behind it, where a
+  // "0 jobs" beside every choice would read as a warning rather than a fact.
+  counts?: boolean;
   placeholder: string;
   freeNote: string;
   emptyNote: string;
   hint?: React.ReactNode;
+  // Rendered between the input and the hint, so anything attached to the field
+  // (the title presets) reads as part of it rather than as a stray control.
+  children?: React.ReactNode;
   onChange: (tags: string[]) => void;
 };
 
@@ -23,10 +30,12 @@ export function TagField({
   wide,
   tags,
   vocab,
+  counts = true,
   placeholder,
   freeNote,
   emptyNote,
   hint,
+  children,
   onChange,
 }: Props) {
   const [query, setQuery] = useState("");
@@ -111,7 +120,7 @@ export function TagField({
                 aria-label={`Remove ${tag}`}
                 onClick={() => onChange(tags.filter((t) => t !== tag))}
               >
-                ×
+                <X aria-hidden="true" />
               </button>
             </span>
           ))}
@@ -163,7 +172,7 @@ export function TagField({
                 >
                   {highlight(row.value)}
                   {row.label && <span className="co">{row.label}</span>}
-                  <span className="n">{row.count.toLocaleString()} jobs</span>
+                  {counts && <span className="n">{row.count.toLocaleString()} jobs</span>}
                 </li>
               );
             })}
@@ -171,6 +180,7 @@ export function TagField({
           </ul>
         )}
       </div>
+      {children}
       {hint && <div className="hint">{hint}</div>}
     </div>
   );

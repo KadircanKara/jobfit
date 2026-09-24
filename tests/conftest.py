@@ -48,3 +48,44 @@ def cfg_for():
 
 def load_fixture(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+# --- the CV builder -----------------------------------------------------------
+
+
+@pytest.fixture
+def cv_source(tmp_path: pathlib.Path, cfg: config_module.Config) -> pathlib.Path:
+    """An empty CV_Source folder the config points master.tex into."""
+    folder = tmp_path / "CV_Source"
+    folder.mkdir()
+    cfg.raw.setdefault("tailoring", {})["master_tex"] = str(folder / "master.tex")
+    return folder
+
+
+def save_profile(cfg: config_module.Config) -> None:
+    """Save the fixture profile, as the Profile page would."""
+    import copy
+
+    from jobhunt.cv import model
+    from jobhunt.cv import store as cvstore
+
+    cvstore.write(cfg, model.parse(copy.deepcopy(load_fixture("cv/profile.json"))))
+
+
+def passing(argv, cwd):
+    """A LaTeX build that always succeeds with a one-page stand-in PDF."""
+    (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")
+    return 0, "Output written on cv.pdf (1 page, 13 bytes)."
+
+
+class LatexRecorder:
+    """A LaTeX runner that remembers every call and answers as told."""
+
+    def __init__(self, code: int = 0, log: str = "Output written on cv.pdf (2 pages, 10 bytes).") -> None:
+        self.code, self.log, self.calls = code, log, []
+
+    def __call__(self, argv, cwd):
+        self.calls.append(argv)
+        if self.code == 0:
+            (cwd / "cv.pdf").write_bytes(b"%PDF-1.7 fake")
+        return self.code, self.log

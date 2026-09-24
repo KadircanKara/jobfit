@@ -9,7 +9,9 @@ from __future__ import annotations
 import pathlib
 
 import pytest
+from conftest import LatexRecorder
 
+from jobhunt.cv import latex as cv_latex
 from jobhunt.web import revise as revise_module
 
 TEX = "\\documentclass{article}\\begin{document}Kadircan\\end{document}\n"
@@ -38,9 +40,11 @@ class FakeAgent:
     def __init__(self, answers=None) -> None:
         self.answers = list(answers or [])
         self.seen: list[str] = []
+        self.masters: list[str] = []
 
     def revise(self, *, draft, message, master):
         self.seen.append(message)
+        self.masters.append(master)
         answer = self.answers.pop(0) if self.answers else {
             "summary": "Done.", "changes": ["SUMMARY > rewrote the opening"],
         }
@@ -329,13 +333,6 @@ def test_the_payload_never_carries_the_tex(cfg, shipped) -> None:
     assert "documentclass" not in repr(body)
 
 
-def test_page_count_falls_back_to_the_pdf_when_the_log_is_silent() -> None:
-    pdf = b"%PDF-1.4\n" + b"/Type /Page\n" * 3
-
-    assert revise_module._page_count("no page line here", pdf) == 3
-    assert revise_module._page_count("Output written on cv.pdf (2 pages, 9)", pdf) == 2
-
-
 # --- questions, not just edits --------------------------------------------------
 
 
@@ -520,7 +517,41 @@ def test_the_log_shown_starts_at_the_error_not_the_memory_dump() -> None:
          *[f" {n} words out of many" for n in range(10)]]
     )
 
-    shown = revise_module._tail(log)
+    shown = cv_latex.excerpt(log)
 
     assert shown.startswith("! Undefined control sequence.")
     assert "l.42" in shown
+
+
+# --- which master ---------------------------------------------------------------
+
+
+def test_a_cv_cut_in_a_template_is_revised_against_that_master(cfg, shipped) -> None:
+    (shipped / "master.tex").write_text(TEX, encoding="utf-8")
+    agent = FakeAgent()
+    board, _ = opened(cfg, shipped, agent=agent)
+
+    board.send(7, "tighten the summary")
+    finish(board)
+
+    assert agent.masters == [str(shipped / "master.tex")]
+
+
+def test_a_cv_from_before_templates_is_revised_against_the_global_master(cfg, shipped) -> None:
+    cfg.raw.setdefault("tailoring", {})["master_tex"] = "/somewhere/CV_Source/master.tex"
+    agent = FakeAgent()
+    board, _ = opened(cfg, shipped, agent=agent)
+
+    board.send(7, "tighten the summary")
+    finish(board)
+
+    assert agent.masters == ["/somewhere/CV_Source/master.tex"]
+
+
+def test_the_studio_builds_drafts_in_the_sandbox(cfg, shipped) -> None:
+    runner = LatexRecorder()
+
+    ok, log, pdf = revise_module.TailoredLatex(cfg, runner=runner).build(shipped / "cv.tex")
+
+    assert ok and pdf.startswith(b"%PDF") and "2 pages" in log
+    assert runner.calls and all(argv[0].endswith("sandbox-exec") for argv in runner.calls)

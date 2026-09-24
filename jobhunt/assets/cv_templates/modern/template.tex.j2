@@ -1,0 +1,148 @@
+% !TEX program = lualatex
+%-------------------------
+% Modern - a jobhunt built-in template.
+% Single column, A4, Libertinus Serif, small-caps section heads in one accent
+% colour. Uses the same macro names as Classic (\resumeSubheading, \resumeItem,
+% \resumeProjectHeading) so the tailoring skill's cut order reads the same.
+%-------------------------
+\documentclass[a4paper,11pt]{article}
+
+\usepackage[a4paper,left=1.9cm,right=1.9cm,top=1.6cm,bottom=1.6cm]{geometry}
+\usepackage{fontspec}
+% Common ligatures off: an "fi" glyph extracts as one character no ATS search matches.
+\setmainfont{Libertinus Serif}[Ligatures={NoCommon}]
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{accent}{HTML}{1F4E79}
+\definecolor{muted}{gray}{0.35}
+
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+\raggedright
+
+\titleformat{\section}{\color{accent}\large\scshape}{}{0em}{}[\vspace{-7pt}{\color{accent!40}\rule{\linewidth}{0.5pt}}]
+\titlespacing*{\section}{0pt}{9pt}{5pt}
+
+\setlist[itemize]{leftmargin=1.1em, itemsep=1pt, topsep=2pt, parsep=0pt, label={\color{accent}\textbullet}}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0pt, label={}, itemsep=5pt]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}}
+\newcommand{\resumeItem}[1]{\item #1}
+\newcommand{\resumeSubheading}[4]{%
+  \item \textbf{#1}\hfill{\color{muted}#2}\\
+  \textit{#3}\hfill{\color{muted}\small #4}}
+\newcommand{\resumeProjectHeading}[2]{\item #1\hfill{\color{muted}#2}}
+% Colour lives in commands, never in the body: an ATS check reads the body's
+% words, and "accent" or "muted" are not words on a CV.
+\newcommand{\cvname}[1]{{\Huge #1}\\[2pt]}
+\newcommand{\cvheadline}[1]{{\large\color{accent} #1}\\[4pt]}
+\newcommand{\cvsep}{\enspace{\color{muted}|}\enspace}
+
+\begin{document}
+
+\begin{center}
+\BLOCK{for v in basics.headline_variants}
+  \VAR{v.label|comment}
+  % \cvname{\VAR{basics.name}} \cvheadline{\VAR{v.text|rich}}
+\BLOCK{endfor}
+  \cvname{\VAR{basics.name}}
+\BLOCK{if basics.headline}
+  \cvheadline{\VAR{basics.headline|rich}}
+\BLOCK{endif}
+  \small
+\BLOCK{for c in contacts}
+  \BLOCK{if c.url}\href{\VAR{c.url|url}}{\VAR{c.label}}\BLOCK{else}\VAR{c.label}\BLOCK{endif}\BLOCK{if not loop.last}\cvsep\BLOCK{endif}
+
+\BLOCK{endfor}
+\end{center}
+
+\BLOCK{for x in extras}
+\textbf{\VAR{x.label}:} \VAR{x.value|rich}\par
+\BLOCK{endfor}
+
+\BLOCK{for s in sections}
+\BLOCK{if s.kind == 'summary'}
+\section{\VAR{s.title}}
+\VAR{summary.text|rich}
+\BLOCK{for v in summary.variants}
+%
+\VAR{v.label|comment}
+\VAR{v.text|rich|comment}
+\BLOCK{endfor}
+
+\BLOCK{elif s.kind == 'skills'}
+\BLOCK{call hidable_group(s.items)}
+\section{\VAR{s.title}}
+\begin{itemize}[leftmargin=0pt, label={}, itemsep=2pt]
+\BLOCK{for g in s.items}
+\BLOCK{call hidable(g)}
+  \item \textbf{\VAR{g.category}:} \VAR{g.items|join(', ')}
+\BLOCK{endcall}
+\BLOCK{endfor}
+\end{itemize}
+\BLOCK{endcall}
+
+\BLOCK{elif s.kind == 'languages'}
+\section{\VAR{s.title}}
+\BLOCK{for l in s.items}
+\VAR{l.name}: \VAR{l.level}\BLOCK{if l.detail} (\VAR{l.detail})\BLOCK{endif}\par
+\BLOCK{endfor}
+
+\BLOCK{elif s.key in ('experience', 'education')}
+\BLOCK{call hidable_group(s.items)}
+\section{\VAR{s.title}}
+\resumeSubHeadingListStart
+\BLOCK{for e in s.items}
+\BLOCK{call hidable(e)}
+  \resumeSubheading
+    {\VAR{e.title|rich}}{\VAR{e.dates}}
+    {\VAR{e.subtitle|rich}\BLOCK{if e.gpa} (GPA: \VAR{e.gpa})\BLOCK{endif}}{\VAR{e.location}}
+\BLOCK{if e.bullets}
+\BLOCK{call hidable_group(e.bullets)}
+    \resumeItemListStart
+\BLOCK{for b in e.bullets}
+\BLOCK{call hidable(b)}
+      \resumeItem{\VAR{b.text|rich}}
+\BLOCK{endcall}
+\BLOCK{endfor}
+    \resumeItemListEnd
+\BLOCK{endcall}
+\BLOCK{endif}
+\BLOCK{endcall}
+\BLOCK{endfor}
+\resumeSubHeadingListEnd
+\BLOCK{endcall}
+
+\BLOCK{else}
+\BLOCK{call hidable_group(s.items)}
+\section{\VAR{s.title}}
+\resumeSubHeadingListStart
+\BLOCK{for e in s.items}
+\BLOCK{call hidable(e)}
+  \resumeProjectHeading
+    {\BLOCK{if e.url}\href{\VAR{e.url|url}}{\textbf{\VAR{e.title|rich}}}\BLOCK{else}\textbf{\VAR{e.title|rich}}\BLOCK{endif}\BLOCK{if e.subtitle} \textit{-- \VAR{e.subtitle|rich}}\BLOCK{endif}}{\VAR{e.dates}}
+\BLOCK{if e.bullets}
+\BLOCK{call hidable_group(e.bullets)}
+    \resumeItemListStart
+\BLOCK{for b in e.bullets}
+\BLOCK{call hidable(b)}
+      \resumeItem{\VAR{b.text|rich}}
+\BLOCK{endcall}
+\BLOCK{endfor}
+    \resumeItemListEnd
+\BLOCK{endcall}
+\BLOCK{endif}
+\BLOCK{endcall}
+\BLOCK{endfor}
+\resumeSubHeadingListEnd
+\BLOCK{endcall}
+
+\BLOCK{endif}
+\BLOCK{endfor}
+\end{document}

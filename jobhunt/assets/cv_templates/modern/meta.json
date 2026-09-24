@@ -1,0 +1,5 @@
+{
+  "name": "Modern",
+  "engine": "lualatex",
+  "description": "A4, serif, one accent colour and ruled section heads. Same structure as Classic, a lighter look."
+}

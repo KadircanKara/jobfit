@@ -41,6 +41,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # is a file protocol: rank --emit writes a batch, rank --ingest reads
         # the verdicts back. See jobhunt/rank/runner.py.
         "batch_size": 20,
+        # How many batches one run works through. The gate keeps pulling the
+        # next unscored slice until the backlog is dry, so without a ceiling a
+        # run after a large sync would be an open-ended number of model calls.
+        # 10 rounds at the default batch is 200 jobs. Set 1 to gate one slice
+        # per run, which is how this behaved before.
+        "max_gate_rounds": 10,
         "batch_path": str(HOME_DIR / "data/rank/batch.json"),
         # Overrides the master.tex derived candidate summary when set.
         "profile_summary": None,
@@ -58,6 +64,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "review": {"model": None, "effort": None},
         # The revision studio: questions about a posting, and edits to cv.tex.
         "revise": {"model": None, "effort": None},
+        # Pages and reads the Upwork MCP for one search. Judgement over a
+        # bounded, cheap task - not fabrication risk, so it needs neither the
+        # model nor the effort `tailor`/`review` might warrant.
+        "upwork": {"model": None, "effort": None},
+        # Reads master.tex once and writes it out as a profile. Runs once per
+        # install, but it is the document every tailored CV is checked against:
+        # worth the same model you give `tailor`. Unset inherits the CLI default.
+        "import": {"model": None, "effort": None},
+        # Rewrites an uploaded CV into a template. Its output is checked by
+        # validation and never trusted: a mid-size model is enough.
+        "template": {"model": None, "effort": None},
     },
     "digest": {
         "limit": 15,
@@ -77,6 +94,25 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # backfill adds thousands at once and must drain in the background
         # rather than starving the boards that actually produce jobs.
         "max_candidates_per_run": 50,
+    },
+    # Outreach caps, deliberately below the user's own manual peak. An aged
+    # account doing 50 invites a day by hand is one thing; a program doing it is
+    # the pattern that gets noticed. Credits are what the account holds, not a
+    # daily allowance, and are spent only by paid InMail.
+    "outreach": {
+        "max_daily_invites": 20,
+        "max_daily_dms": 25,
+        "max_weekly_invites": 100,
+        "invite_delay_min_seconds": 15.0,
+        "invite_delay_max_seconds": 60.0,
+        "inmail_credits": 12,
+        # How often the queue asks whether an invite was accepted.
+        "poll_interval_seconds": 3600.0,
+        # An invite ignored this long is not going to be accepted, and a queue
+        # that never drains is a queue nobody trusts.
+        "poll_window_days": 21,
+        # Quoted in the Upwork pitch. Empty string omits the rate sentence entirely.
+        "rate_line": "$30/hour",
     },
 }
 

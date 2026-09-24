@@ -1,0 +1,158 @@
+"""The queue behind an invite.
+
+A queued DM is the one place a press now causes a send later, so every path out
+of `queued` has to be exercised: accepted and released, accepted but capped, and
+never accepted at all.
+"""
+from __future__ import annotations
+
+import datetime as dt
+
+from sqlalchemy import select
+
+from jobhunt.db.models import Contact, Job, Outreach, utcnow
+from jobhunt.db.session import session_scope
+from jobhunt.outreach import caps, poller, provider, service, stub
+
+# Derived from the real clock, not a literal: `queued_row` stamps `invited_at`
+# through `service.approve`, which uses `utcnow()`. A literal date would only
+# pass while the system clock happened to agree with it.
+NOW = utcnow()
+
+
+def queued_row(cfg) -> tuple[int, int, stub.StubProvider]:
+    sender = stub.StubProvider(cfg)
+    with session_scope(cfg.db_path) as session:
+        job = Job(
+            external_id="ext-1", source="greenhouse", market="global_remote",
+            title="Backend Engineer", title_normalized="backend engineer",
+        )
+        contact = Contact(full_name="Ece Yurdakul", origin="manual",
+                          is_connection=False, can_send_inmail=False)
+        session.add_all([job, contact])
+        session.flush()
+        job_id, contact_id = job.id, contact.id
+    with session_scope(cfg.db_path) as session:
+        session.add(Outreach(job_id=job_id, contact_id=contact_id))
+    service.draft(cfg, job_id, contact_id, sender, route=provider.INVITE_THEN_DM)
+    service.approve(cfg, job_id, contact_id, sender, route=provider.INVITE_THEN_DM)
+    return job_id, contact_id, sender
+
+
+def state_of(cfg) -> str:
+    with session_scope(cfg.db_path) as session:
+        return session.query(Outreach).one().state
+
+
+def test_an_unaccepted_invite_stays_queued(cfg):
+    queued_row(cfg)
+    counts = poller.tick(cfg, stub.StubProvider(cfg), now=NOW)
+    assert counts == {"released": 0, "expired": 0}
+    assert state_of(cfg) == "queued"
+
+
+def test_acceptance_releases_the_stored_dm(cfg):
+    _, contact_id, sender = queued_row(cfg)
+    sender.accept(contact_id)
+    counts = poller.tick(cfg, sender, now=NOW)
+    assert counts["released"] == 1
+    assert state_of(cfg) == "sent"
+
+
+def test_a_release_that_fails_lands_in_failed_not_sent(cfg):
+    """A queued DM the provider refuses or errors on must not be recorded as sent.
+
+    Otherwise the user believes it went out and has no way to retry it: `sent`
+    has no outgoing transition.
+    """
+    _, contact_id, sender = queued_row(cfg)
+    sender.accept(contact_id)
+
+    def broken_send_dm(contact, body):
+        return provider.SendResult(ok=False, failure="POST /api/v1/chats returned 422: nope")
+
+    sender.send_dm = broken_send_dm
+    counts = poller.tick(cfg, sender, now=NOW)
+    assert counts["released"] == 0
+    assert state_of(cfg) == "failed"
+    with session_scope(cfg.db_path) as session:
+        assert "422" in session.query(Outreach).one().failure
+
+
+def test_a_capped_release_stays_queued_for_the_next_tick(cfg):
+    _, contact_id, sender = queued_row(cfg)
+    sender.accept(contact_id)
+    cfg.raw["outreach"]["max_daily_dms"] = 0
+    assert poller.tick(cfg, sender, now=NOW)["released"] == 0
+    assert state_of(cfg) == "queued"
+    cfg.raw["outreach"]["max_daily_dms"] = 25
+    assert poller.tick(cfg, sender, now=NOW)["released"] == 1
+    assert state_of(cfg) == "sent"
+
+
+def test_an_invite_ignored_past_the_window_is_cancelled(cfg):
+    queued_row(cfg)
+    later = NOW + dt.timedelta(days=22)
+    counts = poller.tick(cfg, stub.StubProvider(cfg), now=later)
+    assert counts["expired"] == 1
+    assert state_of(cfg) == "cancelled"
+
+
+def test_a_cancelled_row_is_left_alone(cfg):
+    job_id, contact_id, sender = queued_row(cfg)
+    service.cancel(cfg, job_id, contact_id)
+    sender.accept(contact_id)
+    assert poller.tick(cfg, sender, now=NOW) == {"released": 0, "expired": 0}
+    assert state_of(cfg) == "cancelled"
+
+
+def test_a_row_resolved_between_listing_and_release_is_not_counted(cfg):
+    """A concurrent tick that already moved the row wins; this one must not double-count it.
+
+    `_release` re-reads the row before sending, so the data was always safe. What
+    this covers is the *count*: released is the poller's only external signal, and
+    a guard that quietly no-ops must not be mistaken for a send that happened.
+    """
+    job_id, contact_id, sender = queued_row(cfg)
+
+    class RaceProvider(stub.StubProvider):
+        def invite_accepted(self, contact) -> bool:
+            # Simulates another tick resolving the row between `tick` listing it
+            # as queued and this call reaching `_release`.
+            with session_scope(cfg.db_path) as session:
+                row = session.scalars(
+                    select(Outreach).where(
+                        Outreach.job_id == job_id, Outreach.contact_id == contact_id
+                    )
+                ).one()
+                row.state = "cancelled"
+            return True
+
+    counts = poller.tick(cfg, RaceProvider(cfg), now=NOW)
+    assert counts["released"] == 0
+    assert state_of(cfg) == "cancelled"
+
+
+def test_a_release_that_loses_the_claim_sends_nothing(cfg, monkeypatch):
+    """The row was read as queued, then taken before this release could claim it.
+
+    Two ticks, or a tick racing an HTTP approve, both reach `_release` believing
+    the row is theirs. The conditional UPDATE is what stops the second one, and
+    it has to stop it *before* the provider is told to send.
+    """
+    job_id, contact_id, sender = queued_row(cfg)
+    sender.accept(contact_id)
+    sends: list[str] = []
+    monkeypatch.setattr(sender, "send_dm", lambda contact, body: sends.append(body))
+
+    real_check = caps.check
+
+    def steal(config, session, route, **kwargs):
+        # The last hook before the claim: stands in for whoever got there first.
+        with session_scope(cfg.db_path) as other:
+            other.query(Outreach).one().state = "sent"
+        return real_check(config, session, route, **kwargs)
+
+    monkeypatch.setattr(caps, "check", steal)
+    assert poller.tick(cfg, sender, now=NOW)["released"] == 0
+    assert sends == []

@@ -1,0 +1,50 @@
+% A small template that follows the contract: the tests' leaky upload.
+\documentclass[11pt]{article}
+\usepackage[margin=2cm]{geometry}
+\usepackage[hidelinks]{hyperref}
+\setlength{\parindent}{0pt}
+\begin{document}
+{\LARGE \VAR{basics.name}}\par
+\BLOCK{if basics.headline}
+\VAR{basics.headline|rich}\par
+\BLOCK{endif}
+\BLOCK{for c in contacts}
+\BLOCK{if c.url}\href{\VAR{c.url|url}}{\VAR{c.label}}\BLOCK{else}\VAR{c.label}\BLOCK{endif}\BLOCK{if not loop.last} | \BLOCK{endif}
+
+\BLOCK{endfor}
+\BLOCK{for x in extras}
+\textbf{\VAR{x.label}}: \VAR{x.value|rich}\par
+\BLOCK{endfor}
+\BLOCK{for s in sections}
+\section*{\VAR{s.title}}
+\BLOCK{if s.kind == 'summary'}
+\VAR{summary.text|rich}\par
+\BLOCK{elif s.kind == 'skills'}
+\BLOCK{for g in s.items}
+\BLOCK{call hidable(g)}
+\textbf{\VAR{g.category}}: \VAR{g.items|join(', ')}\par
+\BLOCK{endcall}
+\BLOCK{endfor}
+\BLOCK{elif s.kind == 'languages'}
+\BLOCK{for l in s.items}
+\VAR{l.name}: \VAR{l.level}\BLOCK{if l.detail} (\VAR{l.detail})\BLOCK{endif}\par
+\BLOCK{endfor}
+\BLOCK{else}
+\BLOCK{for e in s.items}
+\BLOCK{call hidable(e)}
+\textbf{\VAR{e.title|rich}} \hfill \VAR{e.dates}\par
+\textit{\VAR{e.subtitle|rich}}\BLOCK{if e.gpa} (GPA: \VAR{e.gpa})\BLOCK{endif} \hfill \VAR{e.location}\par
+\BLOCK{if e.bullets}
+\BLOCK{call hidable_group(e.bullets)}
+\begin{itemize}
+\BLOCK{for b in e.bullets}
+\item \VAR{b.text|rich}
+\BLOCK{endfor}
+\end{itemize}
+\BLOCK{endcall}
+\BLOCK{endif}
+\BLOCK{endcall}
+\BLOCK{endfor}
+\BLOCK{endif}
+\BLOCK{endfor}
+\end{document}
