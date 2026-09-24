@@ -165,7 +165,7 @@ export function Profile({ onOpenTemplates }: { onOpenTemplates?: () => void } = 
             {dirty ? "Unsaved changes" : "Saved"}
           </span>
         )}
-        <span className="sub" title={body?.path}>
+        <span className="sub">
           The only source every CV is cut from
         </span>
         {profile && (
@@ -229,7 +229,6 @@ export function Profile({ onOpenTemplates }: { onOpenTemplates?: () => void } = 
           <BackupsPanel backups={backups} busy={busy !== null} onRestore={restore} />
         </div>
       )}
-      {body?.path && <div className="hint mono" style={{ marginTop: 12 }}>{body.path}</div>}
     </div>
   );
 }

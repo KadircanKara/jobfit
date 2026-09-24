@@ -27,6 +27,10 @@ const SOURCES: { id: string; label: string; hint: string; enabled: boolean }[] =
   { id: "upwork", label: "Upwork", hint: "Freelance postings, its own settings below", enabled: true },
 ];
 
+export function sourceLabel(id: string): string {
+  return SOURCES.find((source) => source.id === id)?.label ?? id;
+}
+
 // Mirrors UPWORK_JOB_TYPES / UPWORK_EXPERIENCE in jobhunt/preferences.py.
 const UPWORK_JOB_TYPES: [string, string][] = [
   ["hourly", "hourly"],
@@ -264,10 +268,6 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources }: P
   const valid = Object.keys(local).length === 0;
   useEffect(() => onValidity(valid), [valid, onValidity]);
 
-  // Every Upwork setting is keyed under the same prefix, in the validator and
-  // in the errors the API tags, so one test splits both maps by section.
-  const upworkOk = !Object.keys(local).some((key) => key.startsWith("upwork."));
-  const boardsOk = !Object.keys(local).some((key) => !key.startsWith("upwork."));
   const onFile = useMemo(() => draftFrom(filters), [filters]);
   const upworkDirty = !same(draft.upwork, onFile.upwork);
   const boardsDirty = !same({ ...draft, upwork: null }, { ...onFile, upwork: null });
@@ -556,15 +556,6 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources }: P
 
         <FeedsPanel reloadToken={feedsReload} />
 
-        <Acts
-          scope="boards"
-          dirty={boardsDirty}
-          ok={boardsOk && sources.length > 0}
-          saved={saved}
-          saving={saving}
-          onSave={save}
-          onRevert={revert}
-        />
       </Accordion>
 
       <Accordion
@@ -579,15 +570,6 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources }: P
       >
         <UpworkPanel value={draft.upwork} onChange={setUpwork} messages={messages} />
 
-        <Acts
-          scope="upwork"
-          dirty={upworkDirty}
-          ok={upworkOk}
-          saved={saved}
-          saving={saving}
-          onSave={save}
-          onRevert={revert}
-        />
       </Accordion>
 
       <Acts
@@ -753,11 +735,7 @@ function UpworkPanel({
           <option value="client_total_charge">Client spend</option>
           <option value="client_rating">Client rating</option>
         </select>
-        <div className="hint">
-          Best match is what the Upwork website itself shows. Newest first returns a
-          different set entirely — on the same query it shared no results at all with
-          Best match, and most of them were assistant work that merely mentions AI.
-        </div>
+        <div className="hint">Best match is the order the Upwork website uses.</div>
       </div>
 
       <div className="field">
@@ -765,26 +743,16 @@ function UpworkPanel({
           <input
             type="checkbox"
             checked={value.verified_payment_only}
-            onChange={(e) => onChange("verified_payment_only", e.target.checked)}
+            onChange={(e) => {
+              // One control for both checks: Upwork's own filter at search
+              // time, and the stored rule that also covers jobs fetched earlier.
+              onChange("verified_payment_only", e.target.checked);
+              onChange("require_verified_client", e.target.checked);
+            }}
           />
           <span>Verified payment only</span>
         </label>
-        <div className="hint">Asked of Upwork's own search, so unverified clients never come back.</div>
-      </div>
-
-      <div className="field">
-        <label className="checkline">
-          <input
-            type="checkbox"
-            checked={value.require_verified_client}
-            onChange={(e) => onChange("require_verified_client", e.target.checked)}
-          />
-          <span>Drop unverified clients after the fetch</span>
-        </label>
-        <div className="hint">
-          Belt and braces with the box above: this one is a rule over what was stored, so it
-          still holds for jobs fetched before that box was ticked.
-        </div>
+        <div className="hint">Skip clients who have not verified a payment method.</div>
       </div>
 
       <TagField

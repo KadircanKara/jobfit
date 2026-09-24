@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { Info, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { OutreachDrawer } from "../Outreach";
 import { Shortlist } from "../Run";
 import { TemplateStep } from "../cv/TemplateStep";
@@ -18,11 +18,10 @@ export function ShortlistPage({
   go: (to: Route | string, options?: { replace?: boolean }) => void;
 }) {
   const hunt = useHunt();
-  const { run, saved } = useShownRun(runId);
+  const { run } = useShownRun(runId);
   const [choosing, setChoosing] = useState(false);
   const picked = hunt.picked;
   const kept = run.results.filter((row) => !row.below_bar).length;
-  const budget = hunt.outreachBudget;
   const openRow = jobId != null ? run.results.find((row) => row.job_id === jobId) : undefined;
 
   const setPick = (id: number, on: boolean) => {
@@ -58,12 +57,6 @@ export function ShortlistPage({
         <span className="badge">
           {run.outcome === "stopped_early" ? `${kept} · stopped early` : `${kept} above the bar`}
         </span>
-        {budget && (
-          <span className="sub tabular" title="Outreach budget: daily invites, weekly invites, daily messages, InMail credits">
-            {budget.invites_used}/{budget.invites_max} invites · {budget.invites_week_used}/{budget.invites_week_max}{" "}
-            this week · {budget.dms_used}/{budget.dms_max} messages · {budget.credits} credits
-          </span>
-        )}
         <div className="page-actions">
           {hunt.past.length > 0 && (
             <div className="seg" role="group" aria-label="Which run">
@@ -88,15 +81,6 @@ export function ShortlistPage({
           )}
         </div>
       </header>
-
-      {saved && (
-        <div className="notice" style={{ marginBottom: 16 }}>
-          <Info className="icon" aria-hidden="true" />
-          <span className="grow">
-            The shortlist from the run of <b>{stamp(runId ?? "")}</b>, read back from disk.
-          </span>
-        </div>
-      )}
 
       <div className="panel" style={{ padding: 0 }}>
         <Shortlist

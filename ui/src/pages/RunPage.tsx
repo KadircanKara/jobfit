@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ArrowRight, History, Info, Pause, Play, RotateCcw, Square, TriangleAlert } from "lucide-react";
-import { SourcePicker } from "../Filters";
+import { SourcePicker, sourceLabel } from "../Filters";
 import { GatePanel, Log, Pipeline, RankPanel, SourceRail, plural } from "../Run";
 import { followLink, href, type Route } from "../app/router";
 import { runStatus, runTone, stamp, useHunt, useShownRun } from "../app/store";
@@ -148,32 +148,32 @@ export function RunPage({ runId, go }: { runId?: string; go: (to: Route | string
       {missing && (
         <div className="notice" data-tone="warn" style={{ marginBottom: 16 }}>
           <TriangleAlert className="icon" aria-hidden="true" />
-          <span className="grow">There is no saved run {stamp(missing)} on disk any more.</span>
+          <span className="grow">There is no saved run {stamp(missing)} any more.</span>
         </div>
       )}
       {saved && !missing && !lastRun && (
         <div className="notice" style={{ marginBottom: 16 }}>
           <Info className="icon" aria-hidden="true" />
           <span className="grow">
-            Showing the run from <b>{stamp(runId ?? "")}</b>, read back from disk. Nothing here is live.
+            Showing the run from <b>{stamp(runId ?? "")}</b>.
           </span>
           <a href="/" onClick={(e) => followLink(e, () => go({ page: "run" }))}>
             Back to live
           </a>
         </div>
       )}
-      {restored && (
+      {restored && !lastRun && (
         <div className="notice" style={{ marginBottom: 16 }}>
           <Info className="icon" aria-hidden="true" />
+          <span className="grow">The shortlist is from an earlier run. Start a run to refresh it.</span>
+        </div>
+      )}
+      {run.degraded.length > 0 && (
+        <div className="notice" data-tone="warn" style={{ marginBottom: 16 }}>
+          <TriangleAlert className="icon" aria-hidden="true" />
           <span className="grow">
-            {lastRun ? (
-              <>
-                Nothing is running. Below is the last run, from <b>{stamp(lastRun.run_id)}</b>, read back from
-                disk; the shortlist is as it stands now. Start a run to refresh both.
-              </>
-            ) : (
-              "Nothing is running. The shortlist on file is from an earlier run; start a run to refresh it."
-            )}
+            Could not reach {run.degraded.map(sourceLabel).join(", ")} this run, so{" "}
+            {run.degraded.length > 1 ? "their" : "its"} jobs are from the last successful fetch.
           </span>
         </div>
       )}
@@ -202,8 +202,8 @@ export function RunPage({ runId, go }: { runId?: string; go: (to: Route | string
         )}
 
         {(started || restored) && (
-          <div className={started ? "split" : undefined}>
-            {started ? (
+          <div className={started && !saved ? "split" : undefined}>
+            {started && !saved ? (
             <section className="panel">
               <div className="panel-head">
                 <h2>Sync</h2>
@@ -211,29 +211,7 @@ export function RunPage({ runId, go }: { runId?: string; go: (to: Route | string
                   {plural(run.counters.jobs_total ?? 0, "job")} · {plural(run.counters.boards_done ?? 0, "board")}
                 </span>
               </div>
-              {saved ? (
-                <div className="kv">
-                  <div>
-                    <span>Jobs fetched</span>
-                    <b>{(run.counters.jobs_total ?? 0).toLocaleString()}</b>
-                  </div>
-                  <div>
-                    <span>Boards synced</span>
-                    <b>{(run.counters.boards_done ?? 0).toLocaleString()}</b>
-                  </div>
-                  <div>
-                    <span>Passed the rules</span>
-                    <b>{(run.counters.passed ?? run.rank?.passed ?? 0).toLocaleString()}</b>
-                  </div>
-                </div>
-              ) : (
-                <SourceRail sources={hunt.syncSources} />
-              )}
-              {run.degraded.length > 0 && (
-                <div className="hint" style={{ marginTop: 10 }}>
-                  Degraded this run: {run.degraded.join(", ")}. Their jobs stay from the last successful fetch.
-                </div>
-              )}
+              <SourceRail sources={hunt.syncSources} />
             </section>
             ) : null}
 

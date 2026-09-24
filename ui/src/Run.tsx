@@ -219,6 +219,7 @@ const BUCKETS = 10;
 
 export function GatePanel({ report }: { report: GateReport }) {
   const { plan, verdicts } = report;
+  const [open, setOpen] = useState(false);
   if (!plan.batches.length) {
     return (
       <section className="panel">
@@ -244,6 +245,11 @@ export function GatePanel({ report }: { report: GateReport }) {
         <span className="note">
           {plan.jobs} jobs · {plan.batches.length} batches · {report.scored} scored
         </span>
+        {verdicts.length > 0 && (
+          <button type="button" className="btn ghost sm" aria-expanded={open} onClick={() => setOpen((was) => !was)}>
+            {open ? "Hide verdicts" : `Show all ${verdicts.length} verdicts`}
+          </button>
+        )}
       </div>
 
       <div className="gatehead">
@@ -305,7 +311,7 @@ export function GatePanel({ report }: { report: GateReport }) {
         </div>
       </div>
 
-      {verdicts.length > 0 && (
+      {open && verdicts.length > 0 && (
         <div className="tablewrap panel-flush" style={{ marginTop: 16, borderTop: "1px solid var(--border)" }}>
           <table>
             <thead>
@@ -318,7 +324,7 @@ export function GatePanel({ report }: { report: GateReport }) {
               </tr>
             </thead>
             <tbody>
-              {[...verdicts].reverse().map((verdict) => (
+              {[...verdicts].sort((a, b) => (b.score ?? -1) - (a.score ?? -1)).map((verdict) => (
                 <tr key={`${verdict.job_id}-${verdict.market}`}>
                   <td className="fit">{verdict.score != null ? verdict.score.toFixed(2) : "—"}</td>
                   <td>

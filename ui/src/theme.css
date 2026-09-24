@@ -2590,8 +2590,12 @@ tr.below:hover td {
   padding: 12px 16px;
 }
 .formacts.whole {
-  border-top: 0;
-  padding-top: 0;
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  border-top: 1px solid var(--border);
+  padding: 12px 0;
+  background: var(--bg);
 }
 .stale {
   display: block;
