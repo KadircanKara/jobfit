@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   Activity as ActivityIcon,
+  Briefcase,
   ChevronRight,
   FileText,
   LayoutTemplate,
@@ -30,7 +31,10 @@ const GROUPS: { label: string; items: Nav[] }[] = [
   },
   {
     label: "Search setup",
-    items: [{ page: "search", label: "Filters", icon: SlidersHorizontal, to: { page: "search" } }],
+    items: [
+      { page: "boards", label: "Job boards", icon: SlidersHorizontal, to: { page: "boards" } },
+      { page: "upwork", label: "Upwork", icon: Briefcase, to: { page: "upwork" } },
+    ],
   },
   {
     label: "CV",
@@ -85,6 +89,8 @@ export function Shell({
       : hunt.tailor.jobs.length
         ? { value: String(hunt.tailor.jobs.length) }
         : undefined,
+    boards: hunt.filtersDirty.boards ? { value: "", tone: "warn" } : undefined,
+    upwork: hunt.filtersDirty.upwork ? { value: "", tone: "warn" } : undefined,
   };
 
   return (
@@ -125,9 +131,14 @@ export function Shell({
                     <Icon className="icon" />
                     {item.label}
                     {count && (
-                      <span className="count" data-tone={count.tone} title={count.tone ? "running now" : undefined}>
-                        {count.tone && <span className="dot" data-live="true" />}
+                      <span
+                        className="count"
+                        data-tone={count.tone}
+                        title={count.tone === "warn" ? "unsaved changes" : count.tone ? "running now" : undefined}
+                      >
+                        {count.tone && <span className="dot" data-tone={count.tone} data-live={count.tone === "accent" || undefined} />}
                         {count.value}
+                        {count.tone === "warn" && <span className="sr-only">unsaved changes</span>}
                       </span>
                     )}
                   </a>
@@ -208,7 +219,8 @@ const TITLES: Record<Page, string> = {
   run: "Run",
   shortlist: "Shortlist",
   tailoring: "Tailoring",
-  search: "Filters",
+  boards: "Job boards",
+  upwork: "Upwork",
   cv: "Profile",
   templates: "Templates",
 };

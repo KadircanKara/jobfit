@@ -53,6 +53,9 @@ type Hunt = {
   setFilters: (filters: Filters) => void;
   valid: boolean;
   setValid: (valid: boolean) => void;
+  /** Which Filters pages hold edits that are not saved yet. */
+  filtersDirty: { boards: boolean; upwork: boolean };
+  setFiltersDirty: (dirty: { boards: boolean; upwork: boolean }) => void;
   sources: string[];
   pickSources: (next: string[]) => Promise<void>;
   savingSources: boolean;
@@ -100,6 +103,14 @@ export function HuntProvider({ children }: { children: ReactNode }) {
   const [filters, setFilters] = useState<Filters | null>(null);
   const [vocab, setVocab] = useState<Vocab | null>(null);
   const [valid, setValid] = useState(true);
+  const [filtersDirty, setFiltersDirtyState] = useState({ boards: false, upwork: false });
+  const setFiltersDirty = useCallback(
+    (next: { boards: boolean; upwork: boolean }) =>
+      setFiltersDirtyState((current) =>
+        current.boards === next.boards && current.upwork === next.upwork ? current : next,
+      ),
+    [],
+  );
   const [sources, setSources] = useState<string[]>([]);
   const [savingSources, setSavingSources] = useState(false);
   const [sourcesError, setSourcesError] = useState<string | null>(null);
@@ -346,6 +357,8 @@ export function HuntProvider({ children }: { children: ReactNode }) {
     setFilters,
     valid,
     setValid,
+    filtersDirty,
+    setFiltersDirty,
     sources,
     pickSources,
     savingSources,

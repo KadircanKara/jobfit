@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Check, ChevronDown, TriangleAlert } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Check, TriangleAlert } from "lucide-react";
 import { api, FieldError, type Filters, type Vocab, type VocabRow } from "./api";
 import { TagField } from "./TagField";
 import { TitlePresets } from "./TitlePresets";
@@ -62,6 +62,11 @@ type Props = {
      controls and saves a toggle straight away, so this panel only reads it -
      to say whether the Upwork settings are live and to gate its own save. */
   sources: string[];
+  /** Which Filters page is showing; null while another page is up and the
+   *  panel stays mounted only to keep the draft. */
+  section: "boards" | "upwork" | null;
+  onDirty: (dirty: { boards: boolean; upwork: boolean }) => void;
+  onEnableUpwork: () => void;
 };
 
 type Draft = {
@@ -227,7 +232,7 @@ function Acts({
           </>
         ) : saved === scope ? (
           "Saved"
-        ) : whole ? (
+        ) : whole && scope === "all" ? (
           "Save all"
         ) : (
           "Save"
@@ -237,7 +242,16 @@ function Acts({
   );
 }
 
-export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources }: Props) {
+export function FiltersPanel({
+  filters,
+  vocab,
+  onSaved,
+  onValidity,
+  sources,
+  section,
+  onDirty,
+  onEnableUpwork,
+}: Props) {
   const [draft, setDraft] = useState<Draft>(() => draftFrom(filters));
   const [errors, setErrors] = useState<Record<string, string>>({});
   // Which scope just saved, so only the button that was pressed says so.
@@ -252,10 +266,6 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources }: P
   // Presets live beside the titles in filters.yaml, so they arrive with the
   // filters and are re-read from whatever the group endpoints return.
   const [groups, setGroups] = useState<Record<string, string[]>>(filters.title_groups ?? {});
-  // One section at a time, and neither to begin with: the clutter this page was
-  // split up to fix came from the Upwork block and the board feeds being on
-  // screen together, so the page opens as a choice between the two.
-  const [open, setOpen] = useState<"boards" | "upwork" | null>(null);
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
@@ -271,6 +281,21 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources }: P
   const onFile = useMemo(() => draftFrom(filters), [filters]);
   const upworkDirty = !same(draft.upwork, onFile.upwork);
   const boardsDirty = !same({ ...draft, upwork: null }, { ...onFile, upwork: null });
+  useEffect(() => onDirty({ boards: boardsDirty, upwork: upworkDirty }), [boardsDirty, upworkDirty, onDirty]);
+
+  // Each page saves only its own half, so a draft left on the other page
+  // survives a move between them. Closing the tab would lose it, so ask.
+  useEffect(() => {
+    if (!boardsDirty && !upworkDirty) return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [boardsDirty, upworkDirty]);
+
+  // Every Upwork setting is keyed under the same prefix, in the validator and
+  // in the errors the API tags, so one test splits both maps by section.
+  const upworkOk = !Object.keys(local).some((key) => key.startsWith("upwork."));
+  const boardsOk = !Object.keys(local).some((key) => !key.startsWith("upwork."));
 
   const salary = parseSalary(draft.min_salary);
 
@@ -296,9 +321,6 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources }: P
     } catch (error) {
       if (error instanceof FieldError) {
         setErrors({ [error.field]: error.message });
-        // The rejected field renders inside one of the two sections, so a save
-        // that fails against a collapsed one would report nothing.
-        setOpen(error.field.startsWith("upwork.") ? "upwork" : "boards");
       } else setErrors({ filters: String(error) });
     } finally {
       setSaving(null);
@@ -328,17 +350,14 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources }: P
 
   return (
     <>
+      {section === "boards" && (
+      <>
       <header className="page-header">
-        <h1>Filters</h1>
-        <span className="sub">{vocab.active_jobs.toLocaleString()} active jobs in the corpus</span>
+        <h1>Job boards</h1>
+        <span className="sub">what to search for, and which boards to search</span>
       </header>
 
-      <Accordion
-        title="Job boards"
-        note="what to search for, and which feeds to search"
-        open={open === "boards"}
-        onToggle={() => setOpen((current) => (current === "boards" ? null : "boards"))}
-      >
+      <section className="panel">
         <div className="fields">
           <TagField
             label="Titles"
@@ -555,71 +574,57 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources }: P
         </div>
 
         <FeedsPanel reloadToken={feedsReload} />
-
-      </Accordion>
-
-      <Accordion
-        title="Upwork"
-        note={
-          sources.includes("upwork")
-            ? "how the Upwork search is run"
-            : "Upwork is not one of the selected sources — these sit idle"
-        }
-        open={open === "upwork"}
-        onToggle={() => setOpen((current) => (current === "upwork" ? null : "upwork"))}
-      >
-        <UpworkPanel value={draft.upwork} onChange={setUpwork} messages={messages} />
-
-      </Accordion>
+      </section>
 
       <Acts
         global
-        scope="all"
-        dirty={boardsDirty || upworkDirty}
-        ok={valid && sources.length > 0}
+        scope="boards"
+        dirty={boardsDirty}
+        ok={boardsOk && sources.length > 0}
         saved={saved}
         saving={saving}
         onSave={save}
         onRevert={revert}
       />
-      {messages.filters && <div className="err">{messages.filters}</div>}
-    </>
-  );
-}
+      </>
+      )}
 
-function Accordion({
-  title,
-  note,
-  open,
-  onToggle,
-  children,
-}: {
-  title: string;
-  note: string;
-  open: boolean;
-  onToggle: () => void;
-  children: ReactNode;
-}) {
-  // Rendered from the first time it opens, so a section never opened costs
-  // nothing, and a draft inside one survives it closing again.
-  const [mounted, setMounted] = useState(open);
-  if (open && !mounted) setMounted(true);
+      {section === "upwork" && (
+      <>
+      <header className="page-header">
+        <h1>Upwork</h1>
+        <span className="sub">freelance postings, searched through your Upwork account</span>
+      </header>
 
-  return (
-    <div className="acc" data-open={open}>
-      <button className="acc-head" type="button" aria-expanded={open} onClick={onToggle}>
-        <h2>{title}</h2>
-        <span className="note">{note}</span>
-        <ChevronDown className="icon chev" aria-hidden="true" />
-      </button>
-      {mounted && (
-        <div className="acc-body" data-open={open}>
-          <div className="acc-clip">
-            <div className="acc-inner">{children}</div>
-          </div>
+      {!sources.includes("upwork") && (
+        <div className="notice" data-tone="warn" style={{ marginBottom: 16 }}>
+          <TriangleAlert className="icon" aria-hidden="true" />
+          <span className="grow">Upwork is off, so runs skip it. These settings apply once it is on.</span>
+          <button type="button" className="btn sm" onClick={onEnableUpwork}>
+            Turn on Upwork
+          </button>
         </div>
       )}
-    </div>
+
+      <section className="panel">
+        <UpworkPanel value={draft.upwork} onChange={setUpwork} messages={messages} />
+      </section>
+
+      <Acts
+        global
+        scope="upwork"
+        dirty={upworkDirty}
+        ok={upworkOk}
+        saved={saved}
+        saving={saving}
+        onSave={save}
+        onRevert={revert}
+      />
+      </>
+      )}
+
+      {section && messages.filters && <div className="err">{messages.filters}</div>}
+    </>
   );
 }
 
@@ -646,7 +651,7 @@ function UpworkPanel({
         freeNote="free text"
         emptyNote="No suggestions — Upwork has no fixed title vocabulary, type your own."
         onChange={(tags) => onChange("queries", tags)}
-        hint={<>searched against the posting itself, not matched against the titles above</>}
+        hint={<>searched against the posting itself, not matched against your job-board titles</>}
       />
 
       <div className="field wide">

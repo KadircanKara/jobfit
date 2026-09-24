@@ -21,6 +21,7 @@ export default function App() {
 function Routes() {
   const [route, go] = useRoute();
   const hunt = useHunt();
+  const filterPage = route.page === "boards" || route.page === "upwork" ? route.page : null;
 
   return (
     <Shell route={route} go={go}>
@@ -34,20 +35,23 @@ function Routes() {
       {/* Kept mounted whichever page is up, so an unsaved draft survives a trip
           elsewhere and back, and its validity still gates Start run. */}
       {hunt.filters && hunt.vocab ? (
-        <div className="page" style={{ display: route.page === "search" ? undefined : "none" }}>
+        <div className="page" style={{ display: filterPage ? undefined : "none" }}>
           <FiltersPanel
             filters={hunt.filters}
             vocab={hunt.vocab}
             onSaved={hunt.setFilters}
             onValidity={hunt.setValid}
             sources={hunt.sources}
+            section={filterPage}
+            onDirty={hunt.setFiltersDirty}
+            onEnableUpwork={() => void hunt.pickSources([...hunt.sources, "upwork"])}
           />
         </div>
       ) : (
-        route.page === "search" && (
+        filterPage && (
           <div className="page">
             <header className="page-header">
-              <h1>Filters</h1>
+              <h1>{filterPage === "upwork" ? "Upwork" : "Job boards"}</h1>
             </header>
             {hunt.sourcesError ? (
               <div className="notice" data-tone="danger" role="alert">

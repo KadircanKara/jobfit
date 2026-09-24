@@ -46,7 +46,7 @@ STATIC_DIR = pathlib.Path(__file__).parent / "static"
 # Every address the interface routes, mirroring ui/src/app/router.ts, plus the
 # paths from before the redesign, which the interface redirects.
 SPA_PATHS = re.compile(
-    r"^/(shortlist|tailoring(/\d+)?|runs/[\w-]+|search|cv(/templates)?|filters|profile|templates)$"
+    r"^/(shortlist|tailoring(/\d+)?|runs/[\w-]+|search(/boards|/upwork)?|cv(/templates)?|filters|profile|templates)$"
 )
 
 

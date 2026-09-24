@@ -102,7 +102,7 @@ export function RunPage({ runId, go }: { runId?: string; go: (to: Route | string
           <TriangleAlert className="icon" aria-hidden="true" />
           <span className="grow">
             The filters have an unsaved problem, so a run cannot start.{" "}
-            <a href={href({ page: "search" })} onClick={(e) => followLink(e, () => go({ page: "search" }))}>
+            <a href={href({ page: "boards" })} onClick={(e) => followLink(e, () => go({ page: "boards" }))}>
               Open Filters
             </a>
           </span>
