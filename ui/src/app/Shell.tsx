@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 import {
   Activity as ActivityIcon,
   Briefcase,
@@ -9,16 +9,16 @@ import {
   Menu,
   Moon,
   Play,
-  SlidersHorizontal,
   Sparkles,
   Sun,
   X,
 } from "lucide-react";
 import { followLink, href, type Page, type Route } from "./router";
 import { RunHistory } from "./RunHistory";
+import { UpworkIcon } from "./UpworkIcon";
 import { PHASE_LABEL, runStatus, useHunt } from "./store";
 
-type Nav = { page: Page; label: string; icon: typeof Play; to: Route };
+type Nav = { page: Page; label: string; icon: ComponentType<{ className?: string }>; to: Route };
 
 const GROUPS: { label: string; items: Nav[] }[] = [
   {
@@ -32,8 +32,8 @@ const GROUPS: { label: string; items: Nav[] }[] = [
   {
     label: "Search setup",
     items: [
-      { page: "boards", label: "Job boards", icon: SlidersHorizontal, to: { page: "boards" } },
-      { page: "upwork", label: "Upwork", icon: Briefcase, to: { page: "upwork" } },
+      { page: "boards", label: "Job boards", icon: Briefcase, to: { page: "boards" } },
+      { page: "upwork", label: "Upwork", icon: UpworkIcon, to: { page: "upwork" } },
     ],
   },
   {
