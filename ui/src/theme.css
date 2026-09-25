@@ -2956,67 +2956,6 @@ tr.below:hover td {
   margin-right: auto;
 }
 
-.feedlist {
-  display: grid;
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-}
-.feedgroup + .feedgroup {
-  margin-top: 16px;
-}
-.feedgroup-title {
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  color: var(--text-2);
-  margin-bottom: 8px;
-}
-.feedlist > * {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-}
-.feedlist > :last-child {
-  border-bottom: 0;
-}
-.feedlist .nm {
-  font-weight: 500;
-}
-.feedlist .meta,
-.feedlist .matched,
-.feedlist .rate {
-  font-size: var(--fs-sm);
-  color: var(--text-3);
-}
-.feedlist .status {
-  font-size: var(--fs-sm);
-  color: var(--warn-text);
-}
-.approvedrow {
-  grid-template-columns: minmax(0, 1fr) auto auto !important;
-}
-.feedcheck-empty {
-  width: 15px;
-  height: 15px;
-  border: 1px dashed var(--border-2);
-  border-radius: 3px;
-}
-
-.subsection {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border);
-}
-.subsection-head {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  margin-bottom: 10px;
-}
-
 /* ---------- CV builder ------------------------------------------------------ */
 
 .cv-layout {
@@ -3727,9 +3666,6 @@ tr.below:hover td {
   .cv-row,
   .cv-skill {
     grid-template-columns: minmax(0, 1fr);
-  }
-  .feedlist > * {
-    grid-template-columns: auto minmax(0, 1fr);
   }
   .sheet {
     width: 100vw;

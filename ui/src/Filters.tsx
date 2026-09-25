@@ -3,7 +3,6 @@ import { Check, TriangleAlert } from "lucide-react";
 import { api, FieldError, type Filters, type Vocab, type VocabRow } from "./api";
 import { TagField } from "./TagField";
 import { TitlePresets } from "./TitlePresets";
-import { FeedsPanel } from "./Feeds";
 
 // Mirrors SENIORITY_ORDER in jobhunt/rank/deterministic.py, order included: the
 // ceiling is disabled against the floor by index, so a list in a different order
@@ -260,9 +259,6 @@ export function FiltersPanel({
   // flight would race, and the later reply would overwrite the earlier one.
   const [saving, setSaving] = useState<Scope | null>(null);
   const [impact, setImpact] = useState<{ matched: number; total: number } | null>(null);
-  // Bumped after a save so the feeds section refetches: its proposals are
-  // scored against the titles that were just written, not the old ones.
-  const [feedsReload, setFeedsReload] = useState(0);
   // Presets live beside the titles in filters.yaml, so they arrive with the
   // filters and are re-read from whatever the group endpoints return.
   const [groups, setGroups] = useState<Record<string, string[]>>(filters.title_groups ?? {});
@@ -316,7 +312,6 @@ export function FiltersPanel({
       adopt(scope, draftFrom(body.filters));
       setImpact(body.title_impact);
       setSaved(scope);
-      setFeedsReload((n) => n + 1);
       window.setTimeout(() => setSaved(null), 1400);
     } catch (error) {
       if (error instanceof FieldError) {
@@ -354,7 +349,7 @@ export function FiltersPanel({
       <>
       <header className="page-header">
         <h1>Job boards</h1>
-        <span className="sub">what to search for, and which boards to search</span>
+        <span className="sub">what to search for on the job boards</span>
       </header>
 
       <section className="panel">
@@ -572,8 +567,6 @@ export function FiltersPanel({
             {messages.top_n && <div className="err">{messages.top_n}</div>}
           </div>
         </div>
-
-        <FeedsPanel reloadToken={feedsReload} />
       </section>
 
       <Acts
