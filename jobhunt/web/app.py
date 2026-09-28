@@ -21,9 +21,8 @@ from sqlalchemy import select
 from jobhunt import preferences as prefs_module
 from jobhunt.config import Config
 from jobhunt.config import load as load_config
-from jobhunt.db.models import Board, utcnow
+from jobhunt.db.models import utcnow
 from jobhunt.db.session import session_scope
-from jobhunt.discovery import categories as categories_module
 from jobhunt.outreach import poller as outreach_poller
 from jobhunt.outreach import unipile as outreach_unipile
 from jobhunt.web import agent as agent_module
@@ -48,22 +47,6 @@ STATIC_DIR = pathlib.Path(__file__).parent / "static"
 SPA_PATHS = re.compile(
     r"^/(shortlist|tailoring(/\d+)?|runs/[\w-]+|search(/boards|/upwork)?|cv(/templates)?|filters|profile|templates)$"
 )
-
-
-class _BadFeedRequest(Exception):
-    """The `approve`/`retire` payload could not be turned into board selections.
-
-    Covers both a provider the vocabulary does not know and every shape
-    FastAPI's own `dict[str, Any]` validation does not check: a non-list
-    value, a row that is not an object, a provider or token that is not a
-    string. All of them are the caller's fault, not the server's, so all of
-    them become one clean 422 rather than an unhandled 500 — a non-string
-    token in particular would otherwise reach SQLite and raise there.
-    """
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
-        self.message = message
 
 
 class AppState:
@@ -393,82 +376,6 @@ def create_app(*, config: Config | None = None) -> FastAPI:
         cfg, outreach_sender, stop=app.state.outreach_stop
     )
     app.router.on_shutdown.append(app.state.outreach_stop.set)
-
-    # --- feeds --------------------------------------------------------
-
-    def _feeds_payload() -> dict[str, Any]:
-        prefs, _ = prefs_module.load(cfg)
-        proposals = categories_module.propose(cfg, prefs)
-        with session_scope(cfg.db_path) as session:
-            approved = session.execute(
-                select(
-                    Board.provider, Board.token, Board.status,
-                    Board.last_job_count, Board.last_fetched_at,
-                ).where(
-                    Board.discovered_via == categories_module.DISCOVERED_VIA,
-                    # Deliberately not filtered on status: this feature ships
-                    # no prober, and the promise that replaces one is that the
-                    # panel reports what happened to every approved feed. A
-                    # guess that died has to stay visible reading "did not
-                    # resolve", or the user re-approves it forever. Retired
-                    # feeds drop out by note instead, since retiring is a
-                    # decision rather than a failure.
-                    Board.notes == categories_module.APPROVED_NOTE,
-                )
-            ).all()
-        return {
-            # `propose` returns nothing for an empty title list whatever is on
-            # disk, so the panel needs to know which of the two empty states it
-            # is looking at before it can tell the user what to do about it.
-            "has_titles": bool(prefs.titles),
-            "proposals": [dataclasses.asdict(p) for p in proposals if not p.registered],
-            "approved": [
-                {
-                    "provider": provider, "token": token, "status": status,
-                    "last_job_count": last_job_count,
-                    "last_fetched_at": last_fetched_at.isoformat() if last_fetched_at else None,
-                }
-                for provider, token, status, last_job_count, last_fetched_at in approved
-            ],
-        }
-
-    @app.get("/api/feeds")
-    def read_feeds() -> dict[str, Any]:
-        return _feeds_payload()
-
-    @app.post("/api/feeds")
-    def write_feeds(payload: dict[str, Any]) -> Any:
-        def pairs(key: str) -> list[tuple[str, str]]:
-            rows = payload.get(key) or []
-            if not isinstance(rows, list):
-                raise _BadFeedRequest(f"{key!r} must be a list")
-            out = []
-            for row in rows:
-                if not isinstance(row, dict):
-                    raise _BadFeedRequest(f"each entry in {key!r} must be an object")
-                provider, token = row.get("provider"), row.get("token")
-                if not provider:
-                    raise _BadFeedRequest(f"each entry in {key!r} needs a provider")
-                if not isinstance(provider, str):
-                    raise _BadFeedRequest(f"each provider in {key!r} must be a string")
-                if provider not in categories_module.VOCABULARY:
-                    raise _BadFeedRequest(f"{provider} is not a source that can be narrowed")
-                # A dict or list token binds straight into a SQL parameter
-                # and raises deep in the driver, so the shape is refused here
-                # where it can still become the 422 this class promises.
-                if token is not None and not isinstance(token, str):
-                    raise _BadFeedRequest(f"each token in {key!r} must be a string")
-                if token:
-                    out.append((provider, token))
-            return out
-
-        try:
-            to_approve, to_retire = pairs("approve"), pairs("retire")
-        except _BadFeedRequest as exc:
-            return JSONResponse(status_code=422, content={"message": exc.message})
-        categories_module.approve(cfg, to_approve)
-        categories_module.retire(cfg, to_retire)
-        return _feeds_payload()
 
     # --- runs ---------------------------------------------------------
 
