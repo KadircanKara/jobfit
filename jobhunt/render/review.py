@@ -55,6 +55,13 @@ class Card:
         return "posted today" if days == 0 else f"posted {days}d ago"
 
 
+# A job no listing has carried for this long is not shown, whatever its
+# `is_active` says. Boards with jobs are re-read weekly, so twice that is slack
+# for a skipped run; LinkedIn has no full listing to retire a job from, so for
+# it this is the only thing that ever does.
+SEEN_WITHIN_DAYS = 14
+
+
 def shortlist(
     config: Config,
     market: str | None = None,
@@ -118,6 +125,7 @@ def _scored_cards(
             .join(Score, Score.job_id == Job.id)
             .join(Company, Job.company_id == Company.id, isouter=True)
             .where(Job.is_active.is_(True))
+            .where(Job.last_seen_at >= utcnow() - dt.timedelta(days=SEEN_WITHIN_DAYS))
             .where(Score.deterministic_pass.is_(True))
         )
         if market:

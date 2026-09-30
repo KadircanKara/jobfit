@@ -453,6 +453,7 @@ class RunSupervisor:
 
     def _shortlist(self) -> None:
         self.state.phase = "shortlist"
+        self.log.emit(phase="shortlist", message="checking the postings are still open")
         self.state.results = self.pipeline.shortlist()
         # Near misses ride along in the same list, flagged. Only the jobs above
         # the bar were exported, so only those are counted here.

@@ -64,10 +64,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "review": {"model": None, "effort": None},
         # The revision studio: questions about a posting, and edits to cv.tex.
         "revise": {"model": None, "effort": None},
-        # Pages and reads the Upwork MCP for one search. Judgement over a
-        # bounded, cheap task - not fabrication risk, so it needs neither the
-        # model nor the effort `tailor`/`review` might warrant.
-        "upwork": {"model": None, "effort": None},
         # Reads master.tex once and writes it out as a profile. Runs once per
         # install, but it is the document every tailored CV is checked against:
         # worth the same model you give `tailor`. Unset inherits the CLI default.
@@ -111,8 +107,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # An invite ignored this long is not going to be accepted, and a queue
         # that never drains is a queue nobody trusts.
         "poll_window_days": 21,
-        # Quoted in the Upwork pitch. Empty string omits the rate sentence entirely.
-        "rate_line": "$30/hour",
     },
 }
 

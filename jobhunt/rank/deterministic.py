@@ -23,13 +23,24 @@ import yaml
 
 from jobhunt.config import Config
 from jobhunt.db.models import Company, Job, utcnow
-from jobhunt.rank import timezones
+from jobhunt.rank import authorization, timezones
 
 # Ordered weakest to strongest. A job whose level is unknown passes any minimum.
 SENIORITY_ORDER = ["intern", "junior", "mid", "senior", "staff", "lead", "principal"]
 
 FILTERS_FILENAME = "filters.yaml"
 PACKAGED_FILTERS = pathlib.Path(__file__).resolve().parent.parent / "assets" / FILTERS_FILENAME
+
+
+# Sources a previous build fetched and this one does not. Their rows are kept,
+# since a job the user applied to still belongs in their history, but never
+# ranked or shortlisted again.
+RETIRED_SOURCES = frozenset({"upwork"})
+
+# Bumped whenever a rule here changes what it decides for the same filters.
+# Part of the stage-1 fingerprint, so stored verdicts are re-evaluated once
+# instead of standing on rules this build no longer applies.
+RULES_VERSION = 3
 
 
 # Every drop reason carries a code alongside its sentence. The sentence names
@@ -49,10 +60,8 @@ REASON_LABELS: dict[str, str] = {
     "seniority_high": "seniority above the ceiling",
     "salary_unstated": "salary not stated",
     "salary_below": "salary below the floor",
-    "rate_below": "freelance rate below the floor",
-    "client_no_spend": "client has never spent anything",
-    "client_low_spend": "client spent less than the minimum",
-    "client_unverified": "client has not verified payment",
+    "auth_required": "needs work authorization you don't have",
+    "no_sponsorship": "no visa sponsorship where you need it",
     "tz_overlap": "timezone overlap below the minimum",
 }
 
@@ -60,8 +69,7 @@ REASON_LABELS: dict[str, str] = {
 # so telling the user to adjust them from the browser would be a lie.
 TUNABLE_REASONS = frozenset(
     {"age", "title_unmatched", "field_mismatch", "seniority_low", "seniority_high",
-     "salary_unstated", "salary_below", "rate_below",
-     "client_no_spend", "client_low_spend", "client_unverified"}
+     "salary_unstated", "salary_below", "auth_required", "no_sponsorship"}
 )
 
 
@@ -124,8 +132,7 @@ def evaluate(
     _check_hard_excludes(haystack, profile, verdict)
     _check_seniority(job, profile, verdict)
     _check_salary(job, profile, verdict)
-    _check_rate(job, profile, verdict)
-    _check_client(job, profile, verdict)
+    _check_work_authorization(job, global_rules, verdict)
     _check_timezone(job, profile, verdict)
     _apply_boosts(job, company, profile, verdict)
 
@@ -156,9 +163,20 @@ def _check_source(job: Job, rules: dict[str, Any], verdict: Verdict) -> None:
     # keeps meaning "every source". Key present and empty is a different statement -
     # nothing was selected - and must drop everything rather than quietly re-open
     # the corpus the fetch pass just refused to fill.
+    if job.source in RETIRED_SOURCES:
+        # Rows fetched by an adapter this build no longer has. They stay in the
+        # database, but nothing that ranks or shortlists may surface them.
+        verdict.drop("source_excluded", f"source {job.source} is no longer searched")
+        return
     if allowed is None:
         return
-    if job.source not in set(allowed):
+    kept = {name for name in allowed if name not in RETIRED_SOURCES}
+    if allowed and not kept:
+        # Saved before its only source was retired. `preferences.from_filters`
+        # reads that as every source, so this must too, or the fetch would fill
+        # a corpus the shortlist then drops whole.
+        return
+    if job.source not in kept:
         verdict.drop("source_excluded", f"source {job.source} is not selected")
 
 
@@ -347,47 +365,31 @@ def _convert(amount: float, frm: str, to: str, rates: dict[str, Any]) -> float |
     return amount / source * target
 
 
-def _check_rate(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
-    """Judge a freelance rate against its own floor, never the salary floor.
+def _check_work_authorization(job: Job, rules: dict[str, Any], verdict: Verdict) -> None:
+    """Drop a job whose authorization or sponsorship terms the candidate fails.
 
-    An hourly rate and an annual salary are not the same quantity, and 2080
-    hours is a fiction for contract work: a $60/hr gig is not a $125k offer.
+    The patterns read the description; once the gate has read the posting its
+    answer is merged in. See `authorization` for the decision itself.
     """
-    rules = profile.get("rate") or {}
-    period = (job.salary_period or "").lower()
-    floor = rules.get("min_hourly") if period == "hourly" else rules.get("min_fixed")
-    if not floor or period not in ("hourly", "fixed"):
+    who = authorization.Candidate.from_rules(rules)
+    if who.anywhere:
         return
-    top = job.salary_max or job.salary_min
-    if top is None:
-        return  # unstated is never a rejection
-    if float(top) < float(floor):
-        verdict.drop("rate_below", f"{period} rate {top:g} below {float(floor):g}")
+    facts = authorization.merge(
+        stored_facts(job), authorization.extract(job.description_text or job.description_md)
+    )
+    dropped = authorization.decide(facts, job.country, who)
+    if dropped:
+        verdict.drop(*dropped)
 
 
-def _check_client(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:
-    """Judge who is paying, when the user has asked to be picky about it.
-
-    Every rule here defaults off, so a filters.yaml written before they existed
-    keeps exactly the corpus it had. Both follow the house rule that unknown is
-    never a rejection: `client_verified` and `client_total_spent` are null on
-    every source but Upwork, and null there means the fetch never learned the
-    value - not that the client is unverified or has spent nothing. Reading a
-    null as a zero would silently drop the entire rest of the corpus the moment
-    either switch was turned on.
-    """
-    rules = profile.get("client") or {}
-
-    floor = rules.get("min_spend")
-    spent = job.client_total_spent
-    if floor and spent is not None and spent < float(floor):
-        verdict.drop("client_low_spend", f"client has spent ${spent:,.0f}, under ${float(floor):,.0f}")
-    elif rules.get("require_spend") and spent is not None and spent <= 0:
-        # A filters.yaml written before `min_spend` existed and not saved since.
-        verdict.drop("client_no_spend", "client has never spent on this platform")
-
-    if rules.get("require_verified") and job.client_verified is False:
-        verdict.drop("client_unverified", "client has not verified a payment method")
+def stored_facts(job: Job) -> authorization.Facts | None:
+    """The gate's reading of this job, if it has read it."""
+    if job.auth_checked_at is None:
+        return None
+    return authorization.Facts(
+        required=frozenset(job.work_auth_required or ()),
+        sponsorship=job.visa_sponsorship,
+    )
 
 
 def _check_timezone(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:

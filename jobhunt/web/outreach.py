@@ -15,17 +15,7 @@ from jobhunt.db.models import Contact, Job, Outreach
 from jobhunt.db.session import session_scope
 from jobhunt.outreach import caps, discovery, provider, service
 from jobhunt.outreach.unipile_client import UnipileError
-from jobhunt.pipeline.client_identity import COMPANY_NAME_PLACEHOLDER
 from jobhunt.rank import regions
-
-# Why `find` did nothing, for the drawer to show in place of a result. An
-# anonymous gig is the common case on Upwork, not an error, so it is said
-# plainly rather than raised.
-NO_COMPANY_TO_SEARCH = (
-    "Upwork does not publish this client's company, and the posting does not name "
-    "one, so there is nothing to search LinkedIn for. Add a contact by hand if you "
-    "work out who they are."
-)
 
 # Ordering for "most advanced state" across a job's contacts. `failed` and
 # `cancelled` are not progress - a job whose only contact bounced should not
@@ -48,19 +38,12 @@ CONTACT_ORIGINS = ("job_poster", "company_search", "manual")
 def _job_location(job: Job) -> str | None:
     """The place to narrow a people-search to, as a name LinkedIn can resolve.
 
-    Region first: "Nexora" across the whole United States does not surface the
-    Californian company that "California, United States" finds immediately, and
-    Upwork reports the client's state on every posting that has a detail.
-    Falls back to the country alone, then to nothing - an unresolvable or
-    unknown location costs the filter, never the search.
-
-    `job.country` is a two-letter code, which is exactly what must not be sent:
-    LinkedIn's lookup reads "CA" as Canada. It is spelled out here first.
+    The country, or nothing - an unresolvable or unknown location costs the
+    filter, never the search. `job.country` is a two-letter code, which is
+    exactly what must not be sent: LinkedIn's lookup reads "CA" as Canada. It is
+    spelled out here first.
     """
-    country = regions.country_name(job.country) if job.country else None
-    if job.client_region and country:
-        return f"{job.client_region}, {country}"
-    return job.client_region or country
+    return regions.country_name(job.country) if job.country else None
 
 
 def _existing_profile_urls(session) -> set[str]:
@@ -169,9 +152,7 @@ def register(app: FastAPI, config: Config, sender: provider.LinkedInProvider) ->
 
         The company search fires only here, and only when the current sender
         actually exposes one - the stub, the default, does not. Nothing on the
-        fetch/sync path holds a reference to this function at all. It also does
-        not fire for an anonymous Upwork gig, whose company is a placeholder
-        string rather than a company; `note` says so, and the drawer shows it.
+        fetch/sync path holds a reference to this function at all.
 
         Kept as a POST that returns both kinds, stated included: the drawer
         already shows the stated poster from the GET above, and merges these
@@ -187,18 +168,6 @@ def register(app: FastAPI, config: Config, sender: provider.LinkedInProvider) ->
             candidates = discovery.find_contacts(job)
             client = getattr(current_sender, "client", None)
             company = job.company.name if job.company else None
-            if company == COMPANY_NAME_PLACEHOLDER:
-                # Not a company: it is what an Upwork gig is called when
-                # `client_identity` recovered nothing from the description, and
-                # Upwork never publishes one. Searching LinkedIn for it spends a
-                # real people-search and returns whoever LinkedIn thinks "Upwork
-                # client" means, presented in the drawer exactly like a genuine
-                # candidate at a genuine company.
-                existing_urls = _existing_profile_urls(session)
-                return {
-                    "candidates": _candidate_payload(candidates, existing_urls),
-                    "note": NO_COMPANY_TO_SEARCH,
-                }
             if client is not None and hasattr(client, "search_people") and company:
                 try:
                     candidates = candidates + discovery.search_company(

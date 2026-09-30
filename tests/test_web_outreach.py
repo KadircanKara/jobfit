@@ -237,62 +237,6 @@ def test_find_contacts_returns_the_posted_contact_and_the_searched_ones(client, 
     assert sam["existing"] is False
 
 
-class ExplodingSearchClient:
-    """Any call at all is the bug this test is about."""
-
-    def search_people(self, company, keywords, *, limit=5, location=None):
-        raise AssertionError(f"searched LinkedIn for {company!r}, which is not a company")
-
-
-def _anonymous_upwork_job(cfg) -> int:
-    from jobhunt.pipeline.client_identity import COMPANY_NAME_PLACEHOLDER
-
-    with session_scope(cfg.db_path) as session:
-        company = Company(name=COMPANY_NAME_PLACEHOLDER, normalized_name="upwork client")
-        session.add(company)
-        session.flush()
-        job = Job(
-            external_id="up-1", source="upwork", market="upwork",
-            title="RAG pipeline engineer", title_normalized="rag pipeline engineer",
-            company_id=company.id,
-        )
-        session.add(job)
-        session.flush()
-        return job.id
-
-
-def test_find_contacts_never_searches_linkedin_for_the_upwork_placeholder(client, cfg) -> None:
-    """Most gigs name no client, so most Find contacts presses land here. Left
-    alone, each one spends a people-search and shows whoever LinkedIn thinks
-    "Upwork client" is, styled exactly like a real candidate."""
-    job_id = _anonymous_upwork_job(cfg)
-    client.app.state.outreach_sender = FakeSenderWithClient.__new__(FakeSenderWithClient)
-    client.app.state.outreach_sender.client = ExplodingSearchClient()
-
-    response = client.post(f"/api/outreach/{job_id}/find")
-    assert response.status_code == 200
-    body = response.json()
-    assert body["candidates"] == []
-    assert "nothing to search" in body["note"]
-
-
-def test_find_contacts_still_searches_for_a_gig_with_a_recovered_client(client, cfg) -> None:
-    job_id = _anonymous_upwork_job(cfg)
-    with session_scope(cfg.db_path) as session:
-        job = session.get(Job, job_id)
-        real = Company(name="Northquill", normalized_name="northquill")
-        session.add(real)
-        session.flush()
-        job.company_id = real.id
-
-    client.app.state.outreach_sender = FakeSenderWithClient([
-        {"name": "Sam Lee", "headline": "Founder", "profile_url": "https://www.linkedin.com/in/sam"},
-    ])
-    body = client.post(f"/api/outreach/{job_id}/find").json()
-    assert [c["full_name"] for c in body["candidates"]] == ["Sam Lee"]
-    assert body["note"] is None
-
-
 def test_find_contacts_on_an_unknown_job_is_a_404(client) -> None:
     assert client.post("/api/outreach/9999/find").status_code == 404
 
@@ -406,15 +350,13 @@ def test_an_invented_origin_is_refused(client, job_id):
     assert response.status_code == 422
 
 
-def test_the_clients_region_and_country_narrow_the_people_search(cfg, monkeypatch) -> None:
-    """Measured live: "Nexora" alone returned companies in Istanbul and Tunisia;
-    narrowed to California it surfaced the Californian company's founder first.
-    The country must be spelled out - LinkedIn reads the code "CA" as Canada."""
+def test_the_country_narrows_the_people_search_spelled_out(cfg, monkeypatch) -> None:
+    """The country must be spelled out - LinkedIn reads the code "CA" as Canada."""
     from jobhunt.db.models import Job
     from jobhunt.web import outreach as web_outreach
 
-    job = Job(country="US", client_region="California")
-    assert web_outreach._job_location(job) == "California, United States"
+    assert web_outreach._job_location(Job(country="CA")) == "Canada"
+    assert web_outreach._job_location(Job(country=None)) is None
 
 
 def test_a_job_with_only_a_country_still_narrows_by_it(cfg) -> None:

@@ -143,17 +143,25 @@ class Job(Base):
     poster_name: Mapped[str | None] = mapped_column(String(200))
     poster_profile_url: Mapped[str | None] = mapped_column(Text)
 
-    # Who is paying, and whether they ever have. Upwork clients are anonymous,
-    # so these two are most of what can be known about one before contact:
-    # payment verification is a fact Upwork asserts, and lifetime spend
-    # separates a client with a history from an account that has never hired.
-    # Null on every other source, and null means unknown - never "zero".
+    # Written only by the retired Upwork source. Kept because dropping a column
+    # needs a migration and rows fetched before the removal still carry them;
+    # nothing reads them now.
     client_verified: Mapped[bool | None] = mapped_column(Boolean)
     client_total_spent: Mapped[float | None] = mapped_column(Float)
-    # The client's state or region, spelled out ("California", not "CA").
-    # Country alone is too coarse to pin a company name on LinkedIn, and the
-    # abbreviation is worse than useless: "CA" resolves to Canada there.
     client_region: Mapped[str | None] = mapped_column(String(100))
+
+    # What the fit gate read about work authorization, once it has read the
+    # posting (`auth_checked_at` set). Country codes the posting requires the
+    # applicant to already be authorized in, and "offered" / "refused" / None
+    # for visa sponsorship. Until the gate runs, stage 1 reads the same facts
+    # from the description by pattern; see rank/authorization.py.
+    work_auth_required: Mapped[list | None] = mapped_column(JSON)
+    visa_sponsorship: Mapped[str | None] = mapped_column(String(10))
+    auth_checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+
+    # When the posting's own page last showed it still open, checked just before
+    # the job went on a shortlist. See pipeline/liveness.py.
+    open_checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
 
     canonical_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), index=True)
     first_seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)

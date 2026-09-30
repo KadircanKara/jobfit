@@ -28,7 +28,6 @@ from jobhunt.config import Config
 from jobhunt.db.models import Board, Job, Run, utcnow
 from jobhunt.db.session import session_scope
 from jobhunt.pipeline.dedupe import apply_clustering
-from jobhunt.sources import upwork as upwork_source
 from jobhunt.sources.base import BoardRef
 
 
@@ -180,50 +179,31 @@ class SyncLock:
 def build_adapter(config: Config, source: str):
     """Construct one adapter.
 
-    LinkedIn and Upwork are the only sources whose work units come from saved
-    preferences rather than from seeded boards, and the only ones whose fetch
-    needs the corpus to know which detail pages it can skip. Every other
-    adapter takes no arguments at all, so that difference is confined to this
-    one function instead of being special-cased at each call site.
+    LinkedIn is the only source whose work units come from saved preferences
+    rather than from seeded boards, and the only one whose fetch needs the
+    corpus to know which detail pages it can skip. Every other adapter takes no
+    arguments at all, so that difference is confined to this one function
+    instead of being special-cased at each call site.
 
-    Without this branch, `jobhunt sync --source upwork` would build the
+    Without this branch, `jobhunt sync --source linkedin` would build the
     adapter, get zero refs from the inherited `discover()` (which yields
     nothing without `set_refs`), and silently do nothing while reporting no
     error - a working-looking source that never fetches a job.
     """
     cls = source_registry.get(source)
-    if source not in ("linkedin", "upwork"):
+    if source != "linkedin":
         return cls()
     prefs, _ = prefs_module.load(config)
-    board_prefs = prefs.upwork if source == "upwork" else prefs
-    known = _known_ids_for(config, source, newest=_KNOWN_ID_LIMITS.get(source))
-    adapter = cls(config=config, known_ids=known)
-    adapter.set_refs(adapter.board_refs(board_prefs))
+    adapter = cls(config=config, known_ids=_known_ids_for(config, source))
+    adapter.set_refs(adapter.board_refs(prefs))
     return adapter
 
 
-# Sources whose known ids are capped, and at what. Upwork's are inlined into an
-# agent prompt once per ref, so the whole corpus in there grows without bound;
-# LinkedIn's are only compared in Python, where the full set costs nothing and
-# an id dropped from it would mean re-fetching a detail page over the network.
-_KNOWN_ID_LIMITS = {"upwork": upwork_source.KNOWN_IDS_LIMIT}
-
-
-def _known_ids_for(config: Config, source: str, newest: int | None = None) -> set[str]:
-    """External ids already in the corpus for one source.
-
-    Shared by every generated-ref adapter that skips re-fetching a detail it
-    already has - LinkedIn's guest HTML pages and Upwork's `get` calls alike.
-
-    `newest` caps the result at that many most-recently-seen ids. Recency is the
-    right axis to cut on: these adapters search by recency too, so an id old
-    enough to be dropped is one this run is unlikely to see again.
-    """
+def _known_ids_for(config: Config, source: str) -> set[str]:
+    """External ids already in the corpus for one source, so a generated-ref
+    adapter can skip re-fetching a detail page it already has."""
     with session_scope(config.db_path) as session:
-        query = select(Job.external_id).where(Job.source == source)
-        if newest is not None:
-            query = query.order_by(Job.last_seen_at.desc()).limit(newest)
-        rows = session.scalars(query).all()
+        rows = session.scalars(select(Job.external_id).where(Job.source == source)).all()
     return set(rows)
 
 

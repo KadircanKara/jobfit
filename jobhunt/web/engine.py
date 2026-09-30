@@ -80,7 +80,7 @@ class EnginePipeline:
         result = self.fetch_source(source)
         # "failed" and "degraded" are the words `sync_source` actually uses.
         # This compared against "error", which it never sets, so every failure
-        # returned a job count like a healthy fetch: an Upwork run whose every
+        # returned a job count like a healthy fetch: a run whose every
         # ref timed out finished `completed` with an empty shortlist and no
         # indication anything had gone wrong.
         if result.status == "failed":
@@ -131,7 +131,13 @@ class EnginePipeline:
         )
 
     def gate_batches(self) -> GatePlan:
-        emitted = rank_runner.emit(self.config, self._batch_path)
+        from jobhunt.pipeline import jd_fetch
+
+        emitted = rank_runner.emit(
+            self.config,
+            self._batch_path,
+            fetch_missing=lambda ids: jd_fetch.fill(self.config, ids),
+        )
         if not emitted.get("jobs"):
             return GatePlan(held_by_company_cap=emitted.get("held_by_company_cap", 0))
         import json
@@ -192,19 +198,46 @@ class EnginePipeline:
         An export never touches the applied or cv_status columns, so marks made
         in earlier runs survive this.
         """
-        from jobhunt.render import csv_export, review
+        from jobhunt.render import csv_export
 
         prefs, _ = prefs_module.load(self.config)
-        cards = review.shortlist(self.config, limit=prefs.top_n)
+        cards, misses = open_cards(self.config, prefs.top_n, NEAR_MISSES)
         csv_export.export(self.config, cards)
         rows = [row_from_card(card) for card in cards]
         # The export happens first and from `cards` alone, so a job below the
         # bar can be shown without ever reaching the CSV.
-        rows += [
-            row_from_card(card) | {"below_bar": True}
-            for card in review.near_misses(self.config, limit=NEAR_MISSES)
-        ]
+        rows += [row_from_card(card) | {"below_bar": True} for card in misses]
         return rows
+
+
+def open_cards(
+    config: Config, limit: int, near: int, verify: Callable[..., Any] | None = None
+) -> tuple[list[Any], list[Any]]:
+    """The shortlist and near misses, with every posting checked still open.
+
+    A job found closed drops out of the corpus and the next one moves up, so
+    this reads the list again until everything it would show has been checked,
+    or the checks run out. See pipeline/liveness.py.
+    """
+    from jobhunt.pipeline import liveness
+    from jobhunt.render import review
+
+    verify = verify or liveness.verify
+    hidden: set[int] = set()
+    checked: set[int] = set()
+    budget = 3 * (limit + near)
+    while True:
+        extra = len(hidden)
+        cards = [c for c in review.shortlist(config, limit=limit + extra) if c.job_id not in hidden][:limit]
+        misses = [
+            c for c in review.near_misses(config, limit=near + extra) if c.job_id not in hidden
+        ][:near]
+        todo = [c.job_id for c in cards + misses if c.job_id not in checked]
+        if not todo or len(checked) >= budget:
+            return cards, misses
+        todo = todo[: budget - len(checked)]
+        checked.update(todo)
+        hidden |= verify(config, todo).hidden
 
 
 def row_from_card(card: Any) -> dict[str, Any]:

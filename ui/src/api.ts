@@ -1,24 +1,3 @@
-// Mirrors preferences.UpworkPreferences: a different market's vocabulary,
-// kept as its own object rather than folded into the shared fields above.
-export type UpworkFilters = {
-  queries: string[];
-  job_types: string[];
-  min_hourly: number | null;
-  min_fixed: number | null;
-  experience_level: string[];
-  sort: string;
-  verified_payment_only: boolean;
-  require_verified_client: boolean;
-  client_min_spend: number | null;
-  workload: string[];
-  proposals_max: number | null;
-  client_min_hires: number | null;
-  client_max_hires: number | null;
-  client_locations: string[];
-  recommended_feed: boolean;
-  max_pages: number;
-};
-
 export type Filters = {
   titles: string[];
   locations: string[];
@@ -35,7 +14,10 @@ export type Filters = {
   // Named selections of `titles`, so a set worth returning to can be picked
   // again after the field is cleared.
   title_groups: Record<string, string[]>;
-  upwork: UpworkFilters;
+  // Which of `locations` the user may already work in, by the name typed there.
+  work_authorization: string[];
+  // Whether the user needs a visa sponsored wherever they are not authorized.
+  sponsorship_required: boolean;
 };
 
 export type VocabRow = { value: string; label: string; count: number };
@@ -515,11 +497,7 @@ export const api = {
   },
   // Fires a company-scoped LinkedIn people search. Only ever call this from a
   // user action on one job's drawer - never from anything that loops over jobs.
-  // `note` is set when the search was skipped rather than run - an Upwork gig
-  // whose client is anonymous has no company name to search for.
-  async findContacts(
-    jobId: number,
-  ): Promise<{ candidates: ContactCandidate[]; note?: string | null }> {
+  async findContacts(jobId: number): Promise<{ candidates: ContactCandidate[] }> {
     return detailJson(await fetch(`/api/outreach/${jobId}/find`, { method: "POST" }));
   },
   async revisionPreview(jobId: number): Promise<RevisePreview> {

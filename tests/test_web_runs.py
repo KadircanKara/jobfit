@@ -380,7 +380,9 @@ def test_only_jobs_above_the_bar_are_counted_as_shortlisted():
     sup.run()
 
     assert len(sup.state.results) == 2
-    message = next(event.message for event in sup.log if event.phase == "shortlist")
+    messages = [event.message for event in sup.log if event.phase == "shortlist"]
+    assert messages[0] == "checking the postings are still open"
+    message = messages[-1]
     assert message.startswith("1 jobs above the bar")
     assert "1 near misses" in message
 

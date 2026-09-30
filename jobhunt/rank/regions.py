@@ -46,6 +46,8 @@ REGIONS: dict[str, tuple[str, ...]] = {
     "middle east": ("AE", "SA", "QA", "KW", "BH", "OM", "JO", "LB", "IL", "IQ", "TR"),
     "north america": ("US", "CA", "MX"),
     "latin america": ("BR", "AR", "CL", "CO", "PE", "EC", "UY", "PY", "BO", "VE", "MX"),
+    "americas": ("US", "CA", "MX", "BR", "AR", "CL", "CO", "PE", "EC", "UY", "PY", "BO",
+                 "VE", "PA", "CR", "GT", "SV", "HN", "DO", "PR", "JM", "CU"),
     "apac": ("AU", "NZ", "JP", "KR", "CN", "TW", "HK", "SG", "MY", "TH", "VN", "ID", "PH", "IN"),
     "asia": ("IN", "PK", "BD", "LK", "CN", "JP", "KR", "TW", "HK", "SG", "MY",
              "TH", "VN", "ID", "PH", "KZ", "UZ", "NP"),

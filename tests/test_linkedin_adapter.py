@@ -379,12 +379,15 @@ def test_a_403_persists_a_cooldown_so_the_next_run_does_not_hammer(cfg) -> None:
     assert LinkedInAdapter(config=cfg).guard.allow() is False
 
 
-def test_a_short_page_that_exhausts_the_budget_is_not_truncated(cfg) -> None:
+def test_a_short_page_that_exhausts_the_budget_is_not_truncated(cfg, monkeypatch) -> None:
     """A short page ends the search naturally. Checking the guard before that
     natural-completion condition marks the pass truncated whenever the budget
     happens to run out on the very request that produced the short page - that
     is a pass that finished, not one that was refused."""
-    from jobhunt.sources.linkedin_guard import DAILY_BUDGET
+    from jobhunt.sources import linkedin_guard
+
+    DAILY_BUDGET = 400
+    monkeypatch.setattr(linkedin_guard, "DAILY_BUDGET", DAILY_BUDGET)
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text=_page_html(["only1"]))

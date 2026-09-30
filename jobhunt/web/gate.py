@@ -123,6 +123,10 @@ def _valid(verdicts: list[Any]) -> list[dict[str, Any]]:
                 "score": score,
                 "reasoning": str(verdict.get("reasoning", "")).strip(),
                 "red_flags": list(verdict.get("red_flags") or []),
+                # Passed through as given: `authorization.from_gate` is what
+                # decides which values mean anything.
+                "work_authorization_required": verdict.get("work_authorization_required"),
+                "visa_sponsorship": verdict.get("visa_sponsorship"),
             }
         )
     return out

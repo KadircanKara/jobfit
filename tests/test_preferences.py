@@ -85,7 +85,7 @@ def test_job_types_go_through_the_same_normalizer_as_the_adapters(cfg) -> None:
 
 
 def test_sources_go_through_apply_updates(cfg) -> None:
-    assert set_prefs(cfg, sources="linkedin, upwork").sources == ["linkedin", "upwork"]
+    assert set_prefs(cfg, sources="linkedin, ats").sources == ["linkedin", "ats"]
 
 
 def test_clearing_a_setting(cfg) -> None:
@@ -131,7 +131,6 @@ def test_unknown_work_model_and_job_type_are_refused(cfg) -> None:
 def test_titles_become_one_escaped_word_bounded_pattern() -> None:
     patterns = preferences.title_patterns(["backend", "node.js", "C++"])
     assert len(patterns) == 1
-    import re
 
     compiled = re.compile(patterns[0])
     assert compiled.search("Senior Backend Engineer")
@@ -172,44 +171,6 @@ def test_the_turkey_market_keeps_its_own_country(cfg) -> None:
     filters = preferences.to_filters(prefs, markets=("global_remote", "tr_local"))
     assert "country" not in filters["profiles"].get("tr_local", {}).get("hard_requires", {})
     assert filters["profiles"]["global_remote"]["hard_requires"]["country"] == ["DE"]
-
-
-def test_the_upwork_profile_overrides_the_global_title_regex() -> None:
-    prefs = Preferences(titles=["Backend Engineer"])
-    prefs.upwork.queries = ["rag pipeline", "llm"]
-    profile = preferences.to_filters(prefs)["profiles"]["upwork"]
-    assert profile["require_titles_regex"] == [".*"]
-    assert profile["require_titles_regex"] != preferences.title_patterns_for(prefs)
-
-
-def test_the_upwork_profile_never_re_filters_on_the_query_titles() -> None:
-    """Upwork matched these queries against the whole posting, server-side. A
-    title-only approximation of the same queries locally drops gigs Upwork
-    itself returned - "AI Engineer for chatbot" contains none of the words in
-    the query that found it - and that shows up as a `title_unmatched` bar on a
-    source that fetched perfectly."""
-    prefs = Preferences(titles=["Backend Engineer"])
-    prefs.upwork.queries = ["rag pipeline", "llm", "ai automation"]
-    patterns = preferences.to_filters(prefs)["profiles"]["upwork"]["require_titles_regex"]
-    assert patterns == [".*"]
-    for title in (
-        "Build a RAG pipeline for our docs",
-        "AI Engineer for chatbot",
-        "Need a Django dev to fix my scraper",
-        "Automation expert (Make.com)",
-    ):
-        assert any(re.search(pattern, title) for pattern in patterns), title
-
-
-def test_an_empty_upwork_query_list_matches_everything() -> None:
-    prefs = Preferences(titles=["Backend Engineer"])
-    profile = preferences.to_filters(prefs)["profiles"]["upwork"]
-    assert profile["require_titles_regex"] == [".*"]
-
-
-def test_the_upwork_profile_states_no_salary_floor() -> None:
-    prefs = Preferences(min_salary=120000)
-    assert "salary" not in preferences.to_filters(prefs)["profiles"]["upwork"]
 
 
 # --- the file -----------------------------------------------------------------
@@ -529,33 +490,6 @@ def test_linkedin_only_expands_to_linkedin_alone() -> None:
     assert preferences.adapters_for(["linkedin"]) == ["linkedin"]
 
 
-def test_upwork_expands_to_the_upwork_adapter() -> None:
-    assert preferences.adapters_for(["upwork"]) == ["upwork"]
-
-
-def test_ats_still_excludes_upwork() -> None:
-    """Forward-looking guard: passes trivially today since REGISTRY has no
-    upwork entry yet, but will start meaning something the moment Task 6
-    registers it. The test below is the one that actually bites now."""
-    assert "upwork" not in preferences.adapters_for(["ats"])
-
-
-def test_ats_group_excludes_upwork_even_when_registered(monkeypatch) -> None:
-    """REGISTRY has no `upwork` entry until Task 6, so a bare `"upwork" not in
-    adapters_for(["ats"])` assertion can never fail today regardless of whether
-    the exclusion exists. Fake a registered upwork adapter so the exclusion in
-    `_ats_sources` is actually exercised now, not just after Task 6 lands."""
-    from jobhunt import sources as source_registry
-
-    fake_registry = dict(source_registry.REGISTRY)
-    fake_registry["upwork"] = object
-    monkeypatch.setattr(source_registry, "REGISTRY", fake_registry)
-
-    expanded = preferences._ats_sources()
-    assert "upwork" not in expanded
-    assert "greenhouse" in expanded and "workable" in expanded
-
-
 def test_filters_carry_the_selected_adapter_ids() -> None:
     prefs = preferences.Preferences(titles=["Backend Engineer"], sources=["linkedin"])
     assert preferences.to_filters(prefs)["global"]["sources"] == ["linkedin"]
@@ -587,194 +521,17 @@ def test_clearing_every_source_is_rejected(cfg) -> None:
         set_prefs(cfg, sources="none")
 
 
-def test_upwork_alone_is_now_a_valid_selection(cfg) -> None:
-    prefs, _ = preferences.load(cfg)
-    updated = preferences.apply_updates(prefs, {"sources": "upwork"})
-    assert updated.sources == ["upwork"]
-
-
-# --- upwork: its own query settings --------------------------------------------
-
-
-def test_upwork_preferences_default_to_both_job_types() -> None:
-    assert preferences.Preferences().upwork.job_types == ["hourly", "fixed"]
-
-
-def test_a_dotted_upwork_key_is_applied(cfg) -> None:
-    prefs, _ = preferences.load(cfg)
-    updated = preferences.apply_updates(
-        prefs, {"upwork.min_hourly": "35", "upwork.queries": "rag, fastapi"}
-    )
-    assert updated.upwork.min_hourly == 35.0
-    assert updated.upwork.queries == ["rag", "fastapi"]
-
-
-def test_an_unknown_upwork_key_is_a_loud_error(cfg) -> None:
-    prefs, _ = preferences.load(cfg)
-    with pytest.raises(preferences.PreferenceError):
-        preferences.apply_updates(prefs, {"upwork.nonsense": "1"})
-
-
 def test_an_unknown_experience_level_is_refused(cfg) -> None:
     prefs, _ = preferences.load(cfg)
     with pytest.raises(preferences.PreferenceError):
-        preferences.apply_updates(prefs, {"upwork.experience_level": "advanced"})
-
-
-def test_upwork_settings_survive_a_save_and_load(cfg) -> None:
-    prefs, _ = preferences.load(cfg)
-    prefs.upwork.min_hourly = 40.0
-    prefs.upwork.queries = ["llm"]
-    preferences.save(cfg, prefs)
-    loaded, _ = preferences.load(cfg)
-    assert isinstance(loaded.upwork, preferences.UpworkPreferences)
-    assert loaded.upwork.min_hourly == 40.0 and loaded.upwork.queries == ["llm"]
-
-
-def test_upwork_preferences_round_trip_through_from_filters() -> None:
-    """Task 1's `_coerce` threads the resolved type hint through automatically -
-    nothing in this module needs to special-case the nested dataclass."""
-    prefs = preferences.Preferences(upwork=preferences.UpworkPreferences(min_hourly=50.0))
-    filters = preferences.to_filters(prefs)
-    filters[preferences.MANAGED_KEY] = dataclasses.asdict(prefs)
-    restored = preferences.from_filters(filters)
-    assert isinstance(restored.upwork, preferences.UpworkPreferences)
-    assert restored.upwork.min_hourly == 50.0
-
-
-def test_the_client_key_is_omitted_when_both_switches_are_off() -> None:
-    """Same discipline as `sources`: an always-present key churns the filter
-    fingerprint and re-gates the whole corpus on every write."""
-    prefs = preferences.Preferences()
-    assert "client" not in preferences.to_filters(prefs)["profiles"]["upwork"]
-
-
-def test_the_client_rules_reach_the_upwork_profile() -> None:
-    prefs = preferences.Preferences(
-        upwork=preferences.UpworkPreferences(require_verified_client=True, client_min_spend=500.0)
-    )
-    client = preferences.to_filters(prefs)["profiles"]["upwork"]["client"]
-    assert client == {"require_verified": True, "min_spend": 500.0}
-
-
-def test_a_spend_floor_removed_again_leaves_no_rule_behind(cfg) -> None:
-    """`update` adds keys and never removes them, so without `client` in the
-    owned list a floor could be set but never cleared."""
-    prefs, _ = preferences.load(cfg)
-    prefs.upwork.client_min_spend = 250.0
-    preferences.save(cfg, prefs)
-
-    prefs, _ = preferences.load(cfg)
-    assert prefs.upwork.client_min_spend == 250.0
-    prefs.upwork.client_min_spend = None
-    preferences.save(cfg, prefs)
-
-    document = yaml.safe_load(preferences.filters_path(cfg).read_text(encoding="utf-8"))
-    assert "client" not in document["profiles"]["upwork"]
-
-
-def test_the_old_spend_switch_becomes_a_one_dollar_floor() -> None:
-    """`require_client_spend: true` meant "has spent something": $1 says the same."""
-    restored = preferences.from_filters(
-        {preferences.MANAGED_KEY: {"upwork": {"require_client_spend": True}}}
-    )
-    assert restored.upwork.client_min_spend == 1.0
-
-
-def test_the_old_spend_switch_left_off_sets_no_floor() -> None:
-    restored = preferences.from_filters(
-        {preferences.MANAGED_KEY: {"upwork": {"require_client_spend": False}}}
-    )
-    assert restored.upwork.client_min_spend is None
-
-
-def test_a_new_spend_floor_is_never_overwritten_by_the_old_switch() -> None:
-    restored = preferences.from_filters(
-        {preferences.MANAGED_KEY: {"upwork": {"require_client_spend": True, "client_min_spend": 250.0}}}
-    )
-    assert restored.upwork.client_min_spend == 250.0
-
-
-def test_the_new_client_settings_apply_from_text(cfg) -> None:
-    prefs, _ = preferences.load(cfg)
-    updated = preferences.apply_updates(prefs, {
-        "upwork.client_locations": "United States, Canada",
-        "upwork.client_min_hires": "1",
-        "upwork.client_max_hires": "9",
-        "upwork.proposals_max": "20",
-        "upwork.client_min_spend": "$1,000",
-        "upwork.recommended_feed": "true",
-    })
-    assert updated.upwork.client_locations == ["United States", "Canada"]
-    assert updated.upwork.client_min_hires == 1
-    assert updated.upwork.client_max_hires == 9
-    assert updated.upwork.proposals_max == 20
-    assert updated.upwork.client_min_spend == 1000.0
-    assert updated.upwork.recommended_feed is True
-
-
-def test_a_location_typed_twice_in_another_case_is_kept_once(cfg) -> None:
-    prefs, _ = preferences.load(cfg)
-    updated = preferences.apply_updates(
-        prefs, {"upwork.client_locations": "United States,  united states , Canada"}
-    )
-    assert updated.upwork.client_locations == ["United States", "Canada"]
-
-
-def test_a_zero_spend_floor_means_no_rule(cfg) -> None:
-    prefs, _ = preferences.load(cfg)
-    updated = preferences.apply_updates(prefs, {"upwork.client_min_spend": "0"})
-    assert updated.upwork.client_min_spend is None
-
-
-def test_a_negative_count_is_refused(cfg) -> None:
-    prefs, _ = preferences.load(cfg)
-    with pytest.raises(preferences.PreferenceError, match="upwork.proposals_max"):
-        preferences.apply_updates(prefs, {"upwork.proposals_max": "-1"})
-
-
-def test_hires_min_above_max_is_refused_against_the_max(cfg) -> None:
-    prefs, _ = preferences.load(cfg)
-    with pytest.raises(preferences.PreferenceError) as excinfo:
-        preferences.apply_updates(
-            prefs, {"upwork.client_min_hires": "10", "upwork.client_max_hires": "2"}
-        )
-    assert str(excinfo.value).startswith("upwork.client_max_hires:")
-
-
-def test_hires_of_zero_to_zero_is_allowed(cfg) -> None:
-    """Upwork's own example for "clients with no hires yet"."""
-    prefs, _ = preferences.load(cfg)
-    updated = preferences.apply_updates(
-        prefs, {"upwork.client_min_hires": "0", "upwork.client_max_hires": "0"}
-    )
-    assert (updated.upwork.client_min_hires, updated.upwork.client_max_hires) == (0, 0)
-
-
-def test_the_feed_query_is_reserved(cfg) -> None:
-    prefs, _ = preferences.load(cfg)
-    with pytest.raises(preferences.PreferenceError, match="upwork.queries"):
-        preferences.apply_updates(prefs, {"upwork.queries": "rag, @feed"})
-
-
-def test_the_new_client_settings_survive_a_save_and_load(cfg) -> None:
-    prefs, _ = preferences.load(cfg)
-    prefs.upwork.client_locations = ["United States"]
-    prefs.upwork.client_max_hires = 9
-    prefs.upwork.recommended_feed = True
-    preferences.save(cfg, prefs)
-    loaded, _ = preferences.load(cfg)
-    assert loaded.upwork.client_locations == ["United States"]
-    assert loaded.upwork.client_max_hires == 9
-    assert loaded.upwork.recommended_feed is True
+        preferences.apply_updates(prefs, {"experience": "advanced"})
 
 
 def test_a_market_profile_this_writer_creates_is_seeded_from_the_packaged_one(cfg) -> None:
-    """The real machine's filters.yaml predates Upwork: it has yc, global_remote
-    and tr_local and no upwork block. `install_user_copies` never overwrites an
-    existing file, and `save` only writes the keys it owns, so the created
-    profile used to have no `llm_gate_prompt` and no `min_score_to_surface` -
-    the Upwork batch was gated with an empty prompt and no surfacing bar."""
+    """`install_user_copies` never overwrites an existing file, and `save` only
+    writes the keys it owns, so a profile it created used to have no
+    `llm_gate_prompt` and no `min_score_to_surface` - its batch was gated with
+    an empty prompt and no surfacing bar."""
     path = preferences.filters_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -783,12 +540,14 @@ def test_a_market_profile_this_writer_creates_is_seeded_from_the_packaged_one(cf
     )
 
     prefs, _ = preferences.load(cfg)
+    # Any owned rule makes `to_filters` write every market, yc included.
+    prefs.experience_min = "mid"
     preferences.save(cfg, prefs)
 
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
-    upwork = document["profiles"]["upwork"]
-    assert upwork["llm_gate_prompt"] == "prompts/gate_upwork.md"
-    assert upwork["min_score_to_surface"] == 0.6
+    yc = document["profiles"]["yc"]
+    assert yc["llm_gate_prompt"] == "prompts/yc_fit.md"
+    assert yc["min_score_to_surface"] == 0.65
     # A profile the user already had keeps whatever they put in it.
     assert document["profiles"]["global_remote"]["llm_gate_prompt"] == "prompts/mine.md"
 
@@ -797,12 +556,108 @@ def test_seeding_never_touches_a_profile_that_already_exists(cfg) -> None:
     path = preferences.filters_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        yaml.safe_dump({"profiles": {"upwork": {"min_score_to_surface": 0.9}}}), encoding="utf-8"
+        yaml.safe_dump({"profiles": {"yc": {"min_score_to_surface": 0.9}}}), encoding="utf-8"
     )
 
     prefs, _ = preferences.load(cfg)
     preferences.save(cfg, prefs)
 
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert document["profiles"]["upwork"]["min_score_to_surface"] == 0.9
-    assert "llm_gate_prompt" not in document["profiles"]["upwork"]
+    assert document["profiles"]["yc"]["min_score_to_surface"] == 0.9
+    assert "llm_gate_prompt" not in document["profiles"]["yc"]
+
+
+# --- work authorization -------------------------------------------------------
+
+
+def test_authorization_is_off_by_default(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    assert prefs.work_authorization == [] and prefs.sponsorship_required is False
+    rules = preferences.to_filters(prefs)["global"]
+    assert not {"work_authorization", "authorized_anywhere", "sponsorship_required"} & set(rules)
+
+
+def test_ticked_locations_become_country_codes(cfg) -> None:
+    set_prefs(cfg, locations="Turkey, United States", work_authorization="Turkey",
+              sponsorship_required="true")
+    prefs, document = preferences.load(cfg)
+    assert prefs.work_authorization == ["Turkey"]
+    assert document["global"]["work_authorization"] == ["TR"]
+    assert document["global"]["sponsorship_required"] is True
+
+
+def test_a_tick_follows_its_location_out(cfg) -> None:
+    set_prefs(cfg, locations="Turkey, Canada", work_authorization="Turkey, Canada")
+    prefs = set_prefs(cfg, locations="Turkey")
+    assert prefs.work_authorization == ["Turkey"]
+
+
+def test_a_tick_for_a_place_not_listed_is_dropped(cfg) -> None:
+    prefs = set_prefs(cfg, locations="Turkey", work_authorization="turkey, Germany")
+    assert prefs.work_authorization == ["Turkey"]
+
+
+def test_worldwide_ticked_means_authorized_anywhere(cfg) -> None:
+    set_prefs(cfg, locations="worldwide", work_authorization="worldwide")
+    _, document = preferences.load(cfg)
+    assert document["global"]["authorized_anywhere"] is True
+
+
+def test_clearing_the_ticks_removes_the_rules_from_the_file(cfg) -> None:
+    set_prefs(cfg, locations="Turkey", work_authorization="Turkey", sponsorship_required="true")
+    set_prefs(cfg, work_authorization="none", sponsorship_required="false")
+    _, document = preferences.load(cfg)
+    assert "work_authorization" not in document["global"]
+    assert "sponsorship_required" not in document["global"]
+
+
+# --- files written before Upwork was removed -----------------------------------
+
+
+def _legacy_file(cfg, managed: dict, **document) -> None:
+    path = preferences.filters_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump({**document, preferences.MANAGED_KEY: managed}), encoding="utf-8"
+    )
+
+
+def test_a_selection_of_only_upwork_loads_as_every_source(cfg) -> None:
+    _legacy_file(cfg, {"sources": ["upwork"], "upwork": {"queries": ["rag"]}})
+    prefs, _ = preferences.load(cfg)
+    assert prefs.sources == ["ats", "linkedin"]
+
+
+def test_upwork_is_dropped_from_a_mixed_selection(cfg) -> None:
+    _legacy_file(cfg, {"sources": ["linkedin", "upwork"]})
+    prefs, _ = preferences.load(cfg)
+    assert prefs.sources == ["linkedin"]
+
+
+def test_upwork_is_no_longer_a_source_to_pick(cfg) -> None:
+    with pytest.raises(preferences.PreferenceError):
+        set_prefs(cfg, sources="upwork")
+
+
+def test_saving_clears_the_legacy_upwork_profile(cfg) -> None:
+    _legacy_file(
+        cfg, {"sources": ["upwork"]},
+        profiles={"upwork": {"llm_gate_prompt": "prompts/gate_upwork.md"}},
+        **{"global": {"sources": ["upwork"]}},
+    )
+    prefs, _ = preferences.load(cfg)
+    preferences.save(cfg, prefs)
+
+    _, document = preferences.load(cfg)
+    assert "upwork" not in document["profiles"]
+    assert "sources" not in document["global"]
+    assert "upwork" not in document[preferences.MANAGED_KEY]
+
+
+def test_saving_clears_the_retired_remote_rule(cfg) -> None:
+    _legacy_file(cfg, {"remote_from_location": True}, **{"global": {"remote_from_location": True}})
+    prefs, _ = preferences.load(cfg)
+    preferences.save(cfg, prefs)
+    _, document = preferences.load(cfg)
+    assert "remote_from_location" not in document["global"]
+    assert "remote_from_location" not in document[preferences.MANAGED_KEY]

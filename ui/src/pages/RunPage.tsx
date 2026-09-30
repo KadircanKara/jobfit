@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ArrowRight, Info, Pause, Play, RotateCcw, Square, TriangleAlert } from "lucide-react";
-import { SourcePicker, sourceLabel } from "../Filters";
+import { FiltersPanel, SourcePicker, sourceLabel } from "../Filters";
 import { GatePanel, Log, Pipeline, RankPanel, SourceRail, plural } from "../Run";
 import { followLink, href, type Route } from "../app/router";
 import { runLabel, runStatus, runTone, stamp, useHunt, useShownRun } from "../app/store";
@@ -91,19 +91,41 @@ export function RunPage({ runId, go }: { runId?: string; go: (to: Route | string
         </div>
       </header>
 
+      {/* Only on the live page: a saved run is a record of the filters it ran
+          under, and editing next to it would read as editing that run. */}
+      {!runId &&
+        (hunt.filters && hunt.vocab ? (
+          <FiltersPanel
+            filters={hunt.filters}
+            vocab={hunt.vocab}
+            onSaved={hunt.setFilters}
+            onValidity={hunt.setValid}
+            sources={hunt.sources}
+            onDirty={hunt.setFiltersDirty}
+          />
+        ) : hunt.sourcesError ? null : (
+          <section className="panel acc">
+            <div className="acc-head">
+              <span className="spin" aria-hidden="true" />
+              <h2>Filters</h2>
+              <span className="acc-summary">Loading</span>
+            </div>
+          </section>
+        ))}
+
       {hunt.runError && (
         <div className="notice" data-tone="danger" role="alert" style={{ marginBottom: 12 }}>
           <TriangleAlert className="icon" aria-hidden="true" />
           <span className="grow">{hunt.runError}</span>
         </div>
       )}
-      {!hunt.valid && !live.running && (
+      {runId && !hunt.valid && !live.running && (
         <div className="notice" data-tone="warn" style={{ marginBottom: 12 }}>
           <TriangleAlert className="icon" aria-hidden="true" />
           <span className="grow">
             The filters have an unsaved problem, so a run cannot start.{" "}
-            <a href={href({ page: "boards" })} onClick={(e) => followLink(e, () => go({ page: "boards" }))}>
-              Open Filters
+            <a href="/" onClick={(e) => followLink(e, () => go({ page: "run" }))}>
+              Fix the filters
             </a>
           </span>
         </div>
