@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from jobhunt import applications
 from jobhunt.config import Config
@@ -55,10 +55,13 @@ class Card:
         return "posted today" if days == 0 else f"posted {days}d ago"
 
 
-# A job no listing has carried for this long is not shown, whatever its
-# `is_active` says. Boards with jobs are re-read weekly, so twice that is slack
-# for a skipped run; LinkedIn has no full listing to retire a job from, so for
-# it this is the only thing that ever does.
+# A job is not shown once its listing has stopped carrying it, whatever its
+# `is_active` says (that waits for two misses). For a job board that is the
+# board's own latest fetch: a job missing from it is gone, and a board nobody
+# has fetched lately says nothing either way, so wall-clock age must not hide
+# its jobs. LinkedIn searches return only their top results and prove nothing
+# by leaving a job out, so there - and for a job with no board - a job not seen
+# for this many days is not shown.
 SEEN_WITHIN_DAYS = 14
 
 
@@ -125,7 +128,15 @@ def _scored_cards(
             .join(Score, Score.job_id == Job.id)
             .join(Company, Job.company_id == Company.id, isouter=True)
             .where(Job.is_active.is_(True))
-            .where(Job.last_seen_at >= utcnow() - dt.timedelta(days=SEEN_WITHIN_DAYS))
+            .where(
+                or_(
+                    and_(Job.board_id.is_not(None), Job.source != "linkedin", Job.missed_runs == 0),
+                    and_(
+                        or_(Job.board_id.is_(None), Job.source == "linkedin"),
+                        Job.last_seen_at >= utcnow() - dt.timedelta(days=SEEN_WITHIN_DAYS),
+                    ),
+                )
+            )
             .where(Score.deterministic_pass.is_(True))
         )
         if market:

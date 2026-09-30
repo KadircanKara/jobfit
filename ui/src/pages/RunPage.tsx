@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ArrowRight, Info, Pause, Play, RotateCcw, Square, TriangleAlert } from "lucide-react";
 import { FiltersPanel } from "../Filters";
+import { BoardCheckPanel } from "../BoardCheck";
 import { GatePanel, Log, Pipeline, RankPanel, SourceRail, plural } from "../Run";
 import { followLink, href, type Route } from "../app/router";
 import { runLabel, runStatus, runTone, stamp, useHunt, useShownRun } from "../app/store";
@@ -111,6 +112,7 @@ export function RunPage({ runId, go }: { runId?: string; go: (to: Route | string
             </div>
           </section>
         ))}
+      {!runId && <BoardCheckPanel runRunning={live.running} />}
 
       {hunt.runError && (
         <div className="notice" data-tone="danger" role="alert" style={{ marginBottom: 12 }}>

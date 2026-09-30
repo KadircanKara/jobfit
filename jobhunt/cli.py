@@ -101,6 +101,7 @@ def sync_cmd(
     cap = max_boards or (sync.FAST_MAX_BOARDS if fast else None)
     if cap:
         cfg.raw.setdefault("sync", {})["max_boards_per_run"] = cap
+        cfg.raw["sync"]["max_relevant_boards_per_run"] = cap
 
     targets = [source] if source else sorted(source_registry.REGISTRY)
     for name in targets:

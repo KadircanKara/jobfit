@@ -277,6 +277,23 @@ async function json<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
+export type BoardCheckSource = { done: number; total: number; status: string; new_relevant: number };
+export type BoardCheck = {
+  running: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+  became_relevant: number;
+  sources: Record<string, BoardCheckSource>;
+};
+export type BoardSummary = {
+  relevant: number;
+  other: number;
+  includes_dead: boolean;
+  last_checked_at: string | null;
+  check: BoardCheck;
+};
+
 export const api = {
   async filters(): Promise<{ filters: Filters; vocab: Vocab }> {
     return json(await fetch("/api/filters"));
@@ -306,6 +323,20 @@ export const api = {
     return json(
       await fetch(`/api/title-groups/${encodeURIComponent(name)}`, { method: "DELETE" }),
     );
+  },
+  async boards(): Promise<BoardSummary> {
+    return json(await fetch("/api/boards"));
+  },
+  async boardCheck(): Promise<BoardCheck> {
+    return json(await fetch("/api/boards/check"));
+  },
+  async startBoardCheck(): Promise<{ started: boolean; message?: string }> {
+    const response = await fetch("/api/boards/check", { method: "POST" });
+    if (response.status === 409) return response.json();
+    return json(response);
+  },
+  async stopBoardCheck(): Promise<{ stopping: boolean }> {
+    return json(await fetch("/api/boards/check/stop", { method: "POST" }));
   },
   async run(): Promise<RunState> {
     return json(await fetch("/api/runs/current"));

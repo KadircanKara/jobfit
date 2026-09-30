@@ -494,6 +494,22 @@ def _record_board_outcome(board: Board, job_count: int) -> None:
 # --- the command --------------------------------------------------------------
 
 
+@dataclasses.dataclass
+class Prefetched:
+    """A fetch pass already done elsewhere, handed to `sync_source` to finish.
+
+    The board check fetches several platforms at once on threads, then stores
+    them one at a time; this carries each fetch's outcome across.
+    """
+
+    run_key: str
+    refs: list[BoardRef]
+    fetched: int
+    failed: list[str]
+    messages: list[str]
+    throttled: throttle.Report
+
+
 def sync_source(
     config: Config,
     source: str,
@@ -504,14 +520,29 @@ def sync_source(
     market: str | None = None,
     progress: Callable[[int, int, str], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    prefetched: Prefetched | None = None,
 ) -> SourceResult:
-    """Run one source end to end. Never raises: failures come back on the result."""
-    run_key = from_raw or new_run_key()
+    """Run one source end to end. Never raises: failures come back on the result.
+
+    A board source fetches every relevant board (see board_scope), or with
+    `only_status` the boards `due_boards` owes that status. `prefetched` skips
+    the fetch and finishes one done elsewhere.
+    """
+    run_key = from_raw or (prefetched.run_key if prefetched else new_run_key())
     result = SourceResult(source=source, run_key=run_key)
     messages: list[str] = []
 
     try:
-        if from_raw is None:
+        if prefetched is not None:
+            result.boards = len(prefetched.refs)
+            result.throttled = prefetched.throttled.left
+            result.raw_fetched = prefetched.fetched
+            messages = list(prefetched.messages)
+            result.dead_boards, result.rejected = record_fetch_failures(
+                config, source, prefetched.failed
+            )
+            result.errors = len(prefetched.failed) - result.rejected
+        elif from_raw is None:
             limit = int(config.get("sync", "max_boards_per_run", default=200))
             # A generated-ref source (LinkedIn) has no Board rows to query: its
             # refs come from preferences, fresh every run, via its own
@@ -533,9 +564,16 @@ def sync_source(
                     refs = []
                 else:
                     refs = list(build_adapter(config, source).discover())[:limit]
-            else:
+            elif only_status is not None:
                 refs = due_boards(
                     config, source, force, limit, only_status=only_status, market=market
+                )
+            else:
+                from jobhunt import board_scope
+
+                cap = config.get("sync", "max_relevant_boards_per_run", default=None)
+                refs = board_scope.relevant_boards(
+                    config, source, market=market, limit=int(cap) if cap else None
                 )
             result.boards = len(refs)
             if not refs:

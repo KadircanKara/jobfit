@@ -160,7 +160,7 @@ def test_a_failing_source_degrades_and_does_not_raise(cfg, monkeypatch) -> None:
     def boom(*_args, **_kwargs):
         raise RuntimeError("endpoint on fire")
 
-    monkeypatch.setattr(sync, "due_boards", boom)
+    monkeypatch.setattr("jobhunt.board_scope.relevant_boards", boom)
     result = sync.sync_source(cfg, "ashby")
     assert result.status == "failed"
     assert "endpoint on fire" in result.error_detail
@@ -259,7 +259,7 @@ def test_a_run_of_rejected_guesses_is_not_degraded(cfg, monkeypatch) -> None:
         return 0, [ref.token for ref in refs], ["404" for _ in refs]
 
     monkeypatch.setattr(sync, "fetch_pass", fail_everything)
-    result = sync.sync_source(cfg, "ashby")
+    result = sync.sync_source(cfg, "ashby", only_status="candidate")
 
     assert result.rejected == 2
     assert result.errors == 0
