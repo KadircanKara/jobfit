@@ -771,6 +771,70 @@ button.acc-head:focus-visible {
   background: var(--surface);
 }
 
+/* Work authorization: one tick per location, then the sponsorship line. */
+.auth-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+.sponsor-line {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+/* The note is anchored to its whole row, not the icon, so it stays inside
+   the field on a narrow screen where the icon sits near either edge. */
+.tip {
+  display: inline-flex;
+}
+.tip-trigger {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-3);
+  cursor: help;
+}
+.tip-trigger:hover,
+.tip-trigger:focus-visible {
+  color: var(--text);
+}
+.tip-trigger svg {
+  width: 14px;
+  height: 14px;
+}
+.tip-body {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 5;
+  width: max-content;
+  max-width: min(260px, 100%);
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface-2);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 120ms var(--ease);
+}
+.tip:hover .tip-body,
+.tip:focus-within .tip-body,
+.sponsor-line:hover .tip-body {
+  opacity: 1;
+  visibility: visible;
+}
 .split > .panel + .panel {
   margin-top: 0;
 }

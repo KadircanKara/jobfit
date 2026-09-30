@@ -86,6 +86,14 @@ class Preferences:
     # a run that fetches only LinkedIn but shortlists everything cannot show what
     # LinkedIn alone is worth.
     sources: list[str] = dataclasses.field(default_factory=lambda: ["ats", "linkedin"])
+    # Which of `locations` the candidate may already work in, by the name typed
+    # there. A posting that demands authorization somewhere else is dropped;
+    # see rank/authorization.py. Always a subset of `locations`.
+    work_authorization: list[str] = dataclasses.field(default_factory=list)
+    # Whether the candidate needs a visa sponsored wherever they are not
+    # authorized. On, a posting that refuses sponsorship in such a country is
+    # dropped; off, "no sponsorship" is no reason to drop anything.
+    sponsorship_required: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -116,6 +124,8 @@ class Preferences:
             ("titles", show(self.titles)),
             ("locations", show(self.locations)),
             ("work model", show(self.work_model)),
+            ("work authorization", show(self.work_authorization)),
+            ("visa sponsorship required", "yes" if self.sponsorship_required else "no"),
             ("job types", show(self.job_types)),
             ("experience", experience),
             ("min salary", salary),
@@ -199,7 +209,7 @@ def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
     known = {
         "titles", "locations", "work_model", "job_types", "experience",
         "experience_max", "min_salary", "currency", "include_unstated_salary",
-        "max_age_days", "top_n", "sources",
+        "max_age_days", "top_n", "sources", "work_authorization", "sponsorship_required",
     }
     for key, raw in updates.items():
         if key not in known:
@@ -235,10 +245,16 @@ def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
             prefs.currency = "USD" if blank else value.upper()[:4]
         elif key == "include_unstated_salary":
             prefs.include_unstated_salary = value.lower() not in ("false", "no", "0")
+        elif key == "work_authorization":
+            prefs.work_authorization = [] if blank else _split(value)
+        elif key == "sponsorship_required":
+            prefs.sponsorship_required = value.lower() in ("true", "yes", "1", "on")
         elif key == "max_age_days":
             prefs.max_age_days = int(_number(value))
         elif key == "top_n":
             prefs.top_n = max(1, int(_number(value)))
+
+    prefs.work_authorization = _within_locations(prefs.work_authorization, prefs.locations)
 
     if prefs.experience_min and prefs.experience_max:
         if SENIORITY_ORDER.index(prefs.experience_min) > SENIORITY_ORDER.index(prefs.experience_max):
@@ -247,6 +263,16 @@ def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
             )
 
     return prefs
+
+
+def _within_locations(ticked: list[str], locations: list[str]) -> list[str]:
+    """The ticked places that are still locations, in the locations' order.
+
+    A place removed from Locations takes its tick with it, and a tick for a
+    place never listed is not a claim anyone made, so both are dropped.
+    """
+    wanted = {name.strip().lower() for name in ticked}
+    return [name for name in locations if name.strip().lower() in wanted]
 
 
 def _number(value: str) -> float:
@@ -449,6 +475,15 @@ def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -
         "require_titles_regex": title_patterns_for(prefs),
         "max_age_days": prefs.max_age_days,
     }
+    # Omitted when empty or off, like `sources` below: a key written either way
+    # would change the fingerprint of every existing file and re-rank the corpus.
+    authorized, anywhere = regions.resolve(prefs.work_authorization)
+    if authorized:
+        global_rules["work_authorization"] = authorized
+    if anywhere:
+        global_rules["authorized_anywhere"] = True
+    if prefs.sponsorship_required:
+        global_rules["sponsorship_required"] = True
     # Omitted when nothing is restricted, so an unchanged selection does not
     # churn the filter fingerprint every time an adapter is added.
     if selected != everything:
@@ -571,6 +606,10 @@ def save(config: Config, prefs: Preferences) -> pathlib.Path:
     # preferences and resumes fetching ATS while the shortlist reads the stale
     # document and drops all of it as source_excluded.
     document.setdefault("global", {}).pop("sources", None)
+    # `remote_from_location` is a rule an earlier build wrote and nothing reads.
+    for key in ("work_authorization", "authorized_anywhere", "sponsorship_required",
+                "remote_from_location"):
+        document["global"].pop(key, None)
     # A retired market's profile would otherwise sit in the file forever, and
     # its gate prompt no longer ships.
     for market in RETIRED_SOURCES:

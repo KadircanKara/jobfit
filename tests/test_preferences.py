@@ -567,6 +567,50 @@ def test_seeding_never_touches_a_profile_that_already_exists(cfg) -> None:
     assert "llm_gate_prompt" not in document["profiles"]["yc"]
 
 
+# --- work authorization -------------------------------------------------------
+
+
+def test_authorization_is_off_by_default(cfg) -> None:
+    prefs, _ = preferences.load(cfg)
+    assert prefs.work_authorization == [] and prefs.sponsorship_required is False
+    rules = preferences.to_filters(prefs)["global"]
+    assert not {"work_authorization", "authorized_anywhere", "sponsorship_required"} & set(rules)
+
+
+def test_ticked_locations_become_country_codes(cfg) -> None:
+    set_prefs(cfg, locations="Turkey, United States", work_authorization="Turkey",
+              sponsorship_required="true")
+    prefs, document = preferences.load(cfg)
+    assert prefs.work_authorization == ["Turkey"]
+    assert document["global"]["work_authorization"] == ["TR"]
+    assert document["global"]["sponsorship_required"] is True
+
+
+def test_a_tick_follows_its_location_out(cfg) -> None:
+    set_prefs(cfg, locations="Turkey, Canada", work_authorization="Turkey, Canada")
+    prefs = set_prefs(cfg, locations="Turkey")
+    assert prefs.work_authorization == ["Turkey"]
+
+
+def test_a_tick_for_a_place_not_listed_is_dropped(cfg) -> None:
+    prefs = set_prefs(cfg, locations="Turkey", work_authorization="turkey, Germany")
+    assert prefs.work_authorization == ["Turkey"]
+
+
+def test_worldwide_ticked_means_authorized_anywhere(cfg) -> None:
+    set_prefs(cfg, locations="worldwide", work_authorization="worldwide")
+    _, document = preferences.load(cfg)
+    assert document["global"]["authorized_anywhere"] is True
+
+
+def test_clearing_the_ticks_removes_the_rules_from_the_file(cfg) -> None:
+    set_prefs(cfg, locations="Turkey", work_authorization="Turkey", sponsorship_required="true")
+    set_prefs(cfg, work_authorization="none", sponsorship_required="false")
+    _, document = preferences.load(cfg)
+    assert "work_authorization" not in document["global"]
+    assert "sponsorship_required" not in document["global"]
+
+
 # --- files written before Upwork was removed -----------------------------------
 
 
@@ -609,3 +653,11 @@ def test_saving_clears_the_legacy_upwork_profile(cfg) -> None:
     assert "sources" not in document["global"]
     assert "upwork" not in document[preferences.MANAGED_KEY]
 
+
+def test_saving_clears_the_retired_remote_rule(cfg) -> None:
+    _legacy_file(cfg, {"remote_from_location": True}, **{"global": {"remote_from_location": True}})
+    prefs, _ = preferences.load(cfg)
+    preferences.save(cfg, prefs)
+    _, document = preferences.load(cfg)
+    assert "remote_from_location" not in document["global"]
+    assert "remote_from_location" not in document[preferences.MANAGED_KEY]

@@ -38,6 +38,8 @@ _FIELD_OF_KEY = {
     "currency": "currency",
     "max_age_days": "max_age",
     "top_n": "top_n",
+    "work_authorization": "work_authorization",
+    "sponsorship_required": "sponsorship_required",
 }
 
 class FieldError(ValueError):
@@ -102,6 +104,10 @@ def _updates_from(payload: dict[str, Any]) -> dict[str, str]:
         updates["currency"] = str(payload["currency"] or "none")
     if "include_unstated_salary" in payload:
         updates["include_unstated_salary"] = str(bool(payload["include_unstated_salary"]))
+    if "work_authorization" in payload:
+        updates["work_authorization"] = ",".join(_dedupe(payload["work_authorization"] or [])) or "none"
+    if "sponsorship_required" in payload:
+        updates["sponsorship_required"] = str(bool(payload["sponsorship_required"]))
 
     if "min_salary" in payload:
         raw = payload["min_salary"]

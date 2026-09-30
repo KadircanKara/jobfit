@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useState } from "react";
-import { Check, ChevronRight, TriangleAlert } from "lucide-react";
+import { Check, ChevronRight, Info, TriangleAlert } from "lucide-react";
 import { api, FieldError, type Filters, type Vocab } from "./api";
 import { TagField } from "./TagField";
 import { TitlePresets } from "./TitlePresets";
@@ -49,6 +49,8 @@ type Draft = {
   titles: string[];
   locations: string[];
   work_model: string[];
+  work_authorization: string[];
+  sponsorship_required: boolean;
   job_types: string[];
   experience_min: string;
   experience_max: string;
@@ -64,6 +66,8 @@ function draftFrom(filters: Filters): Draft {
     titles: filters.titles,
     locations: filters.locations,
     work_model: filters.work_model.length ? filters.work_model : ["remote", "hybrid", "onsite"],
+    work_authorization: filters.work_authorization ?? [],
+    sponsorship_required: filters.sponsorship_required ?? false,
     job_types: filters.job_types ?? [],
     experience_min: filters.experience_min ?? "junior",
     experience_max: filters.experience_max ?? "none",
@@ -80,6 +84,8 @@ function payload(draft: Draft, sources: string[]) {
     titles: draft.titles,
     locations: draft.locations,
     work_model: draft.work_model,
+    work_authorization: draft.work_authorization,
+    sponsorship_required: draft.sponsorship_required,
     job_types: draft.job_types,
     sources,
     experience_min: draft.experience_min,
@@ -148,6 +154,8 @@ function summary(draft: Draft, sources: string[]): string {
     draft.titles.length ? `${draft.titles.length} title${draft.titles.length > 1 ? "s" : ""}` : "any title",
     draft.locations.length ? draft.locations.slice(0, 3).join(", ") + (draft.locations.length > 3 ? " +" : "") : "anywhere",
     draft.work_model.join(", "),
+    draft.work_authorization.length ? `authorized: ${draft.work_authorization.join(", ")}` : "",
+    draft.sponsorship_required ? "needs sponsorship" : "",
     draft.experience_max === "none" ? `${draft.experience_min}+` : `${draft.experience_min} to ${draft.experience_max}`,
     sources.map(sourceLabel).join(" + "),
   ];
@@ -165,6 +173,7 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources, onD
   // filters and are re-read from whatever the group endpoints return.
   const [groups, setGroups] = useState<Record<string, string[]>>(filters.title_groups ?? {});
   const bodyId = useId();
+  const tipId = useId();
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
@@ -276,7 +285,14 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources, onD
             placeholder="Country or region"
             freeNote="could not be placed"
             emptyNote="No other place matches that."
-            onChange={(tags) => set("locations", tags)}
+            onChange={(tags) =>
+              // A place taken out of Locations takes its authorization tick with it.
+              setDraft((current) => ({
+                ...current,
+                locations: tags,
+                work_authorization: current.work_authorization.filter((name) => hasPlace(tags, name)),
+              }))
+            }
             hint={
               draft.locations.length ? (
                 <>{draft.locations.length} place{draft.locations.length > 1 ? "s" : ""} in scope</>
@@ -310,6 +326,62 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources, onD
               ))}
             </div>
             <div className="hint">any combination</div>
+          </div>
+
+          <div className="field">
+            <label>
+              <span>Work authorization</span>
+            </label>
+            {draft.locations.length ? (
+              <div className="auth-list" role="group" aria-label="Places you are authorized to work">
+                {draft.locations.map((place) => (
+                  <label key={place} className="checkline">
+                    <input
+                      type="checkbox"
+                      checked={hasPlace(draft.work_authorization, place)}
+                      onChange={(e) =>
+                        set(
+                          "work_authorization",
+                          e.target.checked
+                            ? [...draft.work_authorization, place]
+                            : draft.work_authorization.filter((name) => name.toLowerCase() !== place.toLowerCase()),
+                        )
+                      }
+                    />
+                    <span>{place}</span>
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <div className="hint">Add a location to say where you can already work.</div>
+            )}
+            <div className="sponsor-line">
+              <label className="checkline">
+                <input
+                  type="checkbox"
+                  checked={draft.sponsorship_required}
+                  aria-describedby={tipId}
+                  onChange={(e) => set("sponsorship_required", e.target.checked)}
+                />
+                <span>Visa sponsorship required</span>
+              </label>
+              <span className="tip">
+                <button
+                  type="button"
+                  className="tip-trigger"
+                  aria-label="About visa sponsorship required"
+                  aria-describedby={tipId}
+                >
+                  <Info aria-hidden="true" />
+                </button>
+                <span role="tooltip" id={tipId} className="tip-body">
+                  Check if you need an employer to sponsor your visa wherever you aren't authorized to work
+                </span>
+              </span>
+            </div>
+            <div className="hint">
+              a job that requires authorization you haven't ticked is dropped, unless it offers sponsorship
+            </div>
           </div>
 
           <div className="field">
@@ -505,6 +577,11 @@ export function SourcePicker({
       )}
     </div>
   );
+}
+
+/** Place names compare as the user sees them, whatever the capitals. */
+function hasPlace(places: string[], place: string): boolean {
+  return places.some((name) => name.toLowerCase() === place.toLowerCase());
 }
 
 function parseSalary(raw: string): number | null {

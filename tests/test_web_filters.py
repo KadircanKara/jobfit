@@ -88,3 +88,16 @@ def test_unticking_every_source_is_rejected_rather_than_stored():
 
     assert exc.value.field == "sources"
     assert "ats" in str(exc.value)
+
+
+
+
+def test_authorization_settings_are_passed_through():
+    updates = webfilters._updates_from(
+        {"work_authorization": ["Turkey", "turkey"], "sponsorship_required": True}
+    )
+    assert updates == {"work_authorization": "Turkey", "sponsorship_required": "True"}
+    prefs = webfilters.apply(
+        Preferences(locations=["Turkey"]), {"work_authorization": ["Turkey"], "sponsorship_required": True}
+    )
+    assert prefs.work_authorization == ["Turkey"] and prefs.sponsorship_required is True

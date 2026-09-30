@@ -654,3 +654,9 @@ def test_clearing_while_a_run_is_going_is_refused(client, monkeypatch):
     client.post("/api/runs")
 
     assert client.post("/api/runs/current/clear").status_code == 409
+
+
+def test_the_filters_carry_the_authorization_settings(client):
+    body = client.get("/api/filters").json()
+    assert body["filters"]["work_authorization"] == []
+    assert body["filters"]["sponsorship_required"] is False

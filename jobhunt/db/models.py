@@ -150,6 +150,15 @@ class Job(Base):
     client_total_spent: Mapped[float | None] = mapped_column(Float)
     client_region: Mapped[str | None] = mapped_column(String(100))
 
+    # What the fit gate read about work authorization, once it has read the
+    # posting (`auth_checked_at` set). Country codes the posting requires the
+    # applicant to already be authorized in, and "offered" / "refused" / None
+    # for visa sponsorship. Until the gate runs, stage 1 reads the same facts
+    # from the description by pattern; see rank/authorization.py.
+    work_auth_required: Mapped[list | None] = mapped_column(JSON)
+    visa_sponsorship: Mapped[str | None] = mapped_column(String(10))
+    auth_checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+
     canonical_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), index=True)
     first_seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)

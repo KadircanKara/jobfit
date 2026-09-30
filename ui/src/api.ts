@@ -14,6 +14,10 @@ export type Filters = {
   // Named selections of `titles`, so a set worth returning to can be picked
   // again after the field is cleared.
   title_groups: Record<string, string[]>;
+  // Which of `locations` the user may already work in, by the name typed there.
+  work_authorization: string[];
+  // Whether the user needs a visa sponsored wherever they are not authorized.
+  sponsorship_required: boolean;
 };
 
 export type VocabRow = { value: string; label: string; count: number };

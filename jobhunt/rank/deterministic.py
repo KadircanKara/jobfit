@@ -23,7 +23,7 @@ import yaml
 
 from jobhunt.config import Config
 from jobhunt.db.models import Company, Job, utcnow
-from jobhunt.rank import timezones
+from jobhunt.rank import authorization, timezones
 
 # Ordered weakest to strongest. A job whose level is unknown passes any minimum.
 SENIORITY_ORDER = ["intern", "junior", "mid", "senior", "staff", "lead", "principal"]
@@ -40,7 +40,7 @@ RETIRED_SOURCES = frozenset({"upwork"})
 # Bumped whenever a rule here changes what it decides for the same filters.
 # Part of the stage-1 fingerprint, so stored verdicts are re-evaluated once
 # instead of standing on rules this build no longer applies.
-RULES_VERSION = 2
+RULES_VERSION = 3
 
 
 # Every drop reason carries a code alongside its sentence. The sentence names
@@ -60,6 +60,8 @@ REASON_LABELS: dict[str, str] = {
     "seniority_high": "seniority above the ceiling",
     "salary_unstated": "salary not stated",
     "salary_below": "salary below the floor",
+    "auth_required": "needs work authorization you don't have",
+    "no_sponsorship": "no visa sponsorship where you need it",
     "tz_overlap": "timezone overlap below the minimum",
 }
 
@@ -67,7 +69,7 @@ REASON_LABELS: dict[str, str] = {
 # so telling the user to adjust them from the browser would be a lie.
 TUNABLE_REASONS = frozenset(
     {"age", "title_unmatched", "field_mismatch", "seniority_low", "seniority_high",
-     "salary_unstated", "salary_below"}
+     "salary_unstated", "salary_below", "auth_required", "no_sponsorship"}
 )
 
 
@@ -130,6 +132,7 @@ def evaluate(
     _check_hard_excludes(haystack, profile, verdict)
     _check_seniority(job, profile, verdict)
     _check_salary(job, profile, verdict)
+    _check_work_authorization(job, global_rules, verdict)
     _check_timezone(job, profile, verdict)
     _apply_boosts(job, company, profile, verdict)
 
@@ -360,6 +363,33 @@ def _convert(amount: float, frm: str, to: str, rates: dict[str, Any]) -> float |
     if source <= 0:
         return None
     return amount / source * target
+
+
+def _check_work_authorization(job: Job, rules: dict[str, Any], verdict: Verdict) -> None:
+    """Drop a job whose authorization or sponsorship terms the candidate fails.
+
+    The patterns read the description; once the gate has read the posting its
+    answer is merged in. See `authorization` for the decision itself.
+    """
+    who = authorization.Candidate.from_rules(rules)
+    if who.anywhere:
+        return
+    facts = authorization.merge(
+        stored_facts(job), authorization.extract(job.description_text or job.description_md)
+    )
+    dropped = authorization.decide(facts, job.country, who)
+    if dropped:
+        verdict.drop(*dropped)
+
+
+def stored_facts(job: Job) -> authorization.Facts | None:
+    """The gate's reading of this job, if it has read it."""
+    if job.auth_checked_at is None:
+        return None
+    return authorization.Facts(
+        required=frozenset(job.work_auth_required or ()),
+        sponsorship=job.visa_sponsorship,
+    )
 
 
 def _check_timezone(job: Job, profile: dict[str, Any], verdict: Verdict) -> None:

@@ -131,7 +131,13 @@ class EnginePipeline:
         )
 
     def gate_batches(self) -> GatePlan:
-        emitted = rank_runner.emit(self.config, self._batch_path)
+        from jobhunt.pipeline import jd_fetch
+
+        emitted = rank_runner.emit(
+            self.config,
+            self._batch_path,
+            fetch_missing=lambda ids: jd_fetch.fill(self.config, ids),
+        )
         if not emitted.get("jobs"):
             return GatePlan(held_by_company_cap=emitted.get("held_by_company_cap", 0))
         import json

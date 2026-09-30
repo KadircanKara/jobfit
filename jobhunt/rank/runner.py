@@ -23,13 +23,13 @@ import pathlib
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from jobhunt import store
 from jobhunt.config import Config
 from jobhunt.db.models import Company, Job, Score, utcnow
 from jobhunt.db.session import session_scope
-from jobhunt.rank import deterministic, profile
+from jobhunt.rank import authorization, deterministic, profile
 
 # The gate reads a truncated description. PLAN.md section 7 says roughly 1500
 # tokens; 6000 characters is that, and it keeps a 20 job batch inside a sane
@@ -45,6 +45,11 @@ MAX_PER_COMPANY = 3
 # How often a long pass reports in. Small enough that the browser sees the
 # counts climb, large enough that the callback is not the expensive part.
 PROGRESS_EVERY = 50
+
+# A job scored before the gate reported work authorization is read again once
+# if its score was at least this. Below every market's surface bar, so all
+# that could still reach a shortlist are covered, and the long tail is not.
+RECHECK_FLOOR = 0.5
 
 
 @dataclasses.dataclass
@@ -204,12 +209,20 @@ def emit(
     limit: int = DEFAULT_BATCH,
     max_per_company: int = MAX_PER_COMPANY,
     regate: bool = False,
+    fetch_missing: Callable[[list[int]], None] | None = None,
 ) -> dict[str, Any]:
     """Write a self-contained batch for the gate: prompt, profile, and jobs.
 
     `regate` includes jobs that already carry a verdict. Prompts and stated
     constraints change, and a verdict produced under criteria the user has since
     disagreed with should not be frozen in place.
+
+    Without `regate`, a job scored before the gate reported work authorization
+    comes back once if it scored high enough to matter, so the jobs that could
+    reach the shortlist are the ones read for it first.
+
+    `fetch_missing` is handed the ids of chosen jobs with no full description,
+    before their records are built, so it can fetch the posting pages.
     """
     filters = deterministic.load_filters(config)
     candidate = profile.load(config)
@@ -224,7 +237,12 @@ def emit(
             .where(Score.deterministic_pass.is_(True))
         )
         if not regate:
-            stmt = stmt.where(Score.llm_score.is_(None))
+            stmt = stmt.where(
+                or_(
+                    Score.llm_score.is_(None),
+                    and_(Job.auth_checked_at.is_(None), Score.llm_score >= RECHECK_FLOOR),
+                )
+            )
         if market:
             stmt = stmt.where(Job.market == market)
         # Over-fetch, then thin by company, so the cap does not just truncate
@@ -238,10 +256,11 @@ def emit(
         stmt = stmt.limit(limit * 8)
 
         per_company: dict[Any, int] = {}
-        taken = 0
+        chosen: list[int] = []
+        thin: list[int] = []
         held = 0
-        for job, company, score in session.execute(stmt).all():
-            if taken >= limit:
+        for job, company, _score in session.execute(stmt).all():
+            if len(chosen) >= limit:
                 break
             # A job with no company is its own employer for the cap.
             key = f"job:{job.id}" if company is None else company.id
@@ -249,7 +268,20 @@ def emit(
                 held += 1
                 continue
             per_company[key] = per_company.get(key, 0) + 1
-            taken += 1
+            chosen.append(job.id)
+            if job.jd_completeness != "full":
+                thin.append(job.id)
+
+    # Outside the session: fetching pages is network time, and a write lock
+    # held across it would stall every other writer.
+    if fetch_missing and thin:
+        fetch_missing(thin)
+
+    with session_scope(config.db_path) as session:
+        for job_id in chosen:
+            job = session.get(Job, job_id)
+            score = _score_row(session, job_id, job.market)
+            company = session.get(Company, job.company_id) if job.company_id else None
             batches.setdefault(job.market, []).append(_gate_record(job, company, score))
 
     payload = {
@@ -262,6 +294,8 @@ def emit(
                 "score": "float 0.0 to 1.0",
                 "reasoning": "one sentence, persisted, written for a human",
                 "red_flags": "list of short strings, only what the posting states",
+                "work_authorization_required": "list of countries or regions, [] if none",
+                "visa_sponsorship": "offered | refused | unstated",
             },
         },
         "batches": [
@@ -308,6 +342,10 @@ def _gate_record(job: Job, company: Company | None, score: Score) -> dict[str, A
         "deterministic_boost": (score.deterministic_notes or {}).get("boost"),
         "description": description[:DESCRIPTION_CHARS],
         "description_truncated": len(description) > DESCRIPTION_CHARS,
+        # What the cut-off part says about work authorization, if anything.
+        "authorization_lines_after_cut": authorization.relevant_lines(
+            description, DESCRIPTION_CHARS
+        ) or None,
     }
 
 
@@ -326,6 +364,49 @@ def _salary_text(job: Job) -> str | None:
 UNKNOWN_LOCATION = "not stated — do not assume one, and do not score on location"
 
 
+# Appended to every market's gate prompt, whatever the user ticked: the two
+# facts are recorded on the job either way, so changing the ticks later needs no
+# second read of the posting. `{authorized}` and `{sponsorship}` are filled in.
+AUTHORIZATION_RULE = """
+
+## Work authorization
+
+The candidate is authorized to work in: {authorized}. {sponsorship}
+
+The app applies the candidate's authorization rules itself, from the two fields
+below, so do not lower a score only to express them. A stated requirement to be
+authorized in a country the candidate is authorized in is not a location
+problem.
+
+For every job, add two fields to its object:
+
+- "work_authorization_required": the countries or regions, as the posting names
+  them ("United States", "EU"), where it says the applicant must ALREADY be
+  authorized to work - a hard requirement such as "must be authorized to work
+  in", "right to work in X is required", "citizens only". An empty list if it
+  states none. A job location, a time zone, a preference, or "we hire in X" is
+  not a requirement.
+- "visa_sponsorship": "offered" if the posting offers visa sponsorship or
+  work-permit support, "refused" if it says it does not sponsor, "unstated"
+  otherwise.
+"""
+
+
+def _authorization_rule(filters: dict[str, Any]) -> str:
+    from jobhunt.preferences import MANAGED_KEY
+
+    managed = filters.get(MANAGED_KEY) or {}
+    ticked = [str(name) for name in managed.get("work_authorization") or []]
+    sponsorship = (
+        "They need visa sponsorship to work anywhere else."
+        if managed.get("sponsorship_required")
+        else "They do not need visa sponsorship."
+    )
+    return AUTHORIZATION_RULE.replace(
+        "{authorized}", ", ".join(ticked) if ticked else "no country stated"
+    ).replace("{sponsorship}", sponsorship)
+
+
 def _prompt_text(
     config: Config, filters: dict[str, Any], market: str, candidate: str
 ) -> str:
@@ -339,15 +420,16 @@ def _prompt_text(
     if not source.exists():
         return ""
     where = profile.location(config)
+    text = source.read_text(encoding="utf-8")
     return (
-        source.read_text(encoding="utf-8")
+        text
         .replace("{profile}", candidate)
         # `{location}` is where they live, "Istanbul, Turkey"; `{country}` is the
         # country alone, because every rule that turns on location compares
         # countries and a city in that slot makes the rule unusable.
         .replace("{location}", where.text if where else UNKNOWN_LOCATION)
         .replace("{country}", where.country_name if where else UNKNOWN_LOCATION)
-    )
+    ) + _authorization_rule(filters)
 
 
 @dataclasses.dataclass
@@ -373,6 +455,7 @@ def ingest(config: Config, path: pathlib.Path, model: str | None = None) -> Inge
     job id would be worse than losing a verdict.
     """
     result = IngestResult()
+    who = authorization.Candidate.from_rules(deterministic.load_filters(config).get("global") or {})
     raw = json.loads(path.read_text(encoding="utf-8"))
     verdicts = _flatten_verdicts(raw)
     result.read = len(verdicts)
@@ -404,8 +487,37 @@ def ingest(config: Config, path: pathlib.Path, model: str | None = None) -> Inge
             row.llm_reasoning = _reasoning(verdict)
             row.llm_model = model or verdict.get("model") or "claude-code"
             row.scored_at = utcnow()
+            _record_authorization(job, row, verdict, who)
             result.written += 1
     return result
+
+
+def _record_authorization(
+    job: Job, row: Score, verdict: dict[str, Any], who: authorization.Candidate
+) -> None:
+    """Keep what the gate read about authorization, and act on it now.
+
+    Stage 1 already applied the patterns, but the gate may have found a
+    requirement they missed. Dropping here, rather than waiting for the next
+    run's stage 1, keeps the job off the shortlist this run builds.
+    """
+    # Stamped even when the gate left the fields out, or a job re-read for them
+    # would be picked for re-reading on every run. The patterns still apply.
+    facts = authorization.from_gate(verdict) or authorization.NOTHING
+    job.work_auth_required = sorted(facts.required)
+    job.visa_sponsorship = facts.sponsorship
+    job.auth_checked_at = utcnow()
+    merged = authorization.merge(facts, authorization.extract(job.description_text or job.description_md))
+    dropped = authorization.decide(merged, job.country, who)
+    if not dropped:
+        return
+    code, reason = dropped
+    notes = dict(row.deterministic_notes or {})
+    notes["passed"] = False
+    notes["reasons"] = [*(notes.get("reasons") or []), reason]
+    notes["codes"] = [*(notes.get("codes") or []), code]
+    row.deterministic_notes = notes
+    row.deterministic_pass = False
 
 
 def _flatten_verdicts(raw: Any) -> list[dict[str, Any]]:
