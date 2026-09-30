@@ -28,7 +28,7 @@ TIMEOUT = 10.0
 MAX_BYTES = 2_000_000
 MAX_REDIRECTS = 3
 # LinkedIn has its own detail fetch behind a rate guard; a second, unguarded
-# path to the same pages would be the fastest way to get the account blocked.
+# path to the same pages would be the fastest way to get this IP throttled.
 SKIP_SOURCES = frozenset({"linkedin"})
 
 
