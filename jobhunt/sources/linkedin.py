@@ -181,7 +181,7 @@ class LinkedInAdapter(HttpAdapter):
     def still_fetching(self) -> bool:
         """False once the guard refuses everything: the remaining refs cost a
         rate-limit sleep each and return an empty envelope regardless."""
-        return self.guard is None or self.guard.allow()
+        return self.guard is None or self.guard.ready()
 
     def was_truncated(self) -> bool:
         """Whether the fetch just made ended before it saw the whole listing.
@@ -237,9 +237,9 @@ class LinkedInAdapter(HttpAdapter):
             loses its jobs quietly, so every one of them is stated out loud.
             """
             nonlocal truncated
-            reason = self.guard.refusal()
-            if reason is None:
+            if self.guard.ready():
                 return False
+            reason = self.guard.refusal() or "a cooldown longer than it is worth waiting for"
             truncated = True
             log.warning("linkedin %s for %r stopped: %s", pass_name, ref.token, reason)
             return True
@@ -261,9 +261,12 @@ class LinkedInAdapter(HttpAdapter):
                 stopped("search", f"{type(error).__name__}: {error}")
                 break
             if response.status_code == 429:
+                # Not the end of the pass: the loop condition waits out a short
+                # cooldown and asks for the same page again, or stops if the
+                # cooldown is long or the breaker has tripped.
                 self.guard.record_429(_retry_after(response))
-                stopped("search", "429 from LinkedIn")
-                break
+                log.warning("linkedin search for %r got a 429; waiting to retry", ref.token)
+                continue
             if response.status_code == 403:
                 self.guard.record_403()
                 stopped("search", "403 from LinkedIn")
@@ -282,9 +285,9 @@ class LinkedInAdapter(HttpAdapter):
                 time.sleep(self.guard.delay())
 
         details: dict[str, str] = {}
-        for job_id in _job_ids(cards):
-            if job_id in self.known_ids:
-                continue
+        pending = [job_id for job_id in _job_ids(cards) if job_id not in self.known_ids]
+        while pending:
+            job_id = pending[0]
             if refused("detail fetch"):
                 break
             # Paced like the search pages, including before this first detail
@@ -295,15 +298,20 @@ class LinkedInAdapter(HttpAdapter):
             try:
                 response = client.get(query.DETAIL_URL.format(job_id=job_id), headers=_HEADERS)
             except httpx.HTTPError:
+                pending.pop(0)
                 continue
             if response.status_code == 429:
+                # The same id is asked for again once `refused` has waited out
+                # the cooldown: a job stored without its description is never
+                # fetched again, since later runs skip known ids.
                 self.guard.record_429(_retry_after(response))
-                stopped("detail fetch", "429 from LinkedIn")
-                break
+                log.warning("linkedin detail fetch for %r got a 429; waiting to retry", ref.token)
+                continue
             if response.status_code == 403:
                 self.guard.record_403()
                 stopped("detail fetch", "403 from LinkedIn")
                 break
+            pending.pop(0)
             if response.status_code != 200:
                 continue
             self.guard.record_ok()
