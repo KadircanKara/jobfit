@@ -267,7 +267,13 @@ def fetch_pass(
                 except Exception as exc:  # noqa: BLE001 - one board must never fail the source
                     if not throttle.is_throttle(exc):
                         failed.append(ref.token)
-                        messages.append(f"{ref.provider}/{ref.token}: {type(exc).__name__}: {exc}")
+                        response = getattr(exc, "response", None)
+                        why = (
+                            f"redirected to {response.request.url}, board gone"
+                            if isinstance(response, httpx.Response) and throttle.left_host(response)
+                            else f"{type(exc).__name__}: {exc}"
+                        )
+                        messages.append(f"{ref.provider}/{ref.token}: {why}")
                         outcome = "failed"
                         break
                     wait = throttle.wait_for(exc, attempt)

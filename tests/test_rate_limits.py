@@ -120,6 +120,55 @@ def test_every_429_is_logged_against_the_requests_before_it(cfg, monkeypatch, sl
     assert event["pause_seconds"] == 1.0
 
 
+def redirected_to_a_429(token: str) -> httpx.HTTPStatusError:
+    """What Personio does for a company that left it: 307 to its home page, which says 429."""
+    def answer(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "personio.com":
+            return httpx.Response(429)
+        return httpx.Response(307, headers={"Location": "https://personio.com/"})
+
+    with httpx.Client(transport=httpx.MockTransport(answer), follow_redirects=True) as client:
+        response = client.get(f"https://{token}.jobs.personio.de/xml")
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return exc
+    raise AssertionError("expected a 429")
+
+
+def test_a_429_after_a_redirect_elsewhere_is_the_board_gone_not_throttling(cfg, monkeypatch, slept) -> None:
+    class GoneAdapter(ThrottledAdapter):
+        def fetch(self, ref, client):
+            self.calls.append(ref.token)
+            if ref.token == "co1":
+                raise redirected_to_a_429(ref.token)
+            return {"jobs": []}
+
+    adapter = GoneAdapter(refusals=0)
+    use(monkeypatch, adapter)
+    report = throttle.Report()
+
+    fetched, failed, messages = sync.fetch_pass(cfg, "personio", refs(), "run1", throttled=report)
+
+    assert (fetched, failed) == (2, ["co1"])
+    assert adapter.calls == ["co0", "co1", "co2"]
+    assert slept == [] and report.refusals == 0
+    assert "board gone" in messages[0]
+    assert throttle.history(cfg) == []
+
+
+def test_a_429_from_the_board_itself_after_a_same_host_redirect_is_still_throttling() -> None:
+    def answer(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/xml":
+            return httpx.Response(301, headers={"Location": "/xml/"})
+        return httpx.Response(429)
+
+    with httpx.Client(transport=httpx.MockTransport(answer), follow_redirects=True) as client:
+        response = client.get("https://acme.jobs.personio.de/xml")
+    exc = httpx.HTTPStatusError("429", request=response.request, response=response)
+    assert throttle.is_throttle(exc)
+
+
 def test_a_throttled_run_is_degraded_and_kills_no_board(cfg, monkeypatch, slept) -> None:
     with session_scope(cfg.db_path) as session:
         for token in ("co0", "co1"):
