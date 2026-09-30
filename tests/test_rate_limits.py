@@ -128,7 +128,7 @@ def test_a_throttled_run_is_degraded_and_kills_no_board(cfg, monkeypatch, slept)
             ))
     use(monkeypatch, ThrottledAdapter(refusals=100, retry_after="3600"))
     monkeypatch.setattr(
-        sync, "due_boards",
+        "jobhunt.board_scope.relevant_boards",
         lambda *args, **kwargs: [
             sync.BoardRef(provider="personio", token=t, market="global_remote") for t in ("co0", "co1")
         ],

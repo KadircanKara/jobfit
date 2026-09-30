@@ -835,6 +835,49 @@ button.acc-head:focus-visible {
   opacity: 1;
   visibility: visible;
 }
+/* Job boards: what runs fetch, and the on-demand check of the rest. */
+.boards {
+  margin-bottom: 16px;
+}
+.boards-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.boards-text {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.boards-row h2 {
+  font-size: var(--fs);
+}
+.boards-line {
+  margin: 2px 0 0;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+.boards .hint {
+  margin-top: 8px;
+}
+.boards-progress {
+  margin-top: 10px;
+}
+.boards-sources {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 4px 16px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+}
+.boards-sources li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-2);
+}
 .split > .panel + .panel {
   margin-top: 0;
 }

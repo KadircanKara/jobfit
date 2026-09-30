@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
+from jobhunt import board_scope
 from jobhunt import preferences as prefs_module
 from jobhunt.config import Config
 from jobhunt.config import load as load_config
@@ -49,6 +50,15 @@ SPA_PATHS = re.compile(
 )
 
 
+def board_sources() -> list[str]:
+    """Sources fetched board by board: every one but the generated searches."""
+    from jobhunt import sources as source_registry
+
+    return sorted(
+        name for name, adapter in source_registry.REGISTRY.items() if not adapter.generates_refs
+    )
+
+
 class AppState:
     """What the process holds between requests: one run, one event log."""
 
@@ -60,12 +70,29 @@ class AppState:
         # Revision sessions outlive the tab, the same way a run does.
         self.desk = revise_module.ReviseDesk(config)
         self.idle = idle_module.IdleClock()
+        self.boards = board_scope.OtherBoardsCheck(config, sources=lambda: board_sources())
+        # The counts read every stored job title, a few seconds on a big
+        # corpus. Kept until the titles or the boards could have changed.
+        self._board_counts: tuple[tuple[Any, ...], dict[str, Any]] | None = None
+
+    def board_counts(self) -> dict[str, Any]:
+        filters = prefs_module.filters_path(self.config)
+        key = (
+            filters.stat().st_mtime if filters.exists() else None,
+            self.boards.state.finished_at,
+            self.supervisor.state.finished_at if self.supervisor is not None else None,
+        )
+        if self._board_counts is None or self._board_counts[0] != key:
+            self._board_counts = (key, board_scope.summary(self.config, board_sources()))
+        return self._board_counts[1]
 
     def busy(self) -> bool:
         """Whether anything would be lost by stopping the process now."""
         if self.supervisor is not None and self.supervisor.state.running:
             return True
         if self.batch is not None and self.batch.running:
+            return True
+        if self.boards.state.running:
             return True
         return bool(self.desk.sessions())
 
@@ -387,6 +414,11 @@ def create_app(*, config: Config | None = None) -> FastAPI:
                 status_code=409,
                 content={"started": False, "message": "a run is already going"},
             )
+        if jh.boards.state.running:
+            return JSONResponse(
+                status_code=409,
+                content={"started": False, "message": "the board check is still going"},
+            )
         # A run already paused is resumed rather than restarted, so pressing
         # Start after a pause does not throw away the boards already fetched.
         if jh.supervisor is not None and jh.supervisor.state.resumable:
@@ -407,6 +439,38 @@ def create_app(*, config: Config | None = None) -> FastAPI:
         )
         jh.supervisor.start(run_id=run_id)
         return {"started": True}
+
+    # --- the other boards ---------------------------------------------------
+
+    @app.get("/api/boards")
+    def boards_summary() -> dict[str, Any]:
+        """How many boards a run fetches and how many the check would."""
+        jh: AppState = app.state.jh
+        return jh.board_counts() | {"check": jh.boards.state.as_dict()}
+
+    @app.get("/api/boards/check")
+    def boards_check() -> dict[str, Any]:
+        jh: AppState = app.state.jh
+        return jh.boards.state.as_dict()
+
+    @app.post("/api/boards/check")
+    def start_boards_check() -> Any:
+        jh: AppState = app.state.jh
+        if jh.supervisor is not None and jh.supervisor.state.running:
+            return JSONResponse(
+                status_code=409, content={"started": False, "message": "a run is going"}
+            )
+        try:
+            jh.boards.start()
+        except board_scope.CheckBusy as exc:
+            return JSONResponse(status_code=409, content={"started": False, "message": str(exc)})
+        return {"started": True}
+
+    @app.post("/api/boards/check/stop")
+    def stop_boards_check() -> dict[str, Any]:
+        jh: AppState = app.state.jh
+        jh.boards.stop()
+        return {"stopping": jh.boards.state.running}
 
     @app.get("/api/fx")
     def rates() -> dict[str, Any]:
