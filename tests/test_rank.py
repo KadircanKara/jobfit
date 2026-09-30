@@ -182,14 +182,6 @@ def test_a_broken_regex_in_the_config_does_not_take_the_run_down(cfg) -> None:
     assert verdict_for(cfg, make_job(cfg), filters).passed
 
 
-def test_a_job_from_an_unselected_source_is_dropped(cfg) -> None:
-    job_id = make_job(cfg, source="ashby", external_id="src1")
-    filters = {**FILTERS, "global": {**FILTERS["global"], "sources": ["linkedin"]}}
-    verdict = verdict_for(cfg, job_id, filters)
-    assert not verdict.passed
-    assert "source_excluded" in verdict.codes
-
-
 def test_a_job_from_a_selected_source_survives(cfg) -> None:
     job_id = make_job(cfg, source="linkedin", external_id="src2")
     filters = {**FILTERS, "global": {**FILTERS["global"], "sources": ["linkedin"]}}
@@ -199,15 +191,6 @@ def test_a_job_from_a_selected_source_survives(cfg) -> None:
 def test_no_source_key_restricts_nothing(cfg) -> None:
     job_id = make_job(cfg, source="ashby", external_id="src3")
     assert "source_excluded" not in verdict_for(cfg, job_id).codes
-
-
-def test_an_empty_source_list_restricts_everything(cfg) -> None:
-    """Present-and-empty is a selection of nothing, not the absence of a rule.
-    Reading it as "unrestricted" made the fetch pass and the shortlist disagree:
-    the run fetched no source at all while the shortlist kept serving all of them."""
-    job_id = make_job(cfg, source="ashby", external_id="src4")
-    filters = {**FILTERS, "global": {**FILTERS["global"], "sources": []}}
-    assert "source_excluded" in verdict_for(cfg, job_id, filters).codes
 
 
 def test_changing_the_source_selection_changes_the_fingerprint() -> None:
@@ -943,3 +926,16 @@ def test_the_rules_version_is_part_of_the_fingerprint(monkeypatch) -> None:
     before = runner.filters_fingerprint({"global": {}})
     monkeypatch.setattr(deterministic, "RULES_VERSION", deterministic.RULES_VERSION + 1)
     assert runner.filters_fingerprint({"global": {}}) != before
+
+
+def test_a_source_selection_left_in_the_filters_restricts_nothing(cfg) -> None:
+    """Written by an earlier build. Every run searches every source now, so
+    honouring it would drop jobs the fetch just brought in."""
+    job_id = make_job(cfg, source="ashby", external_id="src1")
+    filters = {**FILTERS, "global": {**FILTERS["global"], "sources": ["linkedin"]}}
+    assert "source_excluded" not in verdict_for(cfg, job_id, filters).codes
+
+
+def test_a_retired_source_is_still_dropped(cfg) -> None:
+    job_id = make_job(cfg, source="upwork", external_id="src3")
+    assert "source_excluded" in verdict_for(cfg, job_id, FILTERS).codes

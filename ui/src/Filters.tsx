@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useState } from "react";
-import { Check, ChevronRight, Info, TriangleAlert } from "lucide-react";
+import { ChevronRight, Info } from "lucide-react";
 import { api, FieldError, type Filters, type Vocab } from "./api";
 import { TagField } from "./TagField";
 import { TitlePresets } from "./TitlePresets";
@@ -19,16 +19,6 @@ const JOB_TYPES: [string, string][] = [
   ["temporary", "temporary"],
 ];
 
-// Mirrors SOURCE_CHOICES in jobhunt/preferences.py.
-const SOURCES: { id: string; label: string; hint: string; enabled: boolean }[] = [
-  { id: "ats", label: "ATS", hint: "Greenhouse, Ashby, Lever and nine more", enabled: true },
-  { id: "linkedin", label: "LinkedIn", hint: "Public job search", enabled: true },
-];
-
-export function sourceLabel(id: string): string {
-  return SOURCES.find((source) => source.id === id)?.label ?? id;
-}
-
 // Sample rates until the server reports the snapshot it fetched for the run.
 // Shown with their timestamp so nobody reads a stale number as live.
 const RATES: Record<string, number> = { USD: 1, EUR: 0.918, GBP: 0.784, TRY: 48.02 };
@@ -38,10 +28,6 @@ type Props = {
   vocab: Vocab;
   onSaved: (filters: Filters) => void;
   onValidity: (ok: boolean) => void;
-  /* Which sources are on. Owned by the store, which draws the picker beside
-     the run controls and saves a toggle straight away, so this panel only
-     reads it - to send with a save and to gate it. */
-  sources: string[];
   onDirty: (dirty: boolean) => void;
 };
 
@@ -79,7 +65,7 @@ function draftFrom(filters: Filters): Draft {
   };
 }
 
-function payload(draft: Draft, sources: string[]) {
+function payload(draft: Draft) {
   return {
     titles: draft.titles,
     locations: draft.locations,
@@ -87,7 +73,6 @@ function payload(draft: Draft, sources: string[]) {
     work_authorization: draft.work_authorization,
     sponsorship_required: draft.sponsorship_required,
     job_types: draft.job_types,
-    sources,
     experience_min: draft.experience_min,
     experience_max: draft.experience_max === "none" ? null : draft.experience_max,
     min_salary: draft.min_salary || null,
@@ -149,7 +134,7 @@ function Acts({
 let kept: { draft: Draft | null; open: boolean } = { draft: null, open: false };
 
 /** One line saying what the collapsed panel holds. */
-function summary(draft: Draft, sources: string[]): string {
+function summary(draft: Draft): string {
   const parts = [
     draft.titles.length ? `${draft.titles.length} title${draft.titles.length > 1 ? "s" : ""}` : "any title",
     draft.locations.length ? draft.locations.slice(0, 3).join(", ") + (draft.locations.length > 3 ? " +" : "") : "anywhere",
@@ -157,12 +142,11 @@ function summary(draft: Draft, sources: string[]): string {
     draft.work_authorization.length ? `authorized: ${draft.work_authorization.join(", ")}` : "",
     draft.sponsorship_required ? "needs sponsorship" : "",
     draft.experience_max === "none" ? `${draft.experience_min}+` : `${draft.experience_min} to ${draft.experience_max}`,
-    sources.map(sourceLabel).join(" + "),
   ];
   return parts.filter(Boolean).join(" · ");
 }
 
-export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources, onDirty }: Props) {
+export function FiltersPanel({ filters, vocab, onSaved, onValidity, onDirty }: Props) {
   const [draft, setDraft] = useState<Draft>(() => kept.draft ?? draftFrom(filters));
   const [open, setOpen] = useState(kept.open);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -200,7 +184,7 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources, onD
     setErrors({});
     setSaving(true);
     try {
-      const body = await api.saveFilters(payload(draft, sources));
+      const body = await api.saveFilters(payload(draft));
       onSaved(body.filters);
       // Take back what the server stored, not what was typed: "$1,000" is
       // saved as 1000, and a draft still reading "$1,000" would mark the
@@ -248,7 +232,7 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources, onD
             unsaved
           </span>
         )}
-        {!open && <span className="acc-summary">{summary(draft, sources)}</span>}
+        {!open && <span className="acc-summary">{summary(draft)}</span>}
       </button>
 
       <div id={bodyId} className="acc-body" hidden={!open}>
@@ -530,52 +514,10 @@ export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources, onD
           </div>
         </div>
 
-        <Acts dirty={dirty} ok={valid && sources.length > 0} saved={saved} saving={saving} onSave={save} onRevert={revert} />
+        <Acts dirty={dirty} ok={valid} saved={saved} saving={saving} onSave={save} onRevert={revert} />
         {messages.filters && <div className="err">{messages.filters}</div>}
       </div>
     </section>
-  );
-}
-
-export function SourcePicker({
-  value,
-  onChange,
-  saving,
-}: {
-  value: string[];
-  onChange: (next: string[]) => void;
-  /* A toggle here writes on the spot - there is no Save button beside the run
-     controls to defer it to - so the write has to say it is happening. */
-  saving?: boolean;
-}) {
-  return (
-    <div className="sources" role="group" aria-label="Sources" aria-busy={saving}>
-      <span className="lbl">Sources</span>
-      {SOURCES.map((source) => {
-        const on = value.includes(source.id);
-        return (
-          <button
-            key={source.id}
-            type="button"
-            className="chip"
-            aria-pressed={on}
-            disabled={!source.enabled}
-            title={source.hint}
-            onClick={() => onChange(on ? value.filter((id) => id !== source.id) : [...value, source.id])}
-          >
-            {on && <Check aria-hidden="true" />}
-            {source.label}
-          </button>
-        );
-      })}
-      {saving && <span className="spin" aria-hidden="true" />}
-      {value.length === 0 && (
-        <span className="warn" role="alert">
-          <TriangleAlert className="icon" aria-hidden="true" /> Pick at least one source. Nothing can be found
-          otherwise.
-        </span>
-      )}
-    </div>
   );
 }
 

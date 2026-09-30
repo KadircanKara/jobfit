@@ -40,7 +40,7 @@ RETIRED_SOURCES = frozenset({"upwork"})
 # Bumped whenever a rule here changes what it decides for the same filters.
 # Part of the stage-1 fingerprint, so stored verdicts are re-evaluated once
 # instead of standing on rules this build no longer applies.
-RULES_VERSION = 3
+RULES_VERSION = 4
 
 
 # Every drop reason carries a code alongside its sentence. The sentence names
@@ -49,7 +49,7 @@ RULES_VERSION = 3
 # summary can count. Without the code a histogram would have one bar per
 # distinct salary figure.
 REASON_LABELS: dict[str, str] = {
-    "source_excluded": "source not selected",
+    "source_excluded": "source no longer searched",
     "age": "older than the age limit",
     "company_blocked": "company blocklisted",
     "title_excluded": "title matches an excluded pattern",
@@ -153,31 +153,16 @@ def _haystack(job: Job) -> str:
 
 
 def _check_source(job: Job, rules: dict[str, Any], verdict: Verdict) -> None:
-    """Drop anything the user did not ask to draw from.
+    """Drop rows from a source this build no longer has.
 
-    Absent means unrestricted: a filter document written before this key existed
-    must keep meaning "every source", never "no source".
+    Every run searches every source, so there is no selection to apply. A
+    `sources` key an earlier build wrote into filters.yaml is ignored until the
+    next save removes it: honouring it would drop jobs the fetch just brought in.
     """
-    allowed = rules.get("sources")
-    # Key absent means unrestricted, so a document written before this key existed
-    # keeps meaning "every source". Key present and empty is a different statement -
-    # nothing was selected - and must drop everything rather than quietly re-open
-    # the corpus the fetch pass just refused to fill.
     if job.source in RETIRED_SOURCES:
-        # Rows fetched by an adapter this build no longer has. They stay in the
-        # database, but nothing that ranks or shortlists may surface them.
+        # They stay in the database, but nothing that ranks or shortlists may
+        # surface them.
         verdict.drop("source_excluded", f"source {job.source} is no longer searched")
-        return
-    if allowed is None:
-        return
-    kept = {name for name in allowed if name not in RETIRED_SOURCES}
-    if allowed and not kept:
-        # Saved before its only source was retired. `preferences.from_filters`
-        # reads that as every source, so this must too, or the fetch would fill
-        # a corpus the shortlist then drops whole.
-        return
-    if job.source not in kept:
-        verdict.drop("source_excluded", f"source {job.source} is not selected")
 
 
 def _check_age(job: Job, rules: dict[str, Any], now: dt.datetime, verdict: Verdict) -> None:

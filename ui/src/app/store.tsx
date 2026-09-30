@@ -57,10 +57,7 @@ type Hunt = {
    *  the form, which unmounts when the Run page does and keeps its draft. */
   filtersDirty: boolean;
   setFiltersDirty: (dirty: boolean) => void;
-  sources: string[];
-  pickSources: (next: string[]) => Promise<void>;
-  savingSources: boolean;
-  sourcesError: string | null;
+  filtersError: string | null;
 
   run: RunState;
   refreshRun: () => Promise<void>;
@@ -114,9 +111,7 @@ export function HuntProvider({ children }: { children: ReactNode }) {
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [filtersDirty]);
-  const [sources, setSources] = useState<string[]>([]);
-  const [savingSources, setSavingSources] = useState(false);
-  const [sourcesError, setSourcesError] = useState<string | null>(null);
+  const [filtersError, setFiltersError] = useState<string | null>(null);
 
   const [run, setRun] = useState<RunState>(EMPTY_RUN);
   const [events, setEvents] = useState<RunEvent[]>([]);
@@ -140,9 +135,8 @@ export function HuntProvider({ children }: { children: ReactNode }) {
       .then((body) => {
         setFilters(body.filters);
         setVocab(body.vocab);
-        setSources(body.filters.sources?.length ? body.filters.sources : ["ats", "linkedin"]);
       })
-      .catch((error) => setSourcesError(`could not load the search filters: ${String(error)}`));
+      .catch((error) => setFiltersError(`could not load the search filters: ${String(error)}`));
     api.run().then(setRun).catch(() => undefined);
     api.tailorState().then(setTailor).catch(() => undefined);
     api
@@ -255,29 +249,6 @@ export function HuntProvider({ children }: { children: ReactNode }) {
     [guarded],
   );
 
-  // Clearing the last source is allowed on screen, where the picker says why it
-  // is wrong, but never written: an empty list would leave the next run with
-  // nothing to fetch.
-  const pickSources = useCallback(
-    async (next: string[]) => {
-      const previous = sources;
-      setSources(next);
-      if (!next.length) return;
-      setSavingSources(true);
-      setSourcesError(null);
-      try {
-        const body = await api.saveFilters({ sources: next });
-        setFilters(body.filters);
-      } catch {
-        setSources(previous);
-        setSourcesError("Could not save the sources. They are back as they were.");
-      } finally {
-        setSavingSources(false);
-      }
-    },
-    [sources],
-  );
-
   const refreshTailor = useCallback(async () => {
     setTailor(await api.tailorState());
   }, []);
@@ -370,10 +341,7 @@ export function HuntProvider({ children }: { children: ReactNode }) {
     setValid,
     filtersDirty,
     setFiltersDirty,
-    sources,
-    pickSources,
-    savingSources,
-    sourcesError,
+    filtersError,
     run,
     refreshRun,
     events,

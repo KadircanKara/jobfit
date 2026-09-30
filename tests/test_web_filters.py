@@ -80,18 +80,6 @@ def test_an_empty_title_list_clears_the_rule_rather_than_matching_nothing():
     assert prefs.titles == []
 
 
-def test_unticking_every_source_is_rejected_rather_than_stored():
-    """An empty list flattens to the CLI's "none", which used to store an empty
-    selection: the run fetched nothing and the shortlist restricted nothing."""
-    with pytest.raises(webfilters.FieldError) as exc:
-        webfilters.apply(Preferences(), {"sources": []})
-
-    assert exc.value.field == "sources"
-    assert "ats" in str(exc.value)
-
-
-
-
 def test_authorization_settings_are_passed_through():
     updates = webfilters._updates_from(
         {"work_authorization": ["Turkey", "turkey"], "sponsorship_required": True}

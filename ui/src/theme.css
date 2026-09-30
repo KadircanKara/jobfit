@@ -2849,16 +2849,6 @@ tr.below:hover td {
   margin-bottom: 16px;
 }
 
-.sources {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-.sources .chip {
-  height: 28px;
-}
-
 .tagwrap {
   position: relative;
 }

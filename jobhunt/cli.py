@@ -102,12 +102,7 @@ def sync_cmd(
     if cap:
         cfg.raw.setdefault("sync", {})["max_boards_per_run"] = cap
 
-    if source:
-        targets = [source]
-    else:
-        prefs, _ = preferences_module.load(cfg)
-        selected = set(preferences_module.adapters_for(prefs.sources))
-        targets = [name for name in sorted(source_registry.REGISTRY) if name in selected]
+    targets = [source] if source else sorted(source_registry.REGISTRY)
     for name in targets:
         if name not in source_registry.REGISTRY:
             known = ", ".join(sorted(source_registry.REGISTRY))

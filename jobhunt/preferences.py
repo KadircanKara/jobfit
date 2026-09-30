@@ -36,31 +36,6 @@ WORK_MODELS = ("remote", "hybrid", "onsite")
 EMPLOYMENT_TYPES = norm.EMPLOYMENT_TYPES
 DEFAULT_MARKETS = ("global_remote", "yc", "tr_local")
 
-# `ats` is a group, not an adapter: ticking twelve boxes is not the feature the
-# user asked for.
-SOURCE_CHOICES: tuple[str, ...] = ("ats", "linkedin")
-LINKEDIN_SOURCE = "linkedin"
-
-
-def _ats_sources() -> tuple[str, ...]:
-    # Imported here, not at module scope: the linkedin adapter reaches back into
-    # this module, and a top-level import would close that circle.
-    from jobhunt import sources as source_registry
-
-    return tuple(sorted(name for name in source_registry.REGISTRY if name != LINKEDIN_SOURCE))
-
-
-def adapters_for(selection: list[str]) -> list[str]:
-    """Group names to the adapter ids a run may actually call."""
-    names: list[str] = []
-    for group in selection:
-        if group == "ats":
-            names.extend(_ats_sources())
-        elif group == LINKEDIN_SOURCE:
-            names.append(LINKEDIN_SOURCE)
-    return sorted(set(names))
-
-
 class PreferenceError(ValueError):
     """A preference the user can fix, phrased for them rather than for a log."""
 
@@ -82,10 +57,6 @@ class Preferences:
     # again after the field is cleared. Only the browser writes these; the
     # wizard neither shows nor asks about them.
     title_groups: dict[str, list[str]] = dataclasses.field(default_factory=dict)
-    # Which corpora a run may fetch from and shortlist out of. Both, deliberately:
-    # a run that fetches only LinkedIn but shortlists everything cannot show what
-    # LinkedIn alone is worth.
-    sources: list[str] = dataclasses.field(default_factory=lambda: ["ats", "linkedin"])
     # Which of `locations` the candidate may already work in, by the name typed
     # there. A posting that demands authorization somewhere else is dropped;
     # see rank/authorization.py. Always a subset of `locations`.
@@ -178,38 +149,12 @@ def _job_types(values: list[str]) -> list[str]:
     return out
 
 
-def _sources(values: list[str]) -> list[str]:
-    """Validate a source selection, here and only here.
-
-    A selection that expands to no adapter at all - nothing ticked - is rejected
-    rather than stored: the run would fetch nothing while the shortlist
-    restricted nothing, so the two would silently disagree about what the
-    corpus is. The browser disables Save on an empty pick, but
-    `jobhunt config set` and PUT /api/filters reach the same state and the
-    backend has to answer for itself.
-    """
-    out = []
-    for value in values:
-        text = value.strip().lower()
-        if text not in SOURCE_CHOICES:
-            raise PreferenceError(
-                f"unknown source {value!r}. use one of: {', '.join(SOURCE_CHOICES)}"
-            )
-        out.append(text)
-    if not adapters_for(out):
-        usable = [choice for choice in SOURCE_CHOICES if adapters_for([choice])]
-        raise PreferenceError(
-            f"that leaves no sources to search. use one or more of: {', '.join(usable)}"
-        )
-    return out
-
-
 def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
     """Apply `key=value` pairs from the CLI. Unknown keys are a loud error."""
     known = {
         "titles", "locations", "work_model", "job_types", "experience",
         "experience_max", "min_salary", "currency", "include_unstated_salary",
-        "max_age_days", "top_n", "sources", "work_authorization", "sponsorship_required",
+        "max_age_days", "top_n", "work_authorization", "sponsorship_required",
     }
     for key, raw in updates.items():
         if key not in known:
@@ -231,10 +176,6 @@ def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
             prefs.work_model = [] if blank else _work_model(_split(value))
         elif key == "job_types":
             prefs.job_types = [] if blank else _job_types(_split(value))
-        elif key == "sources":
-            # No `blank` shortcut: "none" is a request for an empty corpus, which
-            # `_sources` is the one place that refuses.
-            prefs.sources = _sources([] if blank else _split(value))
         elif key == "experience":
             prefs.experience_min = None if blank else _seniority(value)
         elif key == "experience_max":
@@ -469,13 +410,11 @@ def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -
         if rules:
             profiles[market] = rules
 
-    selected = adapters_for(prefs.sources)
-    everything = adapters_for(["ats", LINKEDIN_SOURCE])
     global_rules: dict[str, Any] = {
         "require_titles_regex": title_patterns_for(prefs),
         "max_age_days": prefs.max_age_days,
     }
-    # Omitted when empty or off, like `sources` below: a key written either way
+    # Omitted when empty or off: a key written either way
     # would change the fingerprint of every existing file and re-rank the corpus.
     authorized, anywhere = regions.resolve(prefs.work_authorization)
     if authorized:
@@ -484,10 +423,6 @@ def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -
         global_rules["authorized_anywhere"] = True
     if prefs.sponsorship_required:
         global_rules["sponsorship_required"] = True
-    # Omitted when nothing is restricted, so an unchanged selection does not
-    # churn the filter fingerprint every time an adapter is added.
-    if selected != everything:
-        global_rules["sources"] = selected
 
     return {
         "profiles": profiles,
@@ -534,12 +469,6 @@ def from_filters(filters: dict[str, Any]) -> Preferences:
     for field in dataclasses.fields(Preferences):
         if field.name in managed:
             setattr(prefs, field.name, _coerce(hints[field.name], managed[field.name]))
-    # A selection saved by an earlier build may name a source this one retired.
-    # Read it as if it had not, rather than refuse it: the file predates the
-    # removal, the user did not choose it.
-    kept = [name for name in prefs.sources if name not in RETIRED_SOURCES]
-    if kept != prefs.sources:
-        prefs.sources = kept if adapters_for(kept) else list(SOURCE_CHOICES)
     return prefs
 
 
@@ -600,11 +529,9 @@ def save(config: Config, prefs: Preferences) -> pathlib.Path:
         if market not in document["profiles"]:
             document["profiles"][market] = _packaged_profile(market)
 
-    # `update` can add a key but never remove one, and `to_filters` signals "no
-    # source restriction" by omitting `sources` entirely. Without the pop, a
-    # narrowed selection could never be widened again: the fetch path reads
-    # preferences and resumes fetching ATS while the shortlist reads the stale
-    # document and drops all of it as source_excluded.
+    # `update` can add a key but never remove one. `sources` is a selection an
+    # earlier build wrote: every run now searches every source, and nothing
+    # reads it.
     document.setdefault("global", {}).pop("sources", None)
     # `remote_from_location` is a rule an earlier build wrote and nothing reads.
     for key in ("work_authorization", "authorized_anywhere", "sponsorship_required",

@@ -84,10 +84,6 @@ def test_job_types_go_through_the_same_normalizer_as_the_adapters(cfg) -> None:
     ]
 
 
-def test_sources_go_through_apply_updates(cfg) -> None:
-    assert set_prefs(cfg, sources="linkedin, ats").sources == ["linkedin", "ats"]
-
-
 def test_clearing_a_setting(cfg) -> None:
     set_prefs(cfg, titles="backend", min_salary="80k")
     prefs = set_prefs(cfg, titles="any", min_salary="none")
@@ -476,46 +472,6 @@ def test_the_shipped_filters_do_not_exclude_internships() -> None:
 # --- sources: which corpora a run draws from -----------------------------------
 
 
-def test_sources_defaults_to_ats_and_linkedin() -> None:
-    assert preferences.Preferences().sources == ["ats", "linkedin"]
-
-
-def test_ats_expands_to_every_existing_adapter() -> None:
-    expanded = preferences.adapters_for(["ats"])
-    assert "greenhouse" in expanded and "workable" in expanded
-    assert "linkedin" not in expanded
-
-
-def test_linkedin_only_expands_to_linkedin_alone() -> None:
-    assert preferences.adapters_for(["linkedin"]) == ["linkedin"]
-
-
-def test_filters_carry_the_selected_adapter_ids() -> None:
-    prefs = preferences.Preferences(titles=["Backend Engineer"], sources=["linkedin"])
-    assert preferences.to_filters(prefs)["global"]["sources"] == ["linkedin"]
-
-
-def test_filters_omit_sources_when_everything_is_selected() -> None:
-    prefs = preferences.Preferences(titles=["Backend Engineer"], sources=["ats", "linkedin"])
-    assert "sources" not in preferences.to_filters(prefs)["global"]
-
-
-def test_widening_the_source_selection_removes_the_restriction_from_the_document(cfg) -> None:
-    """`update` cannot remove a key, so a narrowed selection used to be permanent:
-    the fetch path resumed fetching ATS while the shortlist kept dropping it."""
-    prefs, _ = preferences.load(cfg)
-    prefs.titles = ["Backend Engineer"]
-    prefs.sources = ["linkedin"]
-    preferences.save(cfg, prefs)
-    _, narrowed = preferences.load(cfg)
-    assert narrowed["global"]["sources"] == ["linkedin"]
-
-    prefs.sources = ["ats", "linkedin"]
-    preferences.save(cfg, prefs)
-    _, widened = preferences.load(cfg)
-    assert "sources" not in widened["global"]
-
-
 def test_clearing_every_source_is_rejected(cfg) -> None:
     with pytest.raises(preferences.PreferenceError):
         set_prefs(cfg, sources="none")
@@ -622,18 +578,6 @@ def _legacy_file(cfg, managed: dict, **document) -> None:
     )
 
 
-def test_a_selection_of_only_upwork_loads_as_every_source(cfg) -> None:
-    _legacy_file(cfg, {"sources": ["upwork"], "upwork": {"queries": ["rag"]}})
-    prefs, _ = preferences.load(cfg)
-    assert prefs.sources == ["ats", "linkedin"]
-
-
-def test_upwork_is_dropped_from_a_mixed_selection(cfg) -> None:
-    _legacy_file(cfg, {"sources": ["linkedin", "upwork"]})
-    prefs, _ = preferences.load(cfg)
-    assert prefs.sources == ["linkedin"]
-
-
 def test_upwork_is_no_longer_a_source_to_pick(cfg) -> None:
     with pytest.raises(preferences.PreferenceError):
         set_prefs(cfg, sources="upwork")
@@ -661,3 +605,18 @@ def test_saving_clears_the_retired_remote_rule(cfg) -> None:
     _, document = preferences.load(cfg)
     assert "remote_from_location" not in document["global"]
     assert "remote_from_location" not in document[preferences.MANAGED_KEY]
+
+
+def test_sources_are_no_longer_a_setting(cfg) -> None:
+    with pytest.raises(preferences.PreferenceError, match="unknown setting 'sources'"):
+        set_prefs(cfg, sources="linkedin")
+
+
+def test_a_saved_source_selection_is_ignored_and_cleared_on_save(cfg) -> None:
+    _legacy_file(cfg, {"sources": ["linkedin"]}, **{"global": {"sources": ["linkedin"]}})
+    prefs, _ = preferences.load(cfg)
+    assert not hasattr(prefs, "sources")
+    preferences.save(cfg, prefs)
+    _, document = preferences.load(cfg)
+    assert "sources" not in document["global"]
+    assert "sources" not in document[preferences.MANAGED_KEY]
