@@ -94,6 +94,38 @@ def test_a_closed_notice_on_the_page_reads_as_closed() -> None:
     assert not liveness.says_closed(OPEN_PAGE)
 
 
+LINKEDIN_OPEN = (
+    "<section class='top-card-layout'><div class='top-card-layout__cta-container'>"
+    "<button class='sign-up-modal__outlet top-card-layout__cta top-card-layout__cta--primary'>Apply</button>"
+    "<button class='top-card-layout__cta top-card-layout__cta--secondary'>Save</button>"
+    "</div></section>"
+)
+LINKEDIN_NO_BUTTON = (
+    "<section class='top-card-layout'><div class='top-card-layout__cta-container'></div>"
+    "<span class='posted-time-ago__text'>2 weeks ago</span></section>"
+)
+
+
+def test_a_linkedin_page_that_lost_its_apply_button_reads_as_closed() -> None:
+    assert liveness.linkedin_closed(LINKEDIN_NO_BUTTON)
+    assert not liveness.linkedin_closed(LINKEDIN_OPEN)
+
+
+def test_a_linkedin_page_saying_it_is_closed_reads_as_closed() -> None:
+    assert liveness.linkedin_closed(LINKEDIN_OPEN + CLOSED_PAGE)
+
+
+def test_a_linkedin_page_without_the_button_row_is_not_guessed_closed() -> None:
+    assert not liveness.linkedin_closed("<html><body><h1>AI Engineer</h1></body></html>")
+
+
+def test_a_silently_closed_linkedin_posting_is_retired(cfg) -> None:
+    job_id = linkedin_job(cfg)
+    client = client_for({"https://www.linkedin.com/jobs-guest/": html(LINKEDIN_NO_BUTTON)})
+
+    assert liveness.verify(cfg, [job_id], client=client, guard=FakeGuard()).closed == {job_id}
+
+
 def test_a_notice_only_inside_a_script_is_not_the_page_saying_it() -> None:
     page = "<html><script>const t={gone:'This job is no longer available'}</script><p>Apply.</p></html>"
     assert not liveness.says_closed(page)
@@ -123,7 +155,7 @@ def test_a_linkedin_posting_that_is_gone_is_retired(cfg) -> None:
 def test_an_open_posting_is_stamped_and_not_read_again_the_same_day(cfg) -> None:
     job_id = linkedin_job(cfg)
     seen: list[str] = []
-    client = client_for({"https://www.linkedin.com/jobs-guest/": html(OPEN_PAGE)}, seen)
+    client = client_for({"https://www.linkedin.com/jobs-guest/": html(LINKEDIN_OPEN)}, seen)
 
     first = liveness.verify(cfg, [job_id], client=client, guard=FakeGuard())
     second = liveness.verify(cfg, [job_id], client=client, guard=FakeGuard())
@@ -139,7 +171,7 @@ def test_a_stamp_older_than_a_day_is_read_again(cfg) -> None:
     with session_scope(cfg.db_path) as session:
         session.get(Job, job_id).open_checked_at = utcnow() - dt.timedelta(hours=25)
     seen: list[str] = []
-    client = client_for({"https://www.linkedin.com/jobs-guest/": html(OPEN_PAGE)}, seen)
+    client = client_for({"https://www.linkedin.com/jobs-guest/": html(LINKEDIN_OPEN)}, seen)
 
     liveness.verify(cfg, [job_id], client=client, guard=FakeGuard())
 

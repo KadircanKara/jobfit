@@ -172,7 +172,7 @@ def _linkedin_state(client: httpx.Client, guard: CrawlGuard, external_id: str) -
     if response.status_code != 200:
         return UNKNOWN, False
     guard.record_ok()
-    return (CLOSED if says_closed(response.text) else OPEN), False
+    return (CLOSED if linkedin_closed(response.text) else OPEN), False
 
 
 def _page_state(client: httpx.Client, url: str, external_id: str) -> str:
@@ -217,6 +217,20 @@ def _left_the_posting(start: str, final: str, external_id: str) -> bool:
         return True
     ident = (external_id or "").strip().lower()
     return bool(ident) and ident in start.lower() and ident not in final.lower()
+
+
+def linkedin_closed(html: str) -> bool:
+    """Whether LinkedIn's guest job page shows the posting closed.
+
+    It says so one of two ways, both seen live: "No longer accepting
+    applications" in the top card, or - with no words at all - a top card that
+    has lost its Apply button. An open posting always carries that button for
+    a logged-out visitor, as the primary call to action. A page without the top
+    card's button row is a markup change, not a closed job, so it reads as open.
+    """
+    if says_closed(html):
+        return True
+    return "top-card-layout__cta-container" in html and "top-card-layout__cta--primary" not in html
 
 
 def says_closed(html: str) -> bool:
