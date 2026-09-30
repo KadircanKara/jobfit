@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import pytest
 
-from jobhunt import preferences as prefs_module
 from jobhunt import sources as source_registry
 from jobhunt.web import engine as engine_module
 
@@ -17,27 +16,6 @@ def test_the_sources_are_the_registered_ones(cfg):
 
     assert "greenhouse" in pipeline.sources()
     assert "ashby" in pipeline.sources()
-
-
-def test_the_engine_fetches_only_from_selected_sources(cfg) -> None:
-    """Selecting linkedin alone must exclude the twelve ats adapters, and include
-    only linkedin - not a silent fall-back to every ats adapter."""
-    prefs, _ = prefs_module.load(cfg)
-    prefs.sources = ["linkedin"]
-    prefs_module.save(cfg, prefs)
-    assert engine_module.EnginePipeline(cfg).sources() == ["linkedin"]
-
-
-def test_the_engine_fetches_every_ats_adapter_by_default(cfg) -> None:
-    """`adapters_for` names linkedin unconditionally, whether or not an adapter
-    for it is registered — so the honest expectation intersects with the
-    registry. Today that intersection is the twelve ats adapters; once Task 7
-    registers linkedin, it becomes thirteen, and this assertion still holds
-    without needing an edit."""
-    names = engine_module.EnginePipeline(cfg).sources()
-    assert "greenhouse" in names and "ashby" in names
-    expected = set(prefs_module.adapters_for(["ats", "linkedin"])) & set(source_registry.REGISTRY)
-    assert set(names) == expected
 
 
 def test_fetching_a_source_reports_boards_through_the_progress_hook(cfg, monkeypatch):
@@ -269,3 +247,9 @@ def test_a_corpus_with_survivors_produces_batches_to_gate(cfg):
     assert plan.jobs == 1
     assert [batch.label for batch in plan.batches] == ["global_remote"]
     assert plan.batches[0].size == 1
+
+
+def test_the_engine_fetches_every_source(cfg) -> None:
+    names = engine_module.EnginePipeline(cfg).sources()
+    assert names == sorted(source_registry.REGISTRY)
+    assert {"greenhouse", "ashby", "linkedin"} <= set(names)

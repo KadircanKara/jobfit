@@ -33,7 +33,6 @@ _FIELD_OF_KEY = {
     "titles": "titles",
     "work_model": "work_model",
     "job_types": "job_types",
-    "sources": "sources",
     "min_salary": "min_salary",
     "currency": "currency",
     "max_age_days": "max_age",
@@ -94,8 +93,6 @@ def _updates_from(payload: dict[str, Any]) -> dict[str, str]:
         updates["work_model"] = ",".join(payload["work_model"] or []) or "none"
     if "job_types" in payload:
         updates["job_types"] = ",".join(payload["job_types"] or []) or "none"
-    if "sources" in payload:
-        updates["sources"] = ",".join(payload["sources"] or []) or "none"
     if "experience_min" in payload:
         updates["experience"] = str(payload["experience_min"] or "none")
     if "experience_max" in payload:

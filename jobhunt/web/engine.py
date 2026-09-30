@@ -47,11 +47,8 @@ class EnginePipeline:
         )
 
     def sources(self) -> list[str]:
-        """Only what the search selected. A run that fetches thirteen corpora is
-        not a way to see what one of them is worth."""
-        prefs, _ = prefs_module.load(self.config)
-        selected = prefs_module.adapters_for(prefs.sources)
-        return [name for name in sorted(source_registry.REGISTRY) if name in set(selected)]
+        """Every source there is. A run always searches all of them."""
+        return sorted(source_registry.REGISTRY)
 
     # --- sync ------------------------------------------------------------
 

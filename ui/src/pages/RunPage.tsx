@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ArrowRight, Info, Pause, Play, RotateCcw, Square, TriangleAlert } from "lucide-react";
-import { FiltersPanel, SourcePicker, sourceLabel } from "../Filters";
+import { FiltersPanel } from "../Filters";
 import { GatePanel, Log, Pipeline, RankPanel, SourceRail, plural } from "../Run";
 import { followLink, href, type Route } from "../app/router";
 import { runLabel, runStatus, runTone, stamp, useHunt, useShownRun } from "../app/store";
@@ -100,10 +100,9 @@ export function RunPage({ runId, go }: { runId?: string; go: (to: Route | string
             vocab={hunt.vocab}
             onSaved={hunt.setFilters}
             onValidity={hunt.setValid}
-            sources={hunt.sources}
             onDirty={hunt.setFiltersDirty}
           />
-        ) : hunt.sourcesError ? null : (
+        ) : hunt.filtersError ? null : (
           <section className="panel acc">
             <div className="acc-head">
               <span className="spin" aria-hidden="true" />
@@ -131,12 +130,7 @@ export function RunPage({ runId, go }: { runId?: string; go: (to: Route | string
         </div>
       )}
 
-      <div className="toolbar">
-        {hunt.filters && (
-          <SourcePicker value={hunt.sources} onChange={hunt.pickSources} saving={hunt.savingSources} />
-        )}
-      </div>
-      {hunt.sourcesError && <div className="err">{hunt.sourcesError}</div>}
+      {hunt.filtersError && <div className="err">{hunt.filtersError}</div>}
 
       {missing && (
         <div className="notice" data-tone="warn" style={{ marginBottom: 16 }}>
@@ -165,7 +159,7 @@ export function RunPage({ runId, go }: { runId?: string; go: (to: Route | string
         <div className="notice" data-tone="warn" style={{ marginBottom: 16 }}>
           <TriangleAlert className="icon" aria-hidden="true" />
           <span className="grow">
-            Could not reach {run.degraded.map(sourceLabel).join(", ")} this run, so{" "}
+            Could not reach {run.degraded.map(sourceName).join(", ")} this run, so{" "}
             {run.degraded.length > 1 ? "their" : "its"} jobs are from the last successful fetch.
           </span>
         </div>
@@ -273,4 +267,9 @@ export function RunPage({ runId, go }: { runId?: string; go: (to: Route | string
       </div>
     </div>
   );
+}
+
+/** A source id as a person reads it. Most ids are already the product's name. */
+function sourceName(id: string): string {
+  return id === "linkedin" ? "LinkedIn" : id;
 }
