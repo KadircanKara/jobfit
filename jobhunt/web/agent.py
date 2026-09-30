@@ -24,10 +24,8 @@ from jobhunt.config import Config
 
 # The phases that cost a model call. Sync and deterministic ranking are not
 # here because they never call one: sync is HTTP, ranking is Python and a
-# filters file. "upwork" is the exception to "sync is HTTP" - its fetch has no
-# HTTP client of its own, only the Upwork MCP reached through this same `claude
-# -p` mechanism, so its effort needs the same startup validation as the rest.
-PHASES = ("gate", "tailor", "review", "revise", "upwork", "import", "template")
+# filters file.
+PHASES = ("gate", "tailor", "review", "revise", "import", "template")
 
 # What `claude --effort` accepts. Naming one this project does not know would be
 # passed straight to the CLI and fail every call in that phase.

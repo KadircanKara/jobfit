@@ -652,82 +652,6 @@ def test_a_run_with_a_truncated_ref_reports_degraded_rather_than_ok(cfg) -> None
     assert "ended early" in (result.error_detail or "")
 
 
-def test_the_upwork_adapter_is_built_with_config_and_refs(cfg) -> None:
-    prefs, _ = prefs_module.load(cfg)
-    prefs.upwork.queries = ["rag"]
-    prefs.upwork.job_types = ["hourly"]
-    prefs_module.save(cfg, prefs)
-    adapter = sync.build_adapter(cfg, "upwork")
-    assert adapter.config is cfg
-    assert [ref.token for ref in adapter.discover()] == ["rag|hourly"]
-
-
-def test_upwork_refs_come_from_preferences_not_the_boards_table(cfg, monkeypatch) -> None:
-    prefs, _ = prefs_module.load(cfg)
-    prefs.upwork.queries = ["rag"]
-    prefs_module.save(cfg, prefs)
-    monkeypatch.setattr(
-        "jobhunt.sources.upwork.agent.run",
-        lambda *a, **k: '{"pages": [], "details": {}}',
-    )
-    result = sync.sync_source(cfg, "upwork")
-    assert result.boards > 0
-
-
-def test_a_candidate_only_pass_never_starts_an_upwork_fetch(cfg, monkeypatch) -> None:
-    called = []
-    monkeypatch.setattr(
-        "jobhunt.sources.upwork.agent.run", lambda *a, **k: called.append(1) or "{}"
-    )
-    sync.sync_source(cfg, "upwork", only_status="candidate")
-    assert called == []
-
-
-def _upwork_envelope(with_detail: bool) -> dict:
-    """The fixture payload, optionally with the detail document removed.
-
-    Dropping `details` is exactly what `known_ids` produces on the second run:
-    the search result still arrives in full (snippet, trailer metadata and all),
-    only the paid-for `get` document is gone.
-    """
-    payload = load_fixture("upwork_payload.json")
-    return {
-        "pages": payload["pages"],
-        "details": payload["details"] if with_detail else {},
-    }
-
-
-def test_a_second_upwork_pass_keeps_the_body_rate_and_client_it_paid_for(cfg) -> None:
-    """Run 2 has no detail document, but an Upwork posting is never empty - the
-    trailer and the snippet are always there - so `_absent_fields` alone let the
-    snippet overwrite the full JD, blank the hourly rate that only the detail
-    carries, and revert the extracted client to the anonymous placeholder, which
-    is what "Find contacts" searches LinkedIn for."""
-    place_raw(cfg, "upwork", "rag|hourly", "R1", _upwork_envelope(with_detail=True))
-    sync.normalize_pass(cfg, "upwork", "R1")
-    with session_scope(cfg.db_path) as session:
-        job = session.query(Job).filter_by(source="upwork", external_id="2094821655490856773").one()
-        before = (
-            job.description_text, job.description_md, job.jd_completeness,
-            job.salary_min, job.salary_max, job.salary_period, job.company.name,
-        )
-        assert job.jd_completeness == "full"
-        assert job.company.name == "Northquill"
-        assert (job.salary_min, job.salary_max) == (20, 30)
-
-    place_raw(cfg, "upwork", "rag|hourly", "R2", _upwork_envelope(with_detail=False))
-    result = sync.normalize_pass(cfg, "upwork", "R2")
-    with session_scope(cfg.db_path) as session:
-        job = session.query(Job).filter_by(source="upwork", external_id="2094821655490856773").one()
-        assert (
-            job.description_text, job.description_md, job.jd_completeness,
-            job.salary_min, job.salary_max, job.salary_period, job.company.name,
-        ) == before
-        assert job.jd_extracted_at is not None
-    # Nothing about the gig changed, so re-gating it would be pure waste.
-    assert result.updated == 0
-
-
 def test_a_real_edit_to_a_description_still_lands(cfg) -> None:
     """The guard must only refuse downgrades. A source that genuinely re-sends a
     changed full description - which is every ATS adapter, every run - has to
@@ -754,9 +678,8 @@ def test_a_full_body_is_not_replaced_by_a_shorter_one_that_reads_as_a_snippet(cf
 
     `norm.completeness` calls anything under 400 characters a snippet, so an ATS
     that genuinely rewrites a full JD down to a couple of sentences is refused
-    the same way an Upwork run-2 snippet is. Keeping a stale body is the
-    cheaper mistake: the other direction throws away a paid-for detail fetch on
-    every single Upwork run, for every gig.
+    the same way a search snippet is. Keeping a stale body is the cheaper
+    mistake: the other direction throws away a fetched detail for a snippet.
     """
     payload = load_fixture("greenhouse_stripe.json")
     place_raw(cfg, "greenhouse", "stripe", "R1", payload)
@@ -778,29 +701,10 @@ def test_a_run_whose_refs_were_all_refused_reports_degraded_rather_than_ok(cfg) 
     """A budget refusal writes the same empty envelope a search that found
     nothing writes. Left unmarked, a run that spent its whole allowance before
     it started reports `ok` with zero jobs and no reason attached."""
-    place_raw(cfg, "upwork", "rag|hourly", "R9", {"pages": [], "details": {}}, refused=True)
-    result = sync.sync_source(cfg, "upwork", from_raw="R9")
+    place_raw(cfg, "greenhouse", "stripe", "R9", {"jobs": []}, refused=True)
+    result = sync.sync_source(cfg, "greenhouse", from_raw="R9")
     assert result.refused == 1
     assert result.status == "degraded"
     assert "never ran" in (result.error_detail or "")
 
 
-def test_the_upwork_known_ids_are_capped_at_the_most_recent(cfg, monkeypatch) -> None:
-    """Every one of these is inlined into the prompt for every ref, so the whole
-    corpus in there grows forever. LinkedIn's are only compared in Python and
-    stay uncapped - dropping one there means re-fetching a page over the wire."""
-    monkeypatch.setattr(sync.upwork_source, "KNOWN_IDS_LIMIT", 3)
-    monkeypatch.setattr(sync, "_KNOWN_ID_LIMITS", {"upwork": 3})
-    with session_scope(cfg.db_path) as session:
-        for index in range(6):
-            job, _ = store.upsert_posting(
-                session,
-                JobPosting(
-                    source="upwork", external_id=f"gig-{index}", market="upwork",
-                    title="RAG engineer", company_name="Upwork client",
-                ),
-            )
-            job.last_seen_at = utcnow() - dt_module.timedelta(days=10 - index)
-
-    assert sync._known_ids_for(cfg, "upwork", newest=3) == {"gig-3", "gig-4", "gig-5"}
-    assert len(sync._known_ids_for(cfg, "upwork")) == 6

@@ -23,26 +23,23 @@ import yaml
 from jobhunt.config import Config
 from jobhunt.pipeline import normalize as norm
 from jobhunt.rank import regions
-from jobhunt.rank.deterministic import FILTERS_FILENAME, PACKAGED_FILTERS, SENIORITY_ORDER
+from jobhunt.rank.deterministic import (
+    FILTERS_FILENAME,
+    PACKAGED_FILTERS,
+    RETIRED_SOURCES,
+    SENIORITY_ORDER,
+)
 
 MANAGED_KEY = "_managed_by_jobhunt_config"
 
 WORK_MODELS = ("remote", "hybrid", "onsite")
 EMPLOYMENT_TYPES = norm.EMPLOYMENT_TYPES
-DEFAULT_MARKETS = ("global_remote", "yc", "tr_local", "upwork")
+DEFAULT_MARKETS = ("global_remote", "yc", "tr_local")
 
 # `ats` is a group, not an adapter: ticking twelve boxes is not the feature the
-# user asked for. `upwork` is its own adapter with its own query settings below.
-SOURCE_CHOICES: tuple[str, ...] = ("ats", "linkedin", "upwork")
+# user asked for.
+SOURCE_CHOICES: tuple[str, ...] = ("ats", "linkedin")
 LINKEDIN_SOURCE = "linkedin"
-UPWORK_SOURCE = "upwork"
-UPWORK_JOB_TYPES = ("hourly", "fixed")
-UPWORK_EXPERIENCE = ("entry_level", "intermediate", "expert")
-UPWORK_WORKLOAD = ("full_time", "part_time", "as_needed")
-UPWORK_SORTS = ("relevance", "recency", "client_total_charge", "client_rating")
-# The query a feed ref carries in place of a search term. Reserved: a keyword
-# search spelled this way would be read back as the feed. See upwork_query.
-UPWORK_FEED_QUERY = "@feed"
 
 
 def _ats_sources() -> tuple[str, ...]:
@@ -50,11 +47,7 @@ def _ats_sources() -> tuple[str, ...]:
     # this module, and a top-level import would close that circle.
     from jobhunt import sources as source_registry
 
-    # Upwork answers to its own explicit group, not the "everything else" one:
-    # once it is in REGISTRY, ticking ATS in the browser must not silently start
-    # an Upwork agent subprocess nobody asked for.
-    excluded = {LINKEDIN_SOURCE, UPWORK_SOURCE}
-    return tuple(sorted(name for name in source_registry.REGISTRY if name not in excluded))
+    return tuple(sorted(name for name in source_registry.REGISTRY if name != LINKEDIN_SOURCE))
 
 
 def adapters_for(selection: list[str]) -> list[str]:
@@ -65,67 +58,11 @@ def adapters_for(selection: list[str]) -> list[str]:
             names.extend(_ats_sources())
         elif group == LINKEDIN_SOURCE:
             names.append(LINKEDIN_SOURCE)
-        elif group == UPWORK_SOURCE:
-            names.append(UPWORK_SOURCE)
     return sorted(set(names))
 
 
 class PreferenceError(ValueError):
     """A preference the user can fix, phrased for them rather than for a log."""
-
-
-@dataclasses.dataclass
-class UpworkPreferences:
-    """What to ask Upwork for. Not an override of the salaried settings.
-
-    Upwork is a different market with a different vocabulary: there is no
-    location (every gig is remote), no seniority ladder, and a rate rather than
-    a salary. Mirroring the shared fields here would give two places to answer
-    one question.
-    """
-
-    queries: list[str] = dataclasses.field(default_factory=list)
-    job_types: list[str] = dataclasses.field(default_factory=lambda: list(UPWORK_JOB_TYPES))
-    min_hourly: float | None = None
-    min_fixed: float | None = None
-    experience_level: list[str] = dataclasses.field(default_factory=list)
-    verified_payment_only: bool = True
-    # Drop postings whose client has verified no payment method, locally, after
-    # the fetch. Distinct from `verified_payment_only` above, which is a search
-    # parameter Upwork applies server-side: that one shapes what comes back,
-    # this one is a rule over what did. Both are wanted - the pushdown keeps the
-    # page from filling with dead weight, and the rule still holds if Upwork
-    # ignores the parameter or a row was stored before it was set.
-    # How Upwork orders the results. "relevance" is the website's own "Best
-    # match" and what makes a query mean anything: measured live on the same
-    # query with the same filters, relevance and recency returned ten results
-    # each with *zero* titles in common - recency gave virtual-assistant
-    # postings that merely mention AI, relevance gave the engineering roles.
-    sort: str = "relevance"
-    require_verified_client: bool = False
-    # Drop postings whose client has spent less than this many dollars, after
-    # the fetch - Upwork has no search parameter for spend. Not the same signal
-    # as verification: every client in the first real run was VERIFIED, yet 14
-    # of 40 had spent $0.00 - a verified card is not a hiring history. None is
-    # no rule; 1 is "has spent something", which is what the retired
-    # `require_client_spend` switch meant (see `_migrate_upwork`).
-    client_min_spend: float | None = None
-    workload: list[str] = dataclasses.field(default_factory=list)
-    proposals_max: int | None = None
-    client_min_hires: int | None = None
-    client_max_hires: int | None = None
-    # As Upwork spells them ("United States", "Europe"). One search per entry,
-    # because `location` takes a single value per call. Empty is anywhere.
-    client_locations: list[str] = dataclasses.field(default_factory=list)
-    # Also read Upwork's personalised Most Recent feed (`smart_search`), the one
-    # Upwork search that honours a date.
-    recommended_feed: bool = False
-    # Two pages of 10, not three: every result on every page is echoed back
-    # verbatim through the fetch prompt, so a page is output tokens the model
-    # retypes, not a cheap extra request. See DETAIL_BUDGET in sources/upwork.py
-    # for the measurement. Recency-sorted, page three is also the least likely
-    # to hold anything the cutoff has not already excluded.
-    max_pages: int = 2
 
 
 @dataclasses.dataclass
@@ -149,9 +86,6 @@ class Preferences:
     # a run that fetches only LinkedIn but shortlists everything cannot show what
     # LinkedIn alone is worth.
     sources: list[str] = dataclasses.field(default_factory=lambda: ["ats", "linkedin"])
-    # Upwork's own query. Nested rather than flattened because none of these
-    # keys mean anything to the other twelve sources.
-    upwork: UpworkPreferences = dataclasses.field(default_factory=UpworkPreferences)
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -195,14 +129,6 @@ class Preferences:
 
 def _split(value: str) -> list[str]:
     return [part.strip() for part in str(value).split(",") if part.strip()]
-
-
-def _unique(items: list[str]) -> list[str]:
-    """Each item once, compared without case, keeping the first spelling."""
-    kept: dict[str, str] = {}
-    for item in items:
-        kept.setdefault(item.lower(), item)
-    return list(kept.values())
 
 
 def _seniority(value: str) -> str:
@@ -268,76 +194,6 @@ def _sources(values: list[str]) -> list[str]:
     return out
 
 
-def _restricted(values: list[str], allowed: tuple[str, ...], label: str) -> list[str]:
-    out = []
-    for value in values:
-        text = value.strip().lower()
-        if text not in allowed:
-            raise PreferenceError(f"unknown {label} {value!r}. use one of: {', '.join(allowed)}")
-        out.append(text)
-    return out
-
-
-# Derived, not a second hand-written list: a field added to `UpworkPreferences`
-# and forgotten here would otherwise round-trip silently instead of raising.
-UPWORK_KEYS = {f.name for f in dataclasses.fields(UpworkPreferences)}
-
-
-def _apply_upwork(target: UpworkPreferences, name: str, value: str) -> None:
-    if name not in UPWORK_KEYS:
-        raise PreferenceError(
-            f"unknown setting upwork.{name!r}. known: "
-            f"{', '.join(f'upwork.{k}' for k in sorted(UPWORK_KEYS))}"
-        )
-    blank = value in ("", "any", "none", "-")
-
-    if name == "queries":
-        queries = [] if blank else _split(value)
-        if UPWORK_FEED_QUERY in (q.lower() for q in queries):
-            raise PreferenceError(
-                f"upwork.queries: {UPWORK_FEED_QUERY!r} is reserved for the Most Recent feed"
-            )
-        target.queries = queries
-    elif name == "job_types":
-        target.job_types = list(UPWORK_JOB_TYPES) if blank else _restricted(
-            _split(value), UPWORK_JOB_TYPES, "upwork job type"
-        )
-    elif name == "min_hourly":
-        target.min_hourly = None if blank else _number(value)
-    elif name == "min_fixed":
-        target.min_fixed = None if blank else _number(value)
-    elif name == "experience_level":
-        target.experience_level = [] if blank else _restricted(
-            _split(value), UPWORK_EXPERIENCE, "upwork experience level"
-        )
-    elif name == "verified_payment_only":
-        target.verified_payment_only = value.lower() not in ("false", "no", "0")
-    elif name == "sort":
-        target.sort = "relevance" if blank else _restricted(
-            [value.strip().lower()], UPWORK_SORTS, "upwork sort"
-        )[0]
-    elif name == "require_verified_client":
-        target.require_verified_client = value.lower() in ("true", "yes", "1", "on")
-    elif name == "workload":
-        target.workload = [] if blank else _restricted(_split(value), UPWORK_WORKLOAD, "upwork workload")
-    elif name == "client_min_spend":
-        amount = None if blank else _number(value)
-        if amount is not None and amount < 0:
-            raise PreferenceError("upwork.client_min_spend has to be 0 or more")
-        target.client_min_spend = amount or None
-    elif name in ("proposals_max", "client_min_hires", "client_max_hires"):
-        count = None if blank else int(_number(value))
-        if count is not None and count < 0:
-            raise PreferenceError(f"upwork.{name} has to be 0 or more")
-        setattr(target, name, count)
-    elif name == "client_locations":
-        target.client_locations = [] if blank else _unique(_split(value))
-    elif name == "recommended_feed":
-        target.recommended_feed = value.lower() in ("true", "yes", "1", "on")
-    elif name == "max_pages":
-        target.max_pages = 2 if blank else int(_number(value))
-
-
 def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
     """Apply `key=value` pairs from the CLI. Unknown keys are a loud error."""
     known = {
@@ -346,9 +202,6 @@ def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
         "max_age_days", "top_n", "sources",
     }
     for key, raw in updates.items():
-        if key.startswith("upwork."):
-            _apply_upwork(prefs.upwork, key.removeprefix("upwork."), str(raw).strip())
-            continue
         if key not in known:
             raise PreferenceError(f"unknown setting {key!r}. known: {', '.join(sorted(known))}")
         value = str(raw).strip()
@@ -393,18 +246,6 @@ def apply_updates(prefs: Preferences, updates: dict[str, str]) -> Preferences:
                 f"experience {prefs.experience_min} is above the ceiling {prefs.experience_max}"
             )
 
-    upwork = prefs.upwork
-    if (
-        upwork.client_min_hires is not None
-        and upwork.client_max_hires is not None
-        and upwork.client_min_hires > upwork.client_max_hires
-    ):
-        # Named against the maximum, the field the web form marks. Never the
-        # word "ceiling": `web.filters._field_for` sends that to experience_max.
-        raise PreferenceError(
-            f"upwork.client_max_hires: {upwork.client_max_hires} is below the minimum of "
-            f"{upwork.client_min_hires} hires"
-        )
     return prefs
 
 
@@ -576,41 +417,6 @@ def to_filters(prefs: Preferences, markets: tuple[str, ...] = DEFAULT_MARKETS) -
     profiles: dict[str, Any] = {}
     for market in markets:
         rules: dict[str, Any] = {}
-        if market == UPWORK_SOURCE:
-            # A gig has no country or employment type worth filtering on, and
-            # Upwork's entry/intermediate/expert levels rate the contract's
-            # difficulty, not a career stage: mapping them onto the salaried
-            # seniority ladder would silently filter gigs. The rate floor is a
-            # different quantity, handled where the adapter reads it.
-            # `[".*"]`, unconditionally: the fetch query *is* the title filter
-            # here, and Upwork applies it server-side against the whole posting.
-            # Re-deriving a title-only pattern from the same queries locally can
-            # only subtract - it drops "AI Engineer for chatbot" and "Need a
-            # Django dev to fix my scraper", both of which Upwork itself matched
-            # and returned - and would show a large `title_unmatched` bar on a
-            # source that fetched perfectly. The overriding empty profile is
-            # still needed: without it the salaried global pattern (engineer,
-            # developer, ...) empties the market instead.
-            rules["require_titles_regex"] = [".*"]
-            if prefs.upwork.min_hourly or prefs.upwork.min_fixed:
-                rate: dict[str, Any] = {}
-                if prefs.upwork.min_hourly:
-                    rate["min_hourly"] = prefs.upwork.min_hourly
-                if prefs.upwork.min_fixed:
-                    rate["min_fixed"] = prefs.upwork.min_fixed
-                rules["rate"] = rate
-            client: dict[str, Any] = {}
-            if prefs.upwork.require_verified_client:
-                client["require_verified"] = True
-            if prefs.upwork.client_min_spend:
-                client["min_spend"] = prefs.upwork.client_min_spend
-            # Omitted entirely when neither is on, for the reason `sources` is:
-            # an always-present key churns the filter fingerprint and re-gates
-            # the corpus every time the document is rewritten.
-            if client:
-                rules["client"] = client
-            profiles[market] = rules
-            continue
         hard_requires: dict[str, Any] = {}
         if prefs.work_model:
             hard_requires["remote_type"] = list(prefs.work_model)
@@ -677,21 +483,6 @@ def _coerce(declared: Any, value: Any) -> Any:
     return value
 
 
-def _migrate_upwork(raw: Any) -> Any:
-    """Carry a retired Upwork setting across to the key that replaced it.
-
-    `require_client_spend: true` meant "the client has spent something", which
-    is a minimum spend of $1. Only when the new key is absent, so a document
-    written after the change is never second-guessed. `_coerce` drops the old
-    key afterwards, and the next save stops writing it.
-    """
-    if not isinstance(raw, dict) or "client_min_spend" in raw:
-        return raw
-    if raw.get("require_client_spend") is True:
-        return {**raw, "client_min_spend": 1.0}
-    return raw
-
-
 def from_filters(filters: dict[str, Any]) -> Preferences:
     """Read preferences back out, so the wizard can show current values.
 
@@ -707,10 +498,13 @@ def from_filters(filters: dict[str, Any]) -> Preferences:
     hints = typing.get_type_hints(Preferences)
     for field in dataclasses.fields(Preferences):
         if field.name in managed:
-            value = managed[field.name]
-            if field.name == "upwork":
-                value = _migrate_upwork(value)
-            setattr(prefs, field.name, _coerce(hints[field.name], value))
+            setattr(prefs, field.name, _coerce(hints[field.name], managed[field.name]))
+    # A selection saved by an earlier build may name a source this one retired.
+    # Read it as if it had not, rather than refuse it: the file predates the
+    # removal, the user did not choose it.
+    kept = [name for name in prefs.sources if name not in RETIRED_SOURCES]
+    if kept != prefs.sources:
+        prefs.sources = kept if adapters_for(kept) else list(SOURCE_CHOICES)
     return prefs
 
 
@@ -735,9 +529,8 @@ def _packaged_profile(market: str) -> dict[str, Any]:
     A profile this writer creates from nothing used to be created empty, and
     `save` only ever writes the keys it owns - which do not include
     `llm_gate_prompt` or `min_score_to_surface`. So turning on a market the
-    user's existing filters.yaml predates (Upwork, for anyone whose file was
-    installed before it existed) produced a profile with no gate prompt and no
-    surfacing bar: `runner._prompt_text` returned "" and the whole batch was
+    user's existing filters.yaml predates produced a profile with no gate
+    prompt and no surfacing bar: `runner._prompt_text` returned "" and the whole batch was
     gated with no market instructions at all. `install_user_copies` cannot fix
     that - it never overwrites a filters.yaml that already exists.
 
@@ -765,12 +558,6 @@ def save(config: Config, prefs: Preferences) -> pathlib.Path:
         # Replace only the keys this module owns. A gate prompt path, a surface
         # threshold, or a hand-written hard_excludes list stays untouched.
         owned = ["hard_requires", "seniority_min", "seniority_max", "salary", "allow_worldwide"]
-        if market == UPWORK_SOURCE:
-            # Upwork only ever owns its title pattern, rate floor and client
-            # rules: a regenerated profile must replace the old ones rather than
-            # merge. `client` has to be listed here or a switch could be turned
-            # on but never off - `update` adds keys and never removes them.
-            owned = ["require_titles_regex", "rate", "client"]
         for key in owned:
             profile.pop(key, None)
         profile.update(rules)
@@ -784,6 +571,10 @@ def save(config: Config, prefs: Preferences) -> pathlib.Path:
     # preferences and resumes fetching ATS while the shortlist reads the stale
     # document and drops all of it as source_excluded.
     document.setdefault("global", {}).pop("sources", None)
+    # A retired market's profile would otherwise sit in the file forever, and
+    # its gate prompt no longer ships.
+    for market in RETIRED_SOURCES:
+        document["profiles"].pop(market, None)
     document["global"].update(generated["global"])
     document.setdefault("digest", {}).update(generated["digest"])
     document[MANAGED_KEY] = prefs.as_dict()

@@ -169,7 +169,7 @@ class UnipileClient:
         `location` is a place *name*; it is resolved to LinkedIn's id and
         dropped if it cannot be. It is worth the extra call: searching a
         company name alone returns same-named companies worldwide, and the
-        client's own country and state are known for every Upwork posting.
+        job's own country is usually known.
         Industry is deliberately not filtered on - measured, it removed every
         genuine match, because it keys off how LinkedIn classifies a person's
         employer and small companies are classified thinly or not at all.

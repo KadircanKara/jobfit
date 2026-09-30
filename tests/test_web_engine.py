@@ -83,8 +83,7 @@ def test_a_degraded_source_comes_back_as_a_failure_rather_than_an_exception(cfg,
 def test_a_failed_source_raises_out_of_fetch_board(cfg, monkeypatch):
     """`sync_source` reports "failed", never "error" - the string the guard used
     to compare against. While it did, every hard failure returned a job count
-    like a healthy fetch, and the run finished `completed` with nothing in it.
-    That is exactly how a whole Upwork run of fetch timeouts reported clean."""
+    like a healthy fetch, and the run finished `completed` with nothing in it."""
     monkeypatch.setattr(
         engine_module.sync, "sync_source",
         lambda config, source, **kw: _failed_result(source),
@@ -92,7 +91,7 @@ def test_a_failed_source_raises_out_of_fetch_board(cfg, monkeypatch):
     pipeline = engine_module.EnginePipeline(cfg)
 
     with pytest.raises(RuntimeError, match="everything timed out"):
-        pipeline.fetch_board("upwork", "upwork")
+        pipeline.fetch_board("greenhouse", "greenhouse")
 
 
 def test_a_degraded_source_is_announced_rather_than_swallowed(cfg, monkeypatch):

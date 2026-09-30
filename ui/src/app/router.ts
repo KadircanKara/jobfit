@@ -8,8 +8,6 @@ export type Route =
   | { page: "run"; runId?: string }
   | { page: "shortlist"; runId?: string; jobId?: number }
   | { page: "tailoring"; jobId?: number }
-  | { page: "boards" }
-  | { page: "upwork" }
   | { page: "cv" }
   | { page: "templates" };
 
@@ -17,8 +15,11 @@ export type Page = Route["page"];
 
 /** Paths from before the redesign, kept working for bookmarks. */
 const MOVED: Record<string, string> = {
-  "/filters": "/search/boards",
-  "/search": "/search/boards",
+  // The filters live on the Run page now.
+  "/filters": "/",
+  "/search": "/",
+  "/search/boards": "/",
+  "/search/upwork": "/",
   "/profile": "/cv",
   "/templates": "/cv/templates",
 };
@@ -34,8 +35,6 @@ export function parse(pathname: string, search: string): Route {
   const studio = /^\/tailoring\/(\d+)$/.exec(path);
   if (studio) return { page: "tailoring", jobId: Number(studio[1]) };
   if (path === "/tailoring") return { page: "tailoring" };
-  if (path === "/search" || path === "/search/boards") return { page: "boards" };
-  if (path === "/search/upwork") return { page: "upwork" };
   if (path === "/cv") return { page: "cv" };
   if (path === "/cv/templates") return { page: "templates" };
   return { page: "run" };
@@ -54,10 +53,6 @@ export function href(route: Route): string {
     }
     case "tailoring":
       return route.jobId != null ? `/tailoring/${route.jobId}` : "/tailoring";
-    case "boards":
-      return "/search/boards";
-    case "upwork":
-      return "/search/upwork";
     case "cv":
       return "/cv";
     case "templates":

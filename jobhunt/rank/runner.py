@@ -29,7 +29,6 @@ from jobhunt import store
 from jobhunt.config import Config
 from jobhunt.db.models import Company, Job, Score, utcnow
 from jobhunt.db.session import session_scope
-from jobhunt.pipeline import client_identity
 from jobhunt.rank import deterministic, profile
 
 # The gate reads a truncated description. PLAN.md section 7 says roughly 1500
@@ -41,9 +40,6 @@ DEFAULT_BATCH = 20
 # batch, which wastes the gate on variations of one decision. Seen live: 11 of
 # a 12 job batch were one translation agency's freelance listings.
 MAX_PER_COMPANY = 3
-# Not an employer: the name every anonymous Upwork client shares. Exempt from
-# the cap above, which only means anything for a company that is one company.
-PLACEHOLDER_COMPANY = client_identity.COMPANY_NAME_PLACEHOLDER
 
 
 # How often a long pass reports in. Small enough that the browser sees the
@@ -92,6 +88,7 @@ def filters_fingerprint(filters: dict[str, Any]) -> str:
     snapshot is not a change to what the user asked for.
     """
     scrubbed = json.loads(json.dumps(filters, sort_keys=True, default=str))
+    scrubbed["_rules_version"] = deterministic.RULES_VERSION
     for profile_rules in (scrubbed.get("profiles") or {}).values():
         salary = profile_rules.get("salary")
         if isinstance(salary, dict):
@@ -121,8 +118,8 @@ def run_deterministic(
     """
     filters = deterministic.load_filters(config)
     if rates:
-        for profile in (filters.get("profiles") or {}).values():
-            salary = profile.get("salary")
+        for rules in (filters.get("profiles") or {}).values():
+            salary = rules.get("salary")
             if isinstance(salary, dict):
                 salary["rates"] = rates
     result = DeterministicResult()
@@ -246,15 +243,8 @@ def emit(
         for job, company, score in session.execute(stmt).all():
             if taken >= limit:
                 break
-            # An Upwork client who never names itself gets the one placeholder
-            # company every other anonymous client also gets, so counting it as
-            # an employer makes thousands of unrelated gigs look like one firm
-            # posting thousands of roles. Seen live: 112 of 116 Upwork jobs
-            # shared it, the cap cut every batch to three, and 82 jobs went
-            # ungated. `dedupe` escapes the same placeholder for the same
-            # reason. A client whose real name was extracted keeps the cap.
-            anonymous = company is None or company.name == PLACEHOLDER_COMPANY
-            key = f"job:{job.id}" if anonymous else company.id
+            # A job with no company is its own employer for the cap.
+            key = f"job:{job.id}" if company is None else company.id
             if max_per_company and per_company.get(key, 0) >= max_per_company:
                 held += 1
                 continue

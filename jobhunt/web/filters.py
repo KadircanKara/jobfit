@@ -38,39 +38,7 @@ _FIELD_OF_KEY = {
     "currency": "currency",
     "max_age_days": "max_age",
     "top_n": "top_n",
-    # The dotted keys match the update strings `apply_updates` raises against.
-    # The space-separated ones match the label text `Preferences._restricted`
-    # embeds in its own error messages, which never carries the dot.
-    "upwork.queries": "upwork.queries",
-    "upwork.job_types": "upwork.job_types",
-    "upwork job type": "upwork.job_types",
-    "upwork.min_hourly": "upwork.min_hourly",
-    "upwork.min_fixed": "upwork.min_fixed",
-    "upwork.experience_level": "upwork.experience_level",
-    "upwork experience level": "upwork.experience_level",
-    "upwork.verified_payment_only": "upwork.verified_payment_only",
-    "upwork.sort": "upwork.sort",
-    "upwork sort": "upwork.sort",
-    "upwork.require_verified_client": "upwork.require_verified_client",
-    "upwork.client_locations": "upwork.client_locations",
-    "upwork.client_min_hires": "upwork.client_min_hires",
-    "upwork.client_max_hires": "upwork.client_max_hires",
-    "upwork.proposals_max": "upwork.proposals_max",
-    "upwork.client_min_spend": "upwork.client_min_spend",
-    "upwork.recommended_feed": "upwork.recommended_feed",
-    "upwork.workload": "upwork.workload",
-    "upwork workload": "upwork.workload",
 }
-
-# Upwork preference fields the panel edits as free-form lists vs. rate floors.
-# Kept apart from `_FIELD_OF_KEY` because they drive flattening, not error
-# lookup: `_updates_from` walks these, `_field_for` only reads the map above.
-_UPWORK_LIST_FIELDS = ("queries", "job_types", "experience_level", "workload", "client_locations")
-_UPWORK_RATE_FIELDS = ("min_hourly", "min_fixed")
-# Whole numbers of 0 or more. Zero is meaningful here - client_max_hires=0 is
-# "clients who have never hired" - so unlike a rate floor it is never "none".
-_UPWORK_COUNT_FIELDS = ("client_min_hires", "client_max_hires", "proposals_max")
-
 
 class FieldError(ValueError):
     """A rejected value, named against the field that carried it."""
@@ -112,76 +80,6 @@ def _days_from(payload: Any) -> int:
     return max(1, math.ceil(amount * AGE_UNITS[unit]))
 
 
-_UPWORK_FLAG_FIELDS = (
-    "verified_payment_only",
-    "require_verified_client",
-    "recommended_feed",
-)
-
-
-def _upwork_updates(payload: dict[str, Any]) -> dict[str, str]:
-    """Flatten the nested `upwork` block into the same dotted vocabulary.
-
-    Rate floors are validated here, not left to `apply_updates`: `_number`'s
-    own error text ("'x' is not a number") names no field, so a value bad
-    enough to raise there would have nothing for `_field_for` to key off.
-    """
-    updates: dict[str, str] = {}
-
-    for field in _UPWORK_LIST_FIELDS:
-        if field in payload:
-            updates[f"upwork.{field}"] = ", ".join(_dedupe(payload[field] or [])) or "none"
-
-    for field in _UPWORK_RATE_FIELDS:
-        if field not in payload:
-            continue
-        raw = payload[field]
-        if raw in (None, "", "any"):
-            updates[f"upwork.{field}"] = "none"
-            continue
-        try:
-            amount = prefs_module._number(str(raw))
-        except PreferenceError as exc:
-            raise FieldError(f"upwork.{field}", str(exc)) from exc
-        if amount <= 0:
-            raise FieldError(f"upwork.{field}", "a rate floor has to be above zero")
-        updates[f"upwork.{field}"] = f"{amount:g}"
-
-    for field in _UPWORK_COUNT_FIELDS:
-        if field not in payload:
-            continue
-        raw = payload[field]
-        if raw in (None, ""):
-            updates[f"upwork.{field}"] = "none"
-            continue
-        text = str(raw).strip()
-        if not text.isdigit():
-            raise FieldError(f"upwork.{field}", "a whole number, 0 or more")
-        updates[f"upwork.{field}"] = text
-
-    if "client_min_spend" in payload:
-        raw = payload["client_min_spend"]
-        if raw in (None, ""):
-            updates["upwork.client_min_spend"] = "none"
-        else:
-            try:
-                amount = prefs_module._number(str(raw))
-            except PreferenceError as exc:
-                raise FieldError("upwork.client_min_spend", str(exc)) from exc
-            if amount < 0:
-                raise FieldError("upwork.client_min_spend", "a minimum spend can't be negative")
-            updates["upwork.client_min_spend"] = f"{amount:g}" if amount else "none"
-
-    if "sort" in payload:
-        updates["upwork.sort"] = str(payload["sort"] or "").strip().lower() or "none"
-
-    for field in _UPWORK_FLAG_FIELDS:
-        if field in payload:
-            updates[f"upwork.{field}"] = str(bool(payload[field])).lower()
-
-    return updates
-
-
 def _updates_from(payload: dict[str, Any]) -> dict[str, str]:
     """Flatten the browser payload into the CLI's own update vocabulary."""
     updates: dict[str, str] = {}
@@ -221,9 +119,6 @@ def _updates_from(payload: dict[str, Any]) -> dict[str, str]:
     if "max_age" in payload:
         updates["max_age_days"] = str(_days_from(payload["max_age"]))
 
-    if isinstance(payload.get("upwork"), dict):
-        updates.update(_upwork_updates(payload["upwork"]))
-
     if "top_n" in payload:
         try:
             count = int(payload["top_n"])
@@ -241,9 +136,8 @@ def _field_for(message: str, updates: dict[str, str]) -> str:
 
     The message names the offending setting; the ceiling rule names both levels
     and belongs on the ceiling, which is the field the person can move. Patterns
-    are tried longest first: "experience" is a substring of the upwork label
-    "upwork experience level", and a short key must not win that match just
-    because it happens to be contained in a longer, more specific one.
+    are tried longest first, so a short key never wins a match that a longer,
+    more specific one contained.
     """
     if "ceiling" in message:
         return "experience_max"

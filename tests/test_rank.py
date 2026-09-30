@@ -15,7 +15,6 @@ from sqlalchemy import select
 from jobhunt import store
 from jobhunt.db.models import Job, Score, utcnow
 from jobhunt.db.session import session_scope
-from jobhunt.pipeline import client_identity
 from jobhunt.rank import deterministic, profile, runner, timezones
 from jobhunt.sources.base import JobPosting
 
@@ -473,22 +472,6 @@ def test_emit_does_not_let_one_company_fill_the_batch(cfg, tmp_path) -> None:
     assert companies.count("Beta") == 2
 
 
-def test_the_upwork_placeholder_company_does_not_cap_the_batch(cfg, tmp_path) -> None:
-    """Seen live: 112 of 116 Upwork jobs carried the placeholder company, so the
-    cap cut every gate batch to three jobs and 82 were never scored at all."""
-    for index in range(8):
-        make_job(
-            cfg, source="upwork", market="upwork", external_id=f"gig{index}",
-            company_name=client_identity.COMPANY_NAME_PLACEHOLDER, country="DE",
-        )
-    runner.run_deterministic(cfg)
-
-    path = tmp_path / "b.json"
-    runner.emit(cfg, path, limit=6, max_per_company=2)
-    jobs = json.loads(path.read_text())["batches"][0]["jobs"]
-    assert len(jobs) == 6
-
-
 def test_a_title_matching_no_required_pattern_fails(cfg) -> None:
     """Watched live: stage 1 was passing telehealth doctors and a construction
     estimator to the gate. Each cost a gate call to reject."""
@@ -510,17 +493,6 @@ def test_a_profile_can_override_the_required_titles(cfg) -> None:
     }
     assert verdict_for(cfg, make_job(cfg, title="Product Designer"), filters).passed
     assert not verdict_for(cfg, make_job(cfg, external_id="x2", title="Engineer"), filters).passed
-
-
-def test_an_upwork_gig_survives_the_salaried_title_rule(cfg) -> None:
-    """The global pattern is built from job titles; a gig is written in prose."""
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="u1",
-                       title="Need a Django dev to fix my scraper")
-    filters = {
-        "profiles": {"upwork": {"require_titles_regex": [".*"]}},
-        "global": {"require_titles_regex": ["(?<!\\w)(Backend Engineer)"], "max_age_days": 30},
-    }
-    assert "title_unmatched" not in verdict_for(cfg, job_id, filters).codes
 
 
 def test_the_packaged_filters_keep_engineering_titles_and_drop_the_rest(cfg) -> None:
@@ -593,142 +565,7 @@ def test_an_unstated_salary_can_be_excluded_explicitly(cfg) -> None:
 # --- freelance rate floor ------------------------------------------------------
 
 
-def test_a_fixed_price_budget_is_never_annualised(cfg) -> None:
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="r1",
-                      salary_min=800, salary_max=800, salary_period="fixed",
-                      salary_currency="USD", salary_is_stated=True)
-    filters = {"profiles": {"upwork": {"salary": {"min_annual": 100000, "currency": "USD"}}},
-               "global": {"max_age_days": 30}}
-    assert "salary_below" not in verdict_for(cfg, job_id, filters).codes
-
-
-def test_an_hourly_rate_below_the_floor_is_dropped(cfg) -> None:
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="r2",
-                      salary_min=15, salary_max=20, salary_period="hourly",
-                      salary_currency="USD", salary_is_stated=True)
-    filters = {"profiles": {"upwork": {"rate": {"min_hourly": 40}}},
-               "global": {"max_age_days": 30}}
-    assert "rate_below" in verdict_for(cfg, job_id, filters).codes
-
-
-def test_an_hourly_rate_at_the_top_of_the_band_clears_the_floor(cfg) -> None:
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="r3",
-                      salary_min=30, salary_max=50, salary_period="hourly",
-                      salary_currency="USD", salary_is_stated=True)
-    filters = {"profiles": {"upwork": {"rate": {"min_hourly": 40}}},
-               "global": {"max_age_days": 30}}
-    assert "rate_below" not in verdict_for(cfg, job_id, filters).codes
-
-
-def test_a_fixed_budget_below_its_own_floor_is_dropped(cfg) -> None:
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="r4",
-                      salary_min=200, salary_max=200, salary_period="fixed",
-                      salary_currency="USD", salary_is_stated=True)
-    filters = {"profiles": {"upwork": {"rate": {"min_fixed": 1500}}},
-               "global": {"max_age_days": 30}}
-    assert "rate_below" in verdict_for(cfg, job_id, filters).codes
-
-
-def test_an_unstated_rate_passes(cfg) -> None:
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="r5")
-    filters = {"profiles": {"upwork": {"rate": {"min_hourly": 40}}},
-               "global": {"max_age_days": 30}}
-    assert "rate_below" not in verdict_for(cfg, job_id, filters).codes
-
-
-def test_the_rate_rule_ignores_a_salaried_job(cfg) -> None:
-    job_id = make_job(cfg, external_id="r6", salary_min=90000, salary_period="annual",
-                      salary_currency="USD", salary_is_stated=True)
-    filters = {"profiles": {"global_remote": {"rate": {"min_hourly": 40}}},
-               "global": {"max_age_days": 30}}
-    assert "rate_below" not in verdict_for(cfg, job_id, filters).codes
-
-
 # --- client quality -----------------------------------------------------------
-
-
-def test_a_client_who_has_never_spent_is_dropped_when_asked(cfg) -> None:
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c1",
-                      client_verified=True, client_total_spent=0.0)
-    filters = {"profiles": {"upwork": {"client": {"require_spend": True}}},
-               "global": {"max_age_days": 30}}
-    assert "client_no_spend" in verdict_for(cfg, job_id, filters).codes
-
-
-def test_a_client_with_spend_survives_the_spend_rule(cfg) -> None:
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c2",
-                      client_verified=True, client_total_spent=4336.92)
-    filters = {"profiles": {"upwork": {"client": {"require_spend": True}}},
-               "global": {"max_age_days": 30}}
-    assert "client_no_spend" not in verdict_for(cfg, job_id, filters).codes
-
-
-def test_an_unknown_spend_is_never_a_rejection(cfg) -> None:
-    """The house rule. A null is "we did not learn it", not "they spent zero" -
-    and every non-Upwork job in the corpus has a null here."""
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c3",
-                      client_total_spent=None)
-    filters = {"profiles": {"upwork": {"client": {"require_spend": True}}},
-               "global": {"max_age_days": 30}}
-    assert "client_no_spend" not in verdict_for(cfg, job_id, filters).codes
-
-
-def test_an_unverified_client_is_dropped_when_asked(cfg) -> None:
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c4",
-                      client_verified=False)
-    filters = {"profiles": {"upwork": {"client": {"require_verified": True}}},
-               "global": {"max_age_days": 30}}
-    assert "client_unverified" in verdict_for(cfg, job_id, filters).codes
-
-
-def test_an_unknown_verification_is_never_a_rejection(cfg) -> None:
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c5",
-                      client_verified=None)
-    filters = {"profiles": {"upwork": {"client": {"require_verified": True}}},
-               "global": {"max_age_days": 30}}
-    assert "client_unverified" not in verdict_for(cfg, job_id, filters).codes
-
-
-def test_the_client_rules_do_nothing_unless_switched_on(cfg) -> None:
-    """Both default off, so an existing filters.yaml keeps its corpus."""
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c6",
-                      client_verified=False, client_total_spent=0.0)
-    filters = {"profiles": {"upwork": {}}, "global": {"max_age_days": 30}}
-    codes = verdict_for(cfg, job_id, filters).codes
-    assert not {"client_no_spend", "client_low_spend", "client_unverified"} & set(codes)
-
-
-def test_a_client_below_the_spend_floor_is_dropped(cfg) -> None:
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c7",
-                      client_total_spent=200.0)
-    filters = {"profiles": {"upwork": {"client": {"min_spend": 1000.0}}},
-               "global": {"max_age_days": 30}}
-    assert "client_low_spend" in verdict_for(cfg, job_id, filters).codes
-
-
-def test_a_client_exactly_at_the_spend_floor_is_kept(cfg) -> None:
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c8",
-                      client_total_spent=1000.0)
-    filters = {"profiles": {"upwork": {"client": {"min_spend": 1000.0}}},
-               "global": {"max_age_days": 30}}
-    assert "client_low_spend" not in verdict_for(cfg, job_id, filters).codes
-
-
-def test_an_unknown_spend_is_never_below_the_floor(cfg) -> None:
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c9",
-                      client_total_spent=None)
-    filters = {"profiles": {"upwork": {"client": {"min_spend": 1000.0}}},
-               "global": {"max_age_days": 30}}
-    assert "client_low_spend" not in verdict_for(cfg, job_id, filters).codes
-
-
-def test_a_one_dollar_floor_drops_a_client_who_never_spent(cfg) -> None:
-    """The migrated form of the old switch must still do the old switch's job."""
-    job_id = make_job(cfg, source="upwork", market="upwork", external_id="c10",
-                      client_total_spent=0.0)
-    filters = {"profiles": {"upwork": {"client": {"min_spend": 1.0}}},
-               "global": {"max_age_days": 30}}
-    assert "client_low_spend" in verdict_for(cfg, job_id, filters).codes
 
 
 # --- seniority ceiling --------------------------------------------------------
@@ -1086,3 +923,23 @@ def test_a_partial_pass_does_not_claim_the_corpus_is_current(cfg) -> None:
     after = runner.run_deterministic(cfg)
 
     assert after.scored == 2
+
+
+# --- retired sources -----------------------------------------------------------
+
+
+def test_a_job_from_a_retired_source_is_dropped(cfg) -> None:
+    job_id = make_job(cfg, source="upwork", external_id="gig1")
+    assert "source_excluded" in verdict_for(cfg, job_id).codes
+
+
+def test_a_selection_of_only_retired_sources_restricts_nothing(cfg) -> None:
+    filters = {"profiles": {}, "global": {"sources": ["upwork"]}}
+    job_id = make_job(cfg, source="greenhouse", external_id="g1")
+    assert "source_excluded" not in verdict_for(cfg, job_id, filters).codes
+
+
+def test_the_rules_version_is_part_of_the_fingerprint(monkeypatch) -> None:
+    before = runner.filters_fingerprint({"global": {}})
+    monkeypatch.setattr(deterministic, "RULES_VERSION", deterministic.RULES_VERSION + 1)
+    assert runner.filters_fingerprint({"global": {}}) != before

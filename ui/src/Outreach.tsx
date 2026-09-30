@@ -72,7 +72,6 @@ export function OutreachDrawer({
   const [candidates, setCandidates] = useState<ContactCandidate[]>([]);
   const [finding, setFinding] = useState(false);
   const [findError, setFindError] = useState<string | null>(null);
-  const [findNote, setFindNote] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -165,10 +164,6 @@ export function OutreachDrawer({
       const body = await api.findContacts(jobId);
       setCandidates((prev) => mergeCandidates(prev, body.candidates));
       setFindError(null);
-      // Not an error: the search was skipped because there is no company to
-      // search for. Saying so is the whole difference between a button that
-      // looks broken and one that explains itself.
-      setFindNote(body.note ?? null);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       let shown = message;
@@ -186,7 +181,6 @@ export function OutreachDrawer({
         // Not a JSON body - show it raw rather than swallow it.
       }
       setFindError(shown);
-      setFindNote(null);
     } finally {
       setFinding(false);
     }
@@ -263,7 +257,6 @@ export function OutreachDrawer({
       </div>
 
       {findError && <div className="err">{findError}</div>}
-      {findNote && <div className="hint">{findNote}</div>}
 
       {candidates.length > 0 && (
         <div className="candidates">

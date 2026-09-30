@@ -27,12 +27,11 @@ from jobhunt.db.session import session_scope
 # work at the company but have no say in this role, which is worse than nothing
 # because it looks like a lead.
 #
-# The first five assume a company large enough to have a hiring function. An
-# Upwork client usually is not: the person who wrote the posting is the founder
-# or the owner, and there is no recruiter to find. Live, searching Karma and
-# Luck for only the first five returned four store and operations managers and
-# missed "Founder & CEO of Karma and Luck" entirely - who is whose "CEO Command
-# Center" the posting was about.
+# The first five assume a company large enough to have a hiring function. A
+# small one usually is not: the person who wrote the posting is the founder or
+# the owner, and there is no recruiter to find. Live, searching a small company
+# for only the first five returned four store and operations managers and
+# missed its founder entirely.
 ROLE_KEYWORDS: tuple[str, ...] = (
     "recruiter",
     "talent acquisition",

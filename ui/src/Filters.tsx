@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-import { Check, TriangleAlert } from "lucide-react";
-import { api, FieldError, type Filters, type Vocab, type VocabRow } from "./api";
+import { useEffect, useId, useMemo, useState } from "react";
+import { Check, ChevronRight, TriangleAlert } from "lucide-react";
+import { api, FieldError, type Filters, type Vocab } from "./api";
 import { TagField } from "./TagField";
 import { TitlePresets } from "./TitlePresets";
 
@@ -23,30 +23,11 @@ const JOB_TYPES: [string, string][] = [
 const SOURCES: { id: string; label: string; hint: string; enabled: boolean }[] = [
   { id: "ats", label: "ATS", hint: "Greenhouse, Ashby, Lever and nine more", enabled: true },
   { id: "linkedin", label: "LinkedIn", hint: "Public job search", enabled: true },
-  { id: "upwork", label: "Upwork", hint: "Freelance postings, its own settings below", enabled: true },
 ];
 
 export function sourceLabel(id: string): string {
   return SOURCES.find((source) => source.id === id)?.label ?? id;
 }
-
-// Mirrors UPWORK_JOB_TYPES / UPWORK_EXPERIENCE in jobhunt/preferences.py.
-const UPWORK_JOB_TYPES: [string, string][] = [
-  ["hourly", "hourly"],
-  ["fixed", "fixed price"],
-];
-const UPWORK_EXPERIENCE = ["entry_level", "intermediate", "expert"];
-
-// Suggestions only: Upwork takes countries and regions by name, and a value it
-// does not know comes back as a fetch error naming the accepted spelling.
-const UPWORK_LOCATIONS: VocabRow[] = [
-  "United States",
-  "Canada",
-  "United Kingdom",
-  "Australia",
-  "Germany",
-  "Europe",
-].map((value) => ({ value, label: "", count: 0 }));
 
 // Sample rates until the server reports the snapshot it fetched for the run.
 // Shown with their timestamp so nobody reads a stale number as live.
@@ -57,15 +38,11 @@ type Props = {
   vocab: Vocab;
   onSaved: (filters: Filters) => void;
   onValidity: (ok: boolean) => void;
-  /* Which sources are on. Owned by App, which draws the picker beside the run
-     controls and saves a toggle straight away, so this panel only reads it -
-     to say whether the Upwork settings are live and to gate its own save. */
+  /* Which sources are on. Owned by the store, which draws the picker beside
+     the run controls and saves a toggle straight away, so this panel only
+     reads it - to send with a save and to gate it. */
   sources: string[];
-  /** Which Filters page is showing; null while another page is up and the
-   *  panel stays mounted only to keep the draft. */
-  section: "boards" | "upwork" | null;
-  onDirty: (dirty: { boards: boolean; upwork: boolean }) => void;
-  onEnableUpwork: () => void;
+  onDirty: (dirty: boolean) => void;
 };
 
 type Draft = {
@@ -73,7 +50,6 @@ type Draft = {
   locations: string[];
   work_model: string[];
   job_types: string[];
-  sources: string[];
   experience_min: string;
   experience_max: string;
   min_salary: string;
@@ -81,28 +57,7 @@ type Draft = {
   age_value: string;
   age_unit: string;
   top_n: string;
-  upwork: {
-    queries: string[];
-    job_types: string[];
-    min_hourly: string;
-    min_fixed: string;
-    experience_level: string[];
-    sort: string;
-    verified_payment_only: boolean;
-    require_verified_client: boolean;
-    client_min_spend: string;
-    client_locations: string[];
-    client_min_hires: string;
-    client_max_hires: string;
-    proposals_max: string;
-    recommended_feed: boolean;
-  };
 };
-
-/** A stored count as the text box shows it. 0 is a real value here, not "any". */
-function countText(value: number | null | undefined): string {
-  return value == null ? "" : String(value);
-}
 
 function draftFrom(filters: Filters): Draft {
   return {
@@ -110,7 +65,6 @@ function draftFrom(filters: Filters): Draft {
     locations: filters.locations,
     work_model: filters.work_model.length ? filters.work_model : ["remote", "hybrid", "onsite"],
     job_types: filters.job_types ?? [],
-    sources: filters.sources?.length ? filters.sources : ["ats", "linkedin"],
     experience_min: filters.experience_min ?? "junior",
     experience_max: filters.experience_max ?? "none",
     min_salary: filters.min_salary ? String(filters.min_salary) : "",
@@ -118,29 +72,10 @@ function draftFrom(filters: Filters): Draft {
     age_value: String(filters.max_age_days || 30),
     age_unit: "days",
     top_n: String(filters.top_n || 50),
-    upwork: {
-      queries: filters.upwork?.queries ?? [],
-      job_types: filters.upwork?.job_types?.length ? filters.upwork.job_types : ["hourly", "fixed"],
-      min_hourly: filters.upwork?.min_hourly ? String(filters.upwork.min_hourly) : "",
-      min_fixed: filters.upwork?.min_fixed ? String(filters.upwork.min_fixed) : "",
-      experience_level: filters.upwork?.experience_level ?? [],
-      sort: filters.upwork?.sort ?? "relevance",
-      verified_payment_only: filters.upwork?.verified_payment_only ?? true,
-      require_verified_client: filters.upwork?.require_verified_client ?? false,
-      client_min_spend: filters.upwork?.client_min_spend ? String(filters.upwork.client_min_spend) : "",
-      client_locations: filters.upwork?.client_locations ?? [],
-      client_min_hires: countText(filters.upwork?.client_min_hires),
-      client_max_hires: countText(filters.upwork?.client_max_hires),
-      proposals_max: countText(filters.upwork?.proposals_max),
-      recommended_feed: filters.upwork?.recommended_feed ?? false,
-    },
   };
 }
 
-/** What a save writes: one section, or the whole form. */
-type Scope = "boards" | "upwork" | "all";
-
-function boardsPayload(draft: Draft, sources: string[]) {
+function payload(draft: Draft, sources: string[]) {
   return {
     titles: draft.titles,
     locations: draft.locations,
@@ -156,83 +91,44 @@ function boardsPayload(draft: Draft, sources: string[]) {
   };
 }
 
-function upworkPayload(draft: Draft) {
-  return {
-    queries: draft.upwork.queries,
-    job_types: draft.upwork.job_types,
-    min_hourly: draft.upwork.min_hourly || null,
-    min_fixed: draft.upwork.min_fixed || null,
-    experience_level: draft.upwork.experience_level,
-    sort: draft.upwork.sort,
-    verified_payment_only: draft.upwork.verified_payment_only,
-    require_verified_client: draft.upwork.require_verified_client,
-    client_min_spend: draft.upwork.client_min_spend.trim() || null,
-    client_locations: draft.upwork.client_locations,
-    client_min_hires: draft.upwork.client_min_hires.trim() || null,
-    client_max_hires: draft.upwork.client_max_hires.trim() || null,
-    proposals_max: draft.upwork.proposals_max.trim() || null,
-    recommended_feed: draft.upwork.recommended_feed,
-  };
-}
-
 /* Every value in a Draft is a string, a boolean, or a list of strings, and the
    keys are written in one place, so serialising is a sound way to compare. */
 function same(a: unknown, b: unknown) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** Save and revert for one section, or for the form as a whole. */
+/** Save and revert for the form. */
 function Acts({
-  scope,
   dirty,
   ok,
   saved,
   saving,
   onSave,
   onRevert,
-  global: whole,
 }: {
-  scope: Scope;
   dirty: boolean;
   ok: boolean;
-  saved: Scope | null;
-  saving: Scope | null;
-  onSave: (scope: Scope) => void;
-  onRevert: (scope: Scope) => void;
-  global?: boolean;
+  saved: boolean;
+  saving: boolean;
+  onSave: () => void;
+  onRevert: () => void;
 }) {
-  const inFlight = saving === scope;
-  // Any save in flight locks every row, not just its own: the reply rewrites
-  // the whole draft baseline, so a second write started meanwhile would be
-  // measured against the wrong one.
-  const locked = saving !== null;
   return (
-    <div className={whole ? "formacts whole" : "formacts"}>
-      {!ok && dirty && scope !== "upwork" && (
+    <div className="formacts whole">
+      {!ok && dirty && (
         <span className="hint">Fix the fields marked above, and keep at least one source on, to save.</span>
       )}
-      <button
-        className="btn ghost"
-        onClick={() => onRevert(scope)}
-        disabled={!dirty || locked}
-      >
+      <button className="btn ghost" onClick={onRevert} disabled={!dirty || saving}>
         Revert
       </button>
-      <button
-        className={whole ? "btn" : "btn ghost"}
-        onClick={() => onSave(scope)}
-        disabled={!ok || !dirty || locked}
-        aria-busy={inFlight}
-      >
-        {inFlight ? (
+      <button className="btn" onClick={onSave} disabled={!ok || !dirty || saving} aria-busy={saving}>
+        {saving ? (
           <>
             <span className="spin" aria-hidden="true" />
             Saving
           </>
-        ) : saved === scope ? (
+        ) : saved ? (
           "Saved"
-        ) : whole && scope === "all" ? (
-          "Save all"
         ) : (
           "Save"
         )}
@@ -241,98 +137,81 @@ function Acts({
   );
 }
 
-export function FiltersPanel({
-  filters,
-  vocab,
-  onSaved,
-  onValidity,
-  sources,
-  section,
-  onDirty,
-  onEnableUpwork,
-}: Props) {
-  const [draft, setDraft] = useState<Draft>(() => draftFrom(filters));
+/* The form unmounts with the Run page. What it was holding is kept here, so an
+   unsaved edit and an open panel are both still there on the way back. Module
+   state rather than the store: nothing else reads a half-typed draft. */
+let kept: { draft: Draft | null; open: boolean } = { draft: null, open: false };
+
+/** One line saying what the collapsed panel holds. */
+function summary(draft: Draft, sources: string[]): string {
+  const parts = [
+    draft.titles.length ? `${draft.titles.length} title${draft.titles.length > 1 ? "s" : ""}` : "any title",
+    draft.locations.length ? draft.locations.slice(0, 3).join(", ") + (draft.locations.length > 3 ? " +" : "") : "anywhere",
+    draft.work_model.join(", "),
+    draft.experience_max === "none" ? `${draft.experience_min}+` : `${draft.experience_min} to ${draft.experience_max}`,
+    sources.map(sourceLabel).join(" + "),
+  ];
+  return parts.filter(Boolean).join(" · ");
+}
+
+export function FiltersPanel({ filters, vocab, onSaved, onValidity, sources, onDirty }: Props) {
+  const [draft, setDraft] = useState<Draft>(() => kept.draft ?? draftFrom(filters));
+  const [open, setOpen] = useState(kept.open);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  // Which scope just saved, so only the button that was pressed says so.
-  const [saved, setSaved] = useState<Scope | null>(null);
-  // Which scope is being written. Also what locks the other rows: two saves in
-  // flight would race, and the later reply would overwrite the earlier one.
-  const [saving, setSaving] = useState<Scope | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [impact, setImpact] = useState<{ matched: number; total: number } | null>(null);
   // Presets live beside the titles in filters.yaml, so they arrive with the
   // filters and are re-read from whatever the group endpoints return.
   const [groups, setGroups] = useState<Record<string, string[]>>(filters.title_groups ?? {});
+  const bodyId = useId();
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
-
-  const setUpwork = <K extends keyof Draft["upwork"]>(key: K, value: Draft["upwork"][K]) =>
-    setDraft((current) => ({ ...current, upwork: { ...current.upwork, [key]: value } }));
 
   const local = useMemo(() => validate(draft), [draft]);
   const messages = { ...local, ...errors };
   const valid = Object.keys(local).length === 0;
   useEffect(() => onValidity(valid), [valid, onValidity]);
+  // A problem the run would refuse to start on is not left folded away.
+  useEffect(() => {
+    if (!valid) setOpen(true);
+  }, [valid]);
 
   const onFile = useMemo(() => draftFrom(filters), [filters]);
-  const upworkDirty = !same(draft.upwork, onFile.upwork);
-  const boardsDirty = !same({ ...draft, upwork: null }, { ...onFile, upwork: null });
-  useEffect(() => onDirty({ boards: boardsDirty, upwork: upworkDirty }), [boardsDirty, upworkDirty, onDirty]);
-
-  // Each page saves only its own half, so a draft left on the other page
-  // survives a move between them. Closing the tab would lose it, so ask.
+  const dirty = !same(draft, onFile);
+  useEffect(() => onDirty(dirty), [dirty, onDirty]);
   useEffect(() => {
-    if (!boardsDirty && !upworkDirty) return;
-    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [boardsDirty, upworkDirty]);
-
-  // Every Upwork setting is keyed under the same prefix, in the validator and
-  // in the errors the API tags, so one test splits both maps by section.
-  const upworkOk = !Object.keys(local).some((key) => key.startsWith("upwork."));
-  const boardsOk = !Object.keys(local).some((key) => !key.startsWith("upwork."));
+    kept = { draft: dirty ? draft : null, open };
+  }, [draft, dirty, open]);
 
   const salary = parseSalary(draft.min_salary);
 
-  // The API takes a partial payload - `_updates_from` keys off which fields are
-  // present - so a section can be written without touching the other one.
-  async function save(scope: Scope) {
+  async function save() {
     setErrors({});
-    setSaving(scope);
+    setSaving(true);
     try {
-      const body = await api.saveFilters({
-        ...(scope === "upwork" ? {} : boardsPayload(draft, sources)),
-        ...(scope === "boards" ? {} : { upwork: upworkPayload(draft) }),
-      });
+      const body = await api.saveFilters(payload(draft, sources));
       onSaved(body.filters);
       // Take back what the server stored, not what was typed: "$1,000" is
       // saved as 1000, and a draft still reading "$1,000" would mark the
-      // section unsaved the moment the save succeeded.
-      adopt(scope, draftFrom(body.filters));
+      // form unsaved the moment the save succeeded.
+      setDraft(draftFrom(body.filters));
       setImpact(body.title_impact);
-      setSaved(scope);
-      window.setTimeout(() => setSaved(null), 1400);
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 1400);
     } catch (error) {
       if (error instanceof FieldError) {
         setErrors({ [error.field]: error.message });
       } else setErrors({ filters: String(error) });
     } finally {
-      setSaving(null);
+      setSaving(false);
     }
   }
 
-  /** Replace the `scope` part of the draft, leaving the other section's edits alone. */
-  function adopt(scope: Scope, fromFile: Draft) {
-    setDraft((current) => ({
-      ...(scope === "upwork" ? current : fromFile),
-      upwork: scope === "boards" ? current.upwork : fromFile.upwork,
-    }));
-  }
-
-  /** Throw away unsaved edits in `scope`, back to what is on file. */
-  function revert(scope: Scope) {
-    adopt(scope, draftFrom(filters));
+  /** Throw away unsaved edits, back to what is on file. */
+  function revert() {
+    setDraft(draftFrom(filters));
     setErrors({});
   }
 
@@ -344,15 +223,26 @@ export function FiltersPanel({
       );
 
   return (
-    <>
-      {section === "boards" && (
-      <>
-      <header className="page-header">
-        <h1>Job boards</h1>
-        <span className="sub">what to search for on the job boards</span>
-      </header>
+    <section className="panel acc" data-open={open || undefined}>
+      <button
+        type="button"
+        className="acc-head"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        onClick={() => setOpen((was) => !was)}
+      >
+        <ChevronRight className="acc-chevron" aria-hidden="true" />
+        <h2>Filters</h2>
+        {dirty && (
+          <span className="acc-dirty">
+            <span className="dot" data-tone="warn" aria-hidden="true" />
+            unsaved
+          </span>
+        )}
+        {!open && <span className="acc-summary">{summary(draft, sources)}</span>}
+      </button>
 
-      <section className="panel">
+      <div id={bodyId} className="acc-body" hidden={!open}>
         <div className="fields">
           <TagField
             label="Titles"
@@ -567,290 +457,11 @@ export function FiltersPanel({
             {messages.top_n && <div className="err">{messages.top_n}</div>}
           </div>
         </div>
-      </section>
 
-      <Acts
-        global
-        scope="boards"
-        dirty={boardsDirty}
-        ok={boardsOk && sources.length > 0}
-        saved={saved}
-        saving={saving}
-        onSave={save}
-        onRevert={revert}
-      />
-      </>
-      )}
-
-      {section === "upwork" && (
-      <>
-      <header className="page-header">
-        <h1>Upwork</h1>
-        <span className="sub">freelance postings, searched through your Upwork account</span>
-      </header>
-
-      {!sources.includes("upwork") && (
-        <div className="notice" data-tone="warn" style={{ marginBottom: 16 }}>
-          <TriangleAlert className="icon" aria-hidden="true" />
-          <span className="grow">Upwork is off, so runs skip it. These settings apply once it is on.</span>
-          <button type="button" className="btn sm" onClick={onEnableUpwork}>
-            Turn on Upwork
-          </button>
-        </div>
-      )}
-
-      <section className="panel">
-        <UpworkPanel value={draft.upwork} onChange={setUpwork} messages={messages} />
-      </section>
-
-      <Acts
-        global
-        scope="upwork"
-        dirty={upworkDirty}
-        ok={upworkOk}
-        saved={saved}
-        saving={saving}
-        onSave={save}
-        onRevert={revert}
-      />
-      </>
-      )}
-
-      {section && messages.filters && <div className="err">{messages.filters}</div>}
-    </>
-  );
-}
-
-function UpworkPanel({
-  value,
-  onChange,
-  messages,
-}: {
-  value: Draft["upwork"];
-  onChange: <K extends keyof Draft["upwork"]>(key: K, next: Draft["upwork"][K]) => void;
-  messages: Record<string, string>;
-}) {
-  const toggle = <K extends "job_types" | "experience_level">(key: K, item: string) =>
-    onChange(key, (value[key].includes(item) ? value[key].filter((v) => v !== item) : [...value[key], item]) as Draft["upwork"][K]);
-
-  return (
-    <div className="fields upwork">
-      <TagField
-        label="Upwork queries"
-        wide
-        tags={value.queries}
-        vocab={[]}
-        placeholder="Add a search term, press Enter"
-        freeNote="free text"
-        emptyNote="No suggestions — Upwork has no fixed title vocabulary, type your own."
-        onChange={(tags) => onChange("queries", tags)}
-        hint={<>searched against the posting itself, not matched against your job-board titles</>}
-      />
-
-      <div className="field wide">
-        <label className="checkline">
-          <input
-            type="checkbox"
-            checked={value.recommended_feed}
-            onChange={(e) => onChange("recommended_feed", e.target.checked)}
-          />
-          <span>Also read Upwork's Most Recent feed</span>
-        </label>
-        <div className="hint">
-          Upwork's own feed, matched to your profile. The only Upwork search that honours
-          Posted within.
-        </div>
+        <Acts dirty={dirty} ok={valid && sources.length > 0} saved={saved} saving={saving} onSave={save} onRevert={revert} />
+        {messages.filters && <div className="err">{messages.filters}</div>}
       </div>
-
-      <div className="field">
-        <label>
-          <span>Job type</span>
-        </label>
-        <div className="toggles">
-          {UPWORK_JOB_TYPES.map(([id, label]) => (
-            <button
-              key={id}
-              className="chip"
-              aria-pressed={value.job_types.includes(id)}
-              onClick={() => toggle("job_types", id)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className={messages["upwork.min_hourly"] ? "field bad" : "field"}>
-        <label>
-          <span>Min hourly rate</span>
-        </label>
-        <input
-          inputMode="numeric"
-          placeholder="any"
-          value={value.min_hourly}
-          onChange={(e) => onChange("min_hourly", e.target.value)}
-        />
-        <div className="hint">$ per hour</div>
-      </div>
-
-      <div className={messages["upwork.min_fixed"] ? "field bad" : "field"}>
-        <label>
-          <span>Min fixed budget</span>
-        </label>
-        <input
-          inputMode="numeric"
-          placeholder="any"
-          value={value.min_fixed}
-          onChange={(e) => onChange("min_fixed", e.target.value)}
-        />
-        <div className="hint">$ for the whole project</div>
-      </div>
-
-      <div className="field">
-        <label>
-          <span>Experience level</span>
-        </label>
-        <div className="toggles">
-          {UPWORK_EXPERIENCE.map((level) => (
-            <button
-              key={level}
-              className="chip"
-              aria-pressed={value.experience_level.includes(level)}
-              onClick={() => toggle("experience_level", level)}
-            >
-              {level.replace("_", " ")}
-            </button>
-          ))}
-        </div>
-        <div className="hint">{value.experience_level.length ? "" : "no restriction"}</div>
-      </div>
-
-      <div className="field">
-        <label>Sort</label>
-        <select value={value.sort} onChange={(e) => onChange("sort", e.target.value)}>
-          <option value="relevance">Best match</option>
-          <option value="recency">Newest first</option>
-          <option value="client_total_charge">Client spend</option>
-          <option value="client_rating">Client rating</option>
-        </select>
-        <div className="hint">Best match is the order the Upwork website uses.</div>
-      </div>
-
-      <div className="field">
-        <label className="checkline">
-          <input
-            type="checkbox"
-            checked={value.verified_payment_only}
-            onChange={(e) => {
-              // One control for both checks: Upwork's own filter at search
-              // time, and the stored rule that also covers jobs fetched earlier.
-              onChange("verified_payment_only", e.target.checked);
-              onChange("require_verified_client", e.target.checked);
-            }}
-          />
-          <span>Verified payment only</span>
-        </label>
-        <div className="hint">Skip clients who have not verified a payment method.</div>
-      </div>
-
-      <TagField
-        label="Client locations"
-        wide
-        tags={value.client_locations}
-        vocab={UPWORK_LOCATIONS}
-        counts={false}
-        placeholder="Add a country or region, press Enter"
-        freeNote="as Upwork spells it"
-        emptyNote="Type a country or region the way Upwork spells it."
-        onChange={(tags) => onChange("client_locations", tags)}
-        hint={<>one search per location, so each adds searches to every run · empty means anywhere</>}
-      />
-
-      <div
-        className={
-          messages["upwork.client_min_hires"] || messages["upwork.client_max_hires"] ? "field bad" : "field"
-        }
-      >
-        <label>
-          <span>Client hires</span>
-        </label>
-        <div className="minmax">
-          <input
-            inputMode="numeric"
-            placeholder="any"
-            aria-label="Fewest past hires"
-            value={value.client_min_hires}
-            onChange={(e) => onChange("client_min_hires", e.target.value)}
-          />
-          <span className="to">to</span>
-          <input
-            inputMode="numeric"
-            placeholder="any"
-            aria-label="Most past hires"
-            value={value.client_max_hires}
-            onChange={(e) => onChange("client_max_hires", e.target.value)}
-          />
-        </div>
-        <div className="hint">past hires on Upwork · 0 to 0 is clients who have never hired</div>
-      </div>
-
-      <div className={messages["upwork.proposals_max"] ? "field bad" : "field"}>
-        <label>
-          <span>Max proposals</span>
-        </label>
-        <input
-          inputMode="numeric"
-          placeholder="any"
-          value={value.proposals_max}
-          onChange={(e) => onChange("proposals_max", e.target.value)}
-        />
-        <div className="hint">skip postings that already have more</div>
-      </div>
-
-      <div className={messages["upwork.client_min_spend"] ? "field bad" : "field"}>
-        <label>
-          <span>Min client spend</span>
-        </label>
-        <input
-          inputMode="numeric"
-          placeholder="any"
-          value={value.client_min_spend}
-          onChange={(e) => onChange("client_min_spend", e.target.value)}
-        />
-        <div className="hint">
-          $ spent on Upwork, checked after the fetch · a client whose spend is unknown is kept
-        </div>
-      </div>
-
-      <div className="notes">
-        {messages["upwork.queries"] && <div className="err">{messages["upwork.queries"]}</div>}
-        {messages["upwork.job_types"] && <div className="err">{messages["upwork.job_types"]}</div>}
-        {messages["upwork.min_hourly"] && <div className="err">{messages["upwork.min_hourly"]}</div>}
-        {messages["upwork.min_fixed"] && <div className="err">{messages["upwork.min_fixed"]}</div>}
-        {messages["upwork.experience_level"] && (
-          <div className="err">{messages["upwork.experience_level"]}</div>
-        )}
-        {messages["upwork.verified_payment_only"] && (
-          <div className="err">{messages["upwork.verified_payment_only"]}</div>
-        )}
-        {(
-          [
-            "client_locations",
-            "client_min_hires",
-            "client_max_hires",
-            "proposals_max",
-            "client_min_spend",
-            "recommended_feed",
-          ] as const
-        ).map((key) =>
-          messages[`upwork.${key}`] ? (
-            <div className="err" key={key}>
-              {messages[`upwork.${key}`]}
-            </div>
-          ) : null,
-        )}
-      </div>
-    </div>
+    </section>
   );
 }
 
@@ -931,27 +542,6 @@ function validate(draft: Draft): Record<string, string> {
   const top = Number(draft.top_n);
   if (!/^\d+$/.test(draft.top_n.trim()) || top < 1 || top > 200) {
     out.top_n = "Pick a whole number between 1 and 200.";
-  }
-
-  if (draft.upwork.min_hourly.trim() && !(Number(draft.upwork.min_hourly) > 0)) {
-    out["upwork.min_hourly"] = "Numbers only, above zero.";
-  }
-  if (draft.upwork.min_fixed.trim() && !(Number(draft.upwork.min_fixed) > 0)) {
-    out["upwork.min_fixed"] = "Numbers only, above zero.";
-  }
-
-  const counts = ["client_min_hires", "client_max_hires", "proposals_max"] as const;
-  for (const key of counts) {
-    const raw = draft.upwork[key].trim();
-    if (raw && !/^\d+$/.test(raw)) out[`upwork.${key}`] = "Whole numbers only, 0 or more.";
-  }
-  const minHires = draft.upwork.client_min_hires.trim();
-  const maxHires = draft.upwork.client_max_hires.trim();
-  if (/^\d+$/.test(minHires) && /^\d+$/.test(maxHires) && Number(minHires) > Number(maxHires)) {
-    out["upwork.client_max_hires"] = "The maximum sits below the minimum, so no client can match.";
-  }
-  if (draft.upwork.client_min_spend.trim() && parseSalary(draft.upwork.client_min_spend) === null) {
-    out["upwork.client_min_spend"] = "Numbers only. 500, $1,000 and 1k all work.";
   }
 
   return out;

@@ -5,7 +5,7 @@ import datetime as dt
 
 from jobhunt import store
 from jobhunt.db.session import session_scope
-from jobhunt.pipeline import dedupe, simhash
+from jobhunt.pipeline import simhash
 from jobhunt.pipeline.dedupe import DedupeRecord, cluster
 from jobhunt.sources.base import JobPosting
 
@@ -184,23 +184,3 @@ def test_three_way_split_keeps_three_heads() -> None:
     assert result[3] == 3
 
 
-def test_two_upwork_gigs_with_the_same_title_do_not_cluster(cfg) -> None:
-    """Every Upwork job would otherwise share one anonymous company bucket.
-
-    Task 8's extractor supplies a real company only when the description names
-    one; every other gig normalizes to the constant "Upwork client". Without an
-    escape, `grouping_key` collapses every anonymous "react developer" gig from
-    every client into one cluster, and all but one vanish from the shortlist.
-    """
-    first = make_job(
-        cfg, source="upwork", market="upwork", external_id="d1",
-        title="React developer", company_name="Upwork client",
-    )
-    second = make_job(
-        cfg, source="upwork", market="upwork", external_id="d2",
-        title="React developer", company_name="Upwork client",
-    )
-    with session_scope(cfg.db_path) as session:
-        records = dedupe.records_from_db(session)
-        keys = {r.id: r.company_key for r in records if r.id in (first, second)}
-    assert keys[first] != keys[second]

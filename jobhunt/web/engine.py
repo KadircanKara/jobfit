@@ -80,7 +80,7 @@ class EnginePipeline:
         result = self.fetch_source(source)
         # "failed" and "degraded" are the words `sync_source` actually uses.
         # This compared against "error", which it never sets, so every failure
-        # returned a job count like a healthy fetch: an Upwork run whose every
+        # returned a job count like a healthy fetch: a run whose every
         # ref timed out finished `completed` with an empty shortlist and no
         # indication anything had gone wrong.
         if result.status == "failed":

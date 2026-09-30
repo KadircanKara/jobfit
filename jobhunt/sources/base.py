@@ -93,12 +93,6 @@ class JobPosting:
     poster_name: str | None = None
     poster_profile_url: str | None = None
 
-    # Upwork is the only source that says anything about who is paying. None
-    # everywhere else, and None means unknown rather than zero - the rules that
-    # read these must be able to tell "never hired" from "never asked".
-    client_verified: bool | None = None
-    client_total_spent: float | None = None
-    client_region: str | None = None
 
 
 @runtime_checkable
@@ -180,8 +174,8 @@ class HttpAdapter:
 
         Distinct from `was_truncated`: truncated means "we looked and did not
         see everything", refused means "we never looked". Both produce an empty
-        payload that would otherwise read as a search that found nothing. Only
-        the Upwork adapter has a budget that can refuse, so the default is False.
+        payload that would otherwise read as a search that found nothing. No
+        adapter has a budget that refuses today, so the default is False.
         """
         return False
 

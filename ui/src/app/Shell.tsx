@@ -1,7 +1,6 @@
 import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 import {
   Activity as ActivityIcon,
-  Briefcase,
   ChevronRight,
   FileText,
   LayoutTemplate,
@@ -15,7 +14,6 @@ import {
 } from "lucide-react";
 import { followLink, href, type Page, type Route } from "./router";
 import { RunHistory } from "./RunHistory";
-import { UpworkIcon } from "./UpworkIcon";
 import { PHASE_LABEL, runStatus, useHunt } from "./store";
 
 type Nav = { page: Page; label: string; icon: ComponentType<{ className?: string }>; to: Route };
@@ -27,13 +25,6 @@ const GROUPS: { label: string; items: Nav[] }[] = [
       { page: "run", label: "Run", icon: Play, to: { page: "run" } },
       { page: "shortlist", label: "Shortlist", icon: ListChecks, to: { page: "shortlist" } },
       { page: "tailoring", label: "Tailoring", icon: Sparkles, to: { page: "tailoring" } },
-    ],
-  },
-  {
-    label: "Search setup",
-    items: [
-      { page: "boards", label: "Job boards", icon: Briefcase, to: { page: "boards" } },
-      { page: "upwork", label: "Upwork", icon: UpworkIcon, to: { page: "upwork" } },
     ],
   },
   {
@@ -89,8 +80,8 @@ export function Shell({
       : hunt.tailor.jobs.length
         ? { value: String(hunt.tailor.jobs.length) }
         : undefined,
-    boards: hunt.filtersDirty.boards ? { value: "", tone: "warn" } : undefined,
-    upwork: hunt.filtersDirty.upwork ? { value: "", tone: "warn" } : undefined,
+    // The filters live on the Run page, so an unsaved edit there marks it.
+    run: hunt.filtersDirty ? { value: "", tone: "warn" } : undefined,
   };
 
   return (
@@ -221,8 +212,6 @@ const TITLES: Record<Page, string> = {
   run: "Run",
   shortlist: "Shortlist",
   tailoring: "Tailoring",
-  boards: "Job boards",
-  upwork: "Upwork",
   cv: "Profile",
   templates: "Templates",
 };
