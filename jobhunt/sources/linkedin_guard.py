@@ -24,6 +24,8 @@ LinkedIn really starts refusing.
 - The cooldown answers a 429 with patience that outlives the process -
   persisted, because a restart that resumes hammering the instant a 429 lands
   is exactly how a polite crawler becomes a blocked one.
+  A cooldown short enough (`WAIT_UP_TO`) is waited out by `ready()`, and the
+  run carries on; a longer one ends LinkedIn for the run.
 - The breaker ends a run that is clearly unwelcome (repeated 429s, or any 403)
   instead of retrying a hundred times. It is per-run and lives in memory only,
   since there is nothing to survive a restart for - the next run starts
@@ -38,6 +40,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import random
+import time
 from typing import Any
 
 from jobhunt import store
@@ -52,6 +55,11 @@ MAX_COOLDOWN_SECONDS = 3600
 # the cooldown allows rather than a graduated one.
 FORBIDDEN_COOLDOWN_SECONDS = MAX_COOLDOWN_SECONDS
 BREAKER_AFTER = 3
+# A cooldown ending within this many seconds is waited out rather than giving
+# up the rest of the run: one 60 second pause must not cost every remaining
+# search. A longer one - a 403's hour, or a Retry-After that says so - still
+# stops LinkedIn for this run.
+WAIT_UP_TO = 120.0
 # Seconds before each request, and the random spread around it. Both 0: no
 # pause. See the module docstring.
 BASE_DELAY = 0.0
@@ -93,6 +101,24 @@ class CrawlGuard:
         if DAILY_BUDGET is not None and spent >= DAILY_BUDGET:
             return f"today's budget of {DAILY_BUDGET} requests is spent ({spent})"
         return None
+
+    def ready(self, *, max_wait: float | None = None) -> bool:
+        """`allow()`, but first sit out a cooldown that ends soon enough.
+
+        The breaker still ends the run: three 429s in a row, waited out or not,
+        mean LinkedIn wants us gone for longer than a pause.
+        """
+        limit = WAIT_UP_TO if max_wait is None else max_wait
+        if self.tripped:
+            return False
+        until = self.cooling_until()
+        now = utcnow()
+        if until is not None and now < until:
+            wait = (until - now).total_seconds()
+            if wait > limit:
+                return False
+            time.sleep(wait + 0.5)
+        return self.allow()
 
     def spend(self, n: int = 1, *, now: dt.datetime | None = None) -> None:
         now = now or utcnow()

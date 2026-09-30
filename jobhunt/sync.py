@@ -28,6 +28,7 @@ from jobhunt.config import Config
 from jobhunt.db.models import Board, Job, Run, utcnow
 from jobhunt.db.session import session_scope
 from jobhunt.pipeline.dedupe import apply_clustering
+from jobhunt.sources import throttle
 from jobhunt.sources.base import BoardRef
 
 
@@ -52,6 +53,9 @@ class SourceResult:
     # Refs a fetch budget kept off the wire entirely. Also not an error, but a
     # run made of these does no work at all and must never report a bare `ok`.
     refused: int = 0
+    # Boards not reached because the source kept answering 429. Left due for
+    # the next run, never marked failed.
+    throttled: int = 0
     status: str = "ok"
     error_detail: str | None = None
 
@@ -61,7 +65,7 @@ class SourceResult:
             f"normalized={self.normalized} new={self.new} updated={self.updated} "
             f"unchanged={self.unchanged} deactivated={self.deactivated} "
             f"clustered={self.clustered} errors={self.errors} truncated={self.truncated} "
-            f"refused={self.refused} "
+            f"refused={self.refused} throttled={self.throttled} "
             f"rejected={self.rejected} dead_boards={self.dead_boards} run={self.run_key}"
         )
 
@@ -217,6 +221,7 @@ def fetch_pass(
     run_key: str,
     progress: Callable[[int, int, str], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    throttled: throttle.Report | None = None,
 ) -> tuple[int, list[str], list[str]]:
     """Write one raw payload file per board.
 
@@ -229,7 +234,14 @@ def fetch_pass(
 
     `should_stop` is checked before each board so a stop request lands within
     one fetch rather than at the end of the source.
+
+    A 429 is waited out and the same board asked again, never counted as the
+    board failing; a source still refusing after its waiting allowance stops,
+    and the boards it did not reach are left for the next run. `throttled`,
+    if given, is filled in with what that cost. See sources/throttle.py.
     """
+    throttled = throttled if throttled is not None else throttle.Report()
+    requests = 0
     adapter = build_adapter(config, source)
     out_dir = raw_dir(config, source, run_key)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -246,11 +258,44 @@ def fetch_pass(
                 break
             if index and adapter.still_fetching():
                 adapter.rate_limit.sleep()
-            try:
-                payload = adapter.fetch(ref, client)
-            except Exception as exc:  # noqa: BLE001 - one board must never fail the source
-                failed.append(ref.token)
-                messages.append(f"{ref.provider}/{ref.token}: {type(exc).__name__}: {exc}")
+            attempt = 0
+            outcome = "ok"
+            while True:
+                requests += 1
+                try:
+                    payload = adapter.fetch(ref, client)
+                except Exception as exc:  # noqa: BLE001 - one board must never fail the source
+                    if not throttle.is_throttle(exc):
+                        failed.append(ref.token)
+                        messages.append(f"{ref.provider}/{ref.token}: {type(exc).__name__}: {exc}")
+                        outcome = "failed"
+                        break
+                    wait = throttle.wait_for(exc, attempt)
+                    throttled.refusals += 1
+                    throttle.note(
+                        config, source, ref.token, exc,
+                        requests_this_run=requests, wait=wait,
+                        pause_seconds=getattr(adapter.rate_limit, "delay_seconds", 0.0),
+                    )
+                    if (
+                        wait > throttle.MAX_SINGLE_WAIT
+                        or throttled.waited + wait > throttle.MAX_WAIT_PER_SOURCE
+                        or not throttle.pause(wait, should_stop)
+                    ):
+                        outcome = "throttled"
+                        break
+                    throttled.waited += wait
+                    attempt += 1
+                    continue
+                break
+            if outcome == "throttled":
+                throttled.left = len(refs) - index
+                messages.append(
+                    f"{source}: still rate limited after waiting {throttled.waited:.0f}s; "
+                    f"{throttled.left} boards left for the next run"
+                )
+                break
+            if outcome == "failed":
                 if progress is not None:
                     progress(index + 1, len(refs), ref.token)
                 continue
@@ -496,9 +541,12 @@ def sync_source(
             if not refs:
                 result.status = "ok"
                 return result
+            throttled = throttle.Report()
             fetched, failed_tokens, messages = fetch_pass(
-                config, source, refs, run_key, progress=progress, should_stop=should_stop
+                config, source, refs, run_key, progress=progress, should_stop=should_stop,
+                throttled=throttled,
             )
+            result.throttled = throttled.left
             result.raw_fetched = fetched
             result.dead_boards, result.rejected = record_fetch_failures(
                 config, source, failed_tokens
@@ -529,6 +577,8 @@ def sync_source(
                 f"{result.truncated} of {result.boards} searches ended early "
                 f"(crawl guard or the source refused); their jobs were left active"
             )
+        if result.throttled:
+            result.status = "failed" if result.status == "failed" else "degraded"
         # A budget refusal writes the same empty envelope a search that found
         # nothing writes, so without this a run that spent its whole allowance
         # before starting reports `ok` with zero jobs and no reason.
