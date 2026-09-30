@@ -518,3 +518,39 @@ def test_a_stop_lands_mid_loop_and_does_not_start_another_round():
 
     assert sup.state.outcome == "killed"
     assert sup.state.gate.rounds <= 1
+
+
+class PrefetchingPipeline(FakePipeline):
+    """A pipeline that fetches every source up front, as the engine does."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.prefetched: list[list[str]] = []
+
+    def prefetch(self, sources):
+        self.prefetched.append(list(sources))
+        return {"ashby": "ConnectError: down"}
+
+
+def test_every_source_is_fetched_up_front_before_any_is_stored():
+    pipeline = PrefetchingPipeline(sources=["greenhouse", "ashby"], boards=1)
+    sup = supervisor(pipeline)
+    sup.run()
+
+    assert pipeline.prefetched == [["greenhouse", "ashby"]]
+    assert [source for source, _ in pipeline.fetched] == ["greenhouse", "ashby"]
+    messages = [event.message for event in sup.log]
+    assert "fetching 2 sources at once" in messages
+    assert any("ashby fetch failed ahead of time" in message for message in messages)
+    assert sup.state.outcome == "completed"
+
+
+def test_a_resumed_run_fetches_up_front_only_what_it_had_not_finished():
+    pipeline = PrefetchingPipeline(sources=["greenhouse", "ashby"], boards=1)
+    sup = supervisor(pipeline)
+    pipeline.on_fetch = lambda count: sup.request_pause() if count == 1 else None
+    sup.run()
+    pipeline.on_fetch = None
+    sup.run_resumed()
+
+    assert pipeline.prefetched == [["greenhouse", "ashby"], ["ashby"]]

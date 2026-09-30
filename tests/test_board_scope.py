@@ -199,3 +199,38 @@ def test_nothing_here_touches_other_platforms(cfg, corpus) -> None:
     assert board_scope.relevant_boards(cfg, "greenhouse") == []
     with session_scope(cfg.db_path) as session:
         assert session.query(Job).count() == 3
+
+
+# --- fetching every source at once ---------------------------------------------------------
+
+
+def test_every_source_is_fetched_at_once_then_stored_from_what_was_fetched(cfg, corpus, monkeypatch) -> None:
+    import threading
+
+    board(cfg, "gh", provider="greenhouse")
+    post(cfg, board(cfg, "ghmatch", provider="greenhouse"), "Backend Engineer", "g1")
+    both_in = threading.Barrier(2, timeout=5)
+
+    def fetch(config, source, refs, run_key, **hooks):
+        both_in.wait()  # only returns once the other source is fetching too
+        return len(refs), [], []
+
+    monkeypatch.setattr(sync, "fetch_pass", fetch)
+    done, errors = sync.prefetch_all(cfg, ["ashby", "greenhouse"])
+
+    assert errors == {}
+    assert tokens(done["ashby"].refs) == {"feed", "match"}
+    assert tokens(done["greenhouse"].refs) == {"ghmatch"}
+
+    monkeypatch.setattr(sync, "fetch_pass", lambda *a, **k: pytest.fail("stored, not fetched again"))
+    result = sync.sync_source(cfg, "ashby", prefetched=done["ashby"])
+    assert (result.boards, result.raw_fetched) == (2, 2)
+
+
+def test_a_source_whose_fetch_raises_is_reported_not_fatal(cfg, corpus, monkeypatch) -> None:
+    def fetch(config, source, refs, run_key, **hooks):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sync, "fetch_pass", fetch)
+    done, errors = sync.prefetch_all(cfg, ["ashby"])
+    assert done == {} and errors == {"ashby": "RuntimeError: boom"}

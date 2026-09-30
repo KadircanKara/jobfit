@@ -115,6 +115,8 @@ class GateReport:
 
 class Pipeline(Protocol):
     def sources(self) -> list[str]: ...
+    # Optional: `prefetch(sources) -> {source: error}` fetches every source at
+    # once before `_sync` stores them one by one. See EnginePipeline.prefetch.
     def boards_for(self, source: str) -> list[Any]: ...
     def fetch_board(self, source: str, board: Any) -> int: ...
     def rank(self) -> RankReport: ...
@@ -314,9 +316,20 @@ class RunSupervisor:
 
     def _sync(self) -> None:
         self.state.phase = "sync"
-        for source in list(self.pipeline.sources()):
-            if source in self.state.done_sources:
-                continue
+        pending = [s for s in self.pipeline.sources() if s not in self.state.done_sources]
+        # A pipeline that can fetch every source at once does that first; the
+        # loop below then only stores each. One without it fetches in the loop.
+        prefetch = getattr(self.pipeline, "prefetch", None)
+        if prefetch is not None and pending:
+            self._checkpoint()
+            self.log.emit(phase="sync", message=f"fetching {len(pending)} sources at once")
+            for source, why in prefetch(pending).items():
+                self.log.emit(
+                    phase="sync", source=source,
+                    message=f"{source} fetch failed ahead of time, retrying on its own · {why}",
+                    level="warning",
+                )
+        for source in pending:
             self._checkpoint()
             boards = self.pipeline.boards_for(source)
             done = 0

@@ -42,6 +42,8 @@ class EnginePipeline:
         self.should_stop: Callable[[], bool] = lambda: False
         # One snapshot per run, taken when ranking starts. See fx.load.
         self.rates: fx_module.Snapshot | None = None
+        # Sources fetched ahead by `prefetch`, waiting to be stored.
+        self._prefetched: dict[str, sync.Prefetched] = {}
         self._batch_path = pathlib.Path(
             str(config.get("ranking", "batch_path", default=config.home / "data/rank/batch.json"))
         )
@@ -51,6 +53,21 @@ class EnginePipeline:
         return sorted(source_registry.REGISTRY)
 
     # --- sync ------------------------------------------------------------
+
+    def prefetch(self, sources: list[str]) -> dict[str, str]:
+        """Fetch every source at once; `fetch_source` then only stores each.
+
+        Returns the sources whose fetch raised, with why. Those are fetched
+        again the old way when their turn comes.
+        """
+        def progress(source: str, done: int, total: int, token: str) -> None:
+            if self.on_board:
+                self.on_board(source, done, total, token)
+
+        self._prefetched, errors = sync.prefetch_all(
+            self.config, sources, progress=progress, should_stop=self.should_stop
+        )
+        return errors
 
     def fetch_source(self, source: str) -> sync.SourceResult:
         """One source, end to end. Never raises: failures ride on the result."""
@@ -63,6 +80,7 @@ class EnginePipeline:
             source,
             progress=progress,
             should_stop=self.should_stop,
+            prefetched=self._prefetched.pop(source, None),
         )
 
     # --- the supervisor's Protocol ---------------------------------------
