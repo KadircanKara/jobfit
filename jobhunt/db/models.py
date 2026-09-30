@@ -159,6 +159,10 @@ class Job(Base):
     visa_sponsorship: Mapped[str | None] = mapped_column(String(10))
     auth_checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
 
+    # When the posting's own page last showed it still open, checked just before
+    # the job went on a shortlist. See pipeline/liveness.py.
+    open_checked_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+
     canonical_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), index=True)
     first_seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
