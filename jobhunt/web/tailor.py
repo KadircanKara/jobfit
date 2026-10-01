@@ -263,7 +263,31 @@ class TailorBatch:
 
 def _findings_of(verdict: dict[str, Any]) -> list[str]:
     fabrication = verdict.get("fabrication") or {}
-    return [str(item) for item in (fabrication.get("findings") or [])]
+    return [_finding_line(item) for item in (fabrication.get("findings") or [])]
+
+
+def _finding_line(item: Any) -> str:
+    """One readable line per finding: shown in the UI and sent back to the tailor.
+
+    The reviewer returns {claim, location, master_says, why}; older or looser
+    verdicts may give a plain string, which is kept as it is.
+    """
+    if not isinstance(item, dict):
+        return str(item)
+    claim = str(item.get("claim") or "").strip()
+    location = str(item.get("location") or "").strip()
+    why = str(item.get("why") or "").strip()
+    master_says = str(item.get("master_says") or "").strip()
+    if not (claim or why or master_says):
+        return str(item)
+    line = f"“{claim}”" if claim else "unquoted claim"
+    if location:
+        line += f" ({location})"
+    if why:
+        line += f": {why}"
+    if master_says:
+        line += f" — master says: {master_says}"
+    return line
 
 
 def _fit_of(verdict: dict[str, Any]) -> float | None:

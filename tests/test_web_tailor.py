@@ -123,6 +123,32 @@ def test_fabrication_findings_survive_an_approved_run():
     assert result[0].findings, "the round-one finding must not be discarded on approval"
 
 
+def test_a_structured_finding_reads_as_one_line():
+    verdict = {
+        "fabrication": {
+            "findings": [
+                {
+                    "claim": "live SaaS product",
+                    "location": "summary",
+                    "master_says": "building a SaaS prototype",
+                    "why": "a prototype became a launched product",
+                }
+            ]
+        }
+    }
+
+    assert tailor_module._findings_of(verdict) == [
+        "“live SaaS product” (summary): a prototype became a launched product"
+        " — master says: building a SaaS prototype"
+    ]
+
+
+def test_a_plain_string_finding_is_kept_as_it_is():
+    verdict = {"fabrication": {"findings": ["“live SaaS product” — master says building"]}}
+
+    assert tailor_module._findings_of(verdict) == ["“live SaaS product” — master says building"]
+
+
 def test_a_job_without_a_complete_posting_is_not_tailored():
     steps = FakeSteps(apply_fails=True)
 
