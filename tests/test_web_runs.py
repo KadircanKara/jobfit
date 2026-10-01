@@ -529,16 +529,18 @@ class PrefetchingPipeline(FakePipeline):
 
     def prefetch(self, sources):
         self.prefetched.append(list(sources))
-        return {"ashby": "ConnectError: down"}
+        # Finished in reverse: storing follows the fetches, not the list.
+        for source in reversed(sources):
+            yield source, "ConnectError: down" if source == "ashby" else None
 
 
-def test_every_source_is_fetched_up_front_before_any_is_stored():
+def test_each_source_is_stored_in_the_order_its_fetch_finished():
     pipeline = PrefetchingPipeline(sources=["greenhouse", "ashby"], boards=1)
     sup = supervisor(pipeline)
     sup.run()
 
     assert pipeline.prefetched == [["greenhouse", "ashby"]]
-    assert [source for source, _ in pipeline.fetched] == ["greenhouse", "ashby"]
+    assert [source for source, _ in pipeline.fetched] == ["ashby", "greenhouse"]
     messages = [event.message for event in sup.log]
     assert "fetching 2 sources at once" in messages
     assert any("ashby fetch failed ahead of time" in message for message in messages)
@@ -553,4 +555,5 @@ def test_a_resumed_run_fetches_up_front_only_what_it_had_not_finished():
     pipeline.on_fetch = None
     sup.run_resumed()
 
-    assert pipeline.prefetched == [["greenhouse", "ashby"], ["ashby"]]
+    assert pipeline.prefetched == [["greenhouse", "ashby"], ["greenhouse"]]
+

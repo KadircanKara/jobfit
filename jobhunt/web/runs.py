@@ -24,7 +24,7 @@ from __future__ import annotations
 import dataclasses
 import threading
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any, Protocol
 
 from jobhunt.web.events import EventLog
@@ -115,8 +115,8 @@ class GateReport:
 
 class Pipeline(Protocol):
     def sources(self) -> list[str]: ...
-    # Optional: `prefetch(sources) -> {source: error}` fetches every source at
-    # once before `_sync` stores them one by one. See EnginePipeline.prefetch.
+    # Optional: `prefetch(sources)` yields (source, error) as each source's fetch
+    # finishes, so `_sync` stores it then. See EnginePipeline.prefetch.
     def boards_for(self, source: str) -> list[Any]: ...
     def fetch_board(self, source: str, board: Any) -> int: ...
     def rank(self) -> RankReport: ...
@@ -317,19 +317,34 @@ class RunSupervisor:
     def _sync(self) -> None:
         self.state.phase = "sync"
         pending = [s for s in self.pipeline.sources() if s not in self.state.done_sources]
-        # A pipeline that can fetch every source at once does that first; the
-        # loop below then only stores each. One without it fetches in the loop.
+        # A pipeline that can fetch every source at once does that, and hands
+        # each back as its fetch finishes, so the loop below stores each one
+        # while the slower ones are still fetching. One without it fetches in
+        # the loop, in order.
         prefetch = getattr(self.pipeline, "prefetch", None)
+        order: Iterator[tuple[str, str | None]] = iter((source, None) for source in pending)
         if prefetch is not None and pending:
             self._checkpoint()
             self.log.emit(phase="sync", message=f"fetching {len(pending)} sources at once")
-            for source, why in prefetch(pending).items():
+            order = prefetch(pending)
+        try:
+            self._sync_each(order)
+        finally:
+            # A stop or pause leaves the loop early; closing ends the fetches
+            # still going instead of waiting on them.
+            close = getattr(order, "close", None)
+            if close is not None:
+                close()
+        self._save()
+
+    def _sync_each(self, order: Iterator[tuple[str, str | None]]) -> None:
+        for source, why in order:
+            if why:
                 self.log.emit(
                     phase="sync", source=source,
                     message=f"{source} fetch failed ahead of time, retrying on its own · {why}",
                     level="warning",
                 )
-        for source in pending:
             self._checkpoint()
             boards = self.pipeline.boards_for(source)
             done = 0
@@ -366,7 +381,6 @@ class RunSupervisor:
             # again on resume rather than silently skipped.
             if source not in self.state.done_sources:
                 self.state.done_sources.append(source)
-        self._save()
 
     def _rank(self) -> None:
         self.state.phase = "rank"

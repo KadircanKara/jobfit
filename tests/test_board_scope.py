@@ -216,9 +216,8 @@ def test_every_source_is_fetched_at_once_then_stored_from_what_was_fetched(cfg, 
         return len(refs), [], []
 
     monkeypatch.setattr(sync, "fetch_pass", fetch)
-    done, errors = sync.prefetch_all(cfg, ["ashby", "greenhouse"])
+    done = {source: pre for source, pre, error in sync.prefetch_as_done(cfg, ["ashby", "greenhouse"])}
 
-    assert errors == {}
     assert tokens(done["ashby"].refs) == {"feed", "match"}
     assert tokens(done["greenhouse"].refs) == {"ghmatch"}
 
@@ -227,10 +226,34 @@ def test_every_source_is_fetched_at_once_then_stored_from_what_was_fetched(cfg, 
     assert (result.boards, result.raw_fetched) == (2, 2)
 
 
+def test_a_fast_source_comes_back_while_a_slow_one_is_still_fetching(cfg, corpus, monkeypatch) -> None:
+    import threading
+
+    board(cfg, "gh", provider="greenhouse")
+    post(cfg, board(cfg, "ghmatch", provider="greenhouse"), "Backend Engineer", "g1")
+    release = threading.Event()
+    stopped: list[bool] = []
+
+    def fetch(config, source, refs, run_key, should_stop=None, **hooks):
+        if source == "greenhouse":  # the slow one: holds until let go, or told to stop
+            while not release.wait(0.01):
+                if should_stop():
+                    stopped.append(True)
+                    break
+        return len(refs), [], []
+
+    monkeypatch.setattr(sync, "fetch_pass", fetch)
+    order = sync.prefetch_as_done(cfg, ["ashby", "greenhouse"])
+    source, prefetched, error = next(order)
+
+    assert (source, error) == ("ashby", None) and not release.is_set()
+    order.close()  # a stop: the slow fetch is told to end rather than waited out
+    assert stopped == [True]
+
+
 def test_a_source_whose_fetch_raises_is_reported_not_fatal(cfg, corpus, monkeypatch) -> None:
     def fetch(config, source, refs, run_key, **hooks):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(sync, "fetch_pass", fetch)
-    done, errors = sync.prefetch_all(cfg, ["ashby"])
-    assert done == {} and errors == {"ashby": "RuntimeError: boom"}
+    assert list(sync.prefetch_as_done(cfg, ["ashby"])) == [("ashby", None, "RuntimeError: boom")]

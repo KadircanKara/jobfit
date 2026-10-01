@@ -7,7 +7,7 @@ work in the same order.
 from __future__ import annotations
 
 import pathlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from jobhunt import preferences as prefs_module
@@ -54,20 +54,22 @@ class EnginePipeline:
 
     # --- sync ------------------------------------------------------------
 
-    def prefetch(self, sources: list[str]) -> dict[str, str]:
-        """Fetch every source at once; `fetch_source` then only stores each.
+    def prefetch(self, sources: list[str]) -> Iterator[tuple[str, str | None]]:
+        """Fetch every source at once, yielding each as its fetch finishes.
 
-        Returns the sources whose fetch raised, with why. Those are fetched
-        again the old way when their turn comes.
+        Yields (source, error). `fetch_source` then only stores a source that
+        was fetched here; one whose fetch raised is fetched again the old way.
         """
         def progress(source: str, done: int, total: int, token: str) -> None:
             if self.on_board:
                 self.on_board(source, done, total, token)
 
-        self._prefetched, errors = sync.prefetch_all(
+        for source, prefetched, error in sync.prefetch_as_done(
             self.config, sources, progress=progress, should_stop=self.should_stop
-        )
-        return errors
+        ):
+            if prefetched is not None:
+                self._prefetched[source] = prefetched
+            yield source, error
 
     def fetch_source(self, source: str) -> sync.SourceResult:
         """One source, end to end. Never raises: failures ride on the result."""
