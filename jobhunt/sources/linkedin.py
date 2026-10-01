@@ -67,6 +67,18 @@ def _job_ids(cards_html: list[str]) -> list[str]:
     return list(seen)
 
 
+def _card_titles(cards_html: list[str]) -> dict[str, str]:
+    """Job id -> the title its search card shows, across every fetched page."""
+    titles: dict[str, str] = {}
+    for html in cards_html:
+        for card in _cards(html):
+            job_id = (card.get("data-entity-urn") or "").rsplit(":", 1)[-1]
+            title_el = card.select_one("h3.base-search-card__title")
+            if job_id and job_id not in titles:
+                titles[job_id] = title_el.get_text(strip=True) if title_el else ""
+    return titles
+
+
 def _cards(html: str) -> list[Any]:
     try:
         soup = BeautifulSoup(html, "html.parser")
@@ -285,7 +297,17 @@ class LinkedInAdapter(HttpAdapter):
                 time.sleep(self.guard.delay())
 
         details: dict[str, str] = {}
-        pending = [job_id for job_id in _job_ids(cards) if job_id not in self.known_ids]
+        # A detail page is a request against a limit of roughly ten a minute,
+        # and a card whose title stage 1 will drop is not worth one: the card
+        # is still stored, only its description is not fetched.
+        from jobhunt import board_scope
+
+        wanted = board_scope.title_filter(self.config)
+        titles = _card_titles(cards)
+        pending = [
+            job_id for job_id in _job_ids(cards)
+            if job_id not in self.known_ids and wanted(titles.get(job_id))
+        ]
         while pending:
             job_id = pending[0]
             if refused("detail fetch"):

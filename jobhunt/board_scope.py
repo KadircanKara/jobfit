@@ -60,27 +60,33 @@ def _patterns(config: Config) -> tuple[list[re.Pattern[str]], list[re.Pattern[st
     return compiled(required), compiled(excluded)
 
 
-def relevant_board_ids(config: Config) -> set[int]:
-    """Boards that have ever posted a job whose title the user is looking for.
+def title_filter(config: Config) -> Callable[[str], bool]:
+    """Whether a title is one the user is looking for, by stage 1's title rules.
 
-    With no title patterns at all every title matches, so every board that
-    has posted anything is relevant.
+    With no title patterns at all every title matches.
     """
     required, excluded = _patterns(config)
+
+    def wanted(title: str | None) -> bool:
+        text = title or ""
+        if required and not any(p.search(text) for p in required):
+            return False
+        return not any(p.search(text) for p in excluded)
+
+    return wanted
+
+
+def relevant_board_ids(config: Config) -> set[int]:
+    """Boards that have ever posted a job whose title the user is looking for."""
+    wanted = title_filter(config)
     relevant: set[int] = set()
     with session_scope(config.db_path) as session:
         rows = session.execute(
             select(Job.board_id, Job.title).where(Job.board_id.is_not(None))
         ).all()
     for board_id, title in rows:
-        if board_id in relevant:
-            continue
-        text = title or ""
-        if required and not any(p.search(text) for p in required):
-            continue
-        if any(p.search(text) for p in excluded):
-            continue
-        relevant.add(board_id)
+        if board_id not in relevant and wanted(title):
+            relevant.add(board_id)
     return relevant
 
 

@@ -214,6 +214,34 @@ def test_known_ids_are_never_fetched_for_detail(cfg) -> None:
     assert "fresh1" in raw["details"]
 
 
+def test_a_card_whose_title_stage_1_drops_is_not_fetched_for_detail(cfg, monkeypatch) -> None:
+    """A detail page costs one of roughly ten requests a minute; a title the
+    user is not looking for is not worth one. The card itself is still kept."""
+    from jobhunt import board_scope
+
+    monkeypatch.setattr(
+        board_scope.deterministic, "load_filters",
+        lambda config: {"global": {"require_titles_regex": ["(?i)backend"]}},
+    )
+    other = _card_html("other").replace("Backend Engineer", "Bakery Lead")
+    page = "<ul>" + _card_html("wanted") + other + "</ul>"
+    detail_calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "seeMoreJobPostings" in str(request.url):
+            return httpx.Response(200, text=page)
+        detail_calls.append(str(request.url))
+        return httpx.Response(200, text="<div class='description__text'>hi</div>")
+
+    adapter = LinkedInAdapter(config=cfg)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        raw = adapter.fetch(_ref(), client)
+
+    assert len(detail_calls) == 1 and "wanted" in detail_calls[0]
+    assert {posting.external_id for posting in adapter.normalize(raw, _ref())} == {"wanted", "other"}
+    assert not adapter.was_truncated()
+
+
 def test_a_403_trips_the_breaker_and_stops(cfg) -> None:
     calls = []
 
