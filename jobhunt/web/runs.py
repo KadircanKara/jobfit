@@ -29,10 +29,11 @@ from typing import Any, Protocol
 
 from jobhunt.web.events import EventLog
 
-# Slices per run. At the default batch of 20 that is 200 jobs, enough to work
-# a backlog down over a couple of runs without one run turning into an
-# open-ended spend.
-DEFAULT_GATE_ROUNDS = 10
+# Slices per run. None means no ceiling: the gate keeps going until every job
+# that passed the rules has a verdict. A ceiling of 10 (200 jobs) used to leave
+# most of a big sync's passes waiting for later runs, and a shortlist built
+# from a quarter of them.
+DEFAULT_GATE_ROUNDS: int | None = None
 
 PHASES = ("idle", "sync", "rank", "gate", "shortlist", "done", "failed", "paused")
 
@@ -166,14 +167,13 @@ class RunSupervisor:
         log: EventLog,
         store: Callable[[RunState], None] | None = None,
         clock: Callable[[], str] | None = None,
-        max_gate_rounds: int = DEFAULT_GATE_ROUNDS,
+        max_gate_rounds: int | None = DEFAULT_GATE_ROUNDS,
     ) -> None:
         self.pipeline = pipeline
         self.log = log
-        # The gate keeps pulling slices until the backlog is dry, so a run has
-        # to be bounded by something: each round is a model call, and a big
-        # sync can leave hundreds of jobs waiting.
-        self.max_gate_rounds = max(1, int(max_gate_rounds))
+        # The gate keeps pulling slices until the backlog is dry. A ceiling, if
+        # set, bounds how many model calls one run makes; None means none.
+        self.max_gate_rounds = None if max_gate_rounds is None else max(1, int(max_gate_rounds))
         # Called whenever the run reaches a new resting point. Keeps file IO out
         # of here so the sequencing stays testable without a disk.
         self.store = store
@@ -185,11 +185,11 @@ class RunSupervisor:
 
     # --- control ---------------------------------------------------------
 
-    def start(self, run_id: str = "") -> None:
+    def start(self, run_id: str = "", *, fetch: bool = True) -> None:
         """Run in the background so the request that started it can return."""
         if self.state.running:
             raise RunInProgress("a run is already going")
-        self._spawn(lambda: self.run(run_id=run_id))
+        self._spawn(lambda: self.run(run_id=run_id, fetch=fetch))
 
     def resume(self) -> None:
         """Pick a paused run back up, keeping what it already did."""
@@ -240,12 +240,19 @@ class RunSupervisor:
 
     # --- the run ---------------------------------------------------------
 
-    def run(self, run_id: str = "") -> RunState:
+    def run(self, run_id: str = "", *, fetch: bool = True) -> RunState:
+        """One run. `fetch=False` ranks, gates and shortlists what is already
+        stored, for when the corpus is fresh and only the scoring is owed."""
         if self.state.running:
             raise RunInProgress("a run is already going")
         self._kill.clear()
         self._pause.clear()
         self.state = RunState(phase="sync", run_id=run_id, started_at=self.clock())
+        if not fetch:
+            # Every source counted as done, the same way a resume skips the
+            # sources it already fetched.
+            self.state.done_sources = list(self.pipeline.sources())
+            self.log.emit(phase="sync", message="fetching skipped · scoring what is already stored")
         return self._drive()
 
     def run_resumed(self) -> RunState:
@@ -407,7 +414,7 @@ class RunSupervisor:
         yet, so asking again after a slice is scored returns the next one. One
         slice per run left everything else waiting for the next press of Start.
 
-        Four things end the loop, and the third is the one that is easy to
+        Three things end the loop, four with a round ceiling set, and the third is the one that is easy to
         miss: a slice the gate cannot read keeps its jobs unscored, so the next
         `emit` returns those same jobs. Stopping when a round scores nothing
         keeps that from burning every remaining round on one unreadable slice.
@@ -416,7 +423,7 @@ class RunSupervisor:
         report = GateReport()
         self.state.gate = report
 
-        while report.rounds < self.max_gate_rounds:
+        while self.max_gate_rounds is None or report.rounds < self.max_gate_rounds:
             plan = self.pipeline.gate_batches()
             if not plan.batches:
                 if not report.rounds:
@@ -430,7 +437,7 @@ class RunSupervisor:
             self.log.emit(
                 phase="gate",
                 message=(
-                    f"round {report.rounds}/{self.max_gate_rounds} · "
+                    f"round {report.rounds}{f'/{self.max_gate_rounds}' if self.max_gate_rounds else ''} · "
                     f"{plan.jobs} jobs in {len(plan.batches)} batches"
                     + (
                         f" · {plan.held_by_company_cap} held so no company fills a batch"
