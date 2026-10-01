@@ -59,10 +59,11 @@ class Card:
 # `is_active` says (that waits for two misses). For a job board that is the
 # board's own latest fetch: a job missing from it is gone, and a board nobody
 # has fetched lately says nothing either way, so wall-clock age must not hide
-# its jobs. LinkedIn searches return only their top results and prove nothing
-# by leaving a job out, so there - and for a job with no board - a job not seen
-# for this many days is not shown.
+# its jobs. A search (LinkedIn, Workable's job search) returns only its top
+# results and proves nothing by leaving a job out, so there - and for a job with
+# no board - a job not seen for this many days is not shown.
 SEEN_WITHIN_DAYS = 14
+SEARCH_SOURCES = ("linkedin", "workable_search")
 
 
 def shortlist(
@@ -130,9 +131,11 @@ def _scored_cards(
             .where(Job.is_active.is_(True))
             .where(
                 or_(
-                    and_(Job.board_id.is_not(None), Job.source != "linkedin", Job.missed_runs == 0),
                     and_(
-                        or_(Job.board_id.is_(None), Job.source == "linkedin"),
+                        Job.board_id.is_not(None), Job.source.not_in(SEARCH_SOURCES), Job.missed_runs == 0
+                    ),
+                    and_(
+                        or_(Job.board_id.is_(None), Job.source.in_(SEARCH_SOURCES)),
                         Job.last_seen_at >= utcnow() - dt.timedelta(days=SEEN_WITHIN_DAYS),
                     ),
                 )

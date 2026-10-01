@@ -273,5 +273,10 @@ export function RunPage({ runId, go }: { runId?: string; go: (to: Route | string
 
 /** A source id as a person reads it. Most ids are already the product's name. */
 function sourceName(id: string): string {
-  return id === "linkedin" ? "LinkedIn" : id;
+  return SOURCE_NAMES[id] ?? id;
 }
+
+const SOURCE_NAMES: Record<string, string> = {
+  linkedin: "LinkedIn",
+  workable_search: "workable search",
+};
