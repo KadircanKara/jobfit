@@ -267,7 +267,13 @@ def fetch_pass(
                 except Exception as exc:  # noqa: BLE001 - one board must never fail the source
                     if not throttle.is_throttle(exc):
                         failed.append(ref.token)
-                        messages.append(f"{ref.provider}/{ref.token}: {type(exc).__name__}: {exc}")
+                        response = getattr(exc, "response", None)
+                        why = (
+                            f"redirected to {response.request.url}, board gone"
+                            if isinstance(response, httpx.Response) and throttle.left_host(response)
+                            else f"{type(exc).__name__}: {exc}"
+                        )
+                        messages.append(f"{ref.provider}/{ref.token}: {why}")
                         outcome = "failed"
                         break
                     wait = throttle.wait_for(exc, attempt)
@@ -510,6 +516,107 @@ class Prefetched:
     throttled: throttle.Report
 
 
+def plan_refs(
+    config: Config,
+    source: str,
+    force: bool = False,
+    only_status: str | None = None,
+    market: str | None = None,
+) -> list[BoardRef]:
+    """What one source fetches this run: its searches, or its boards.
+
+    A board source fetches every relevant board (see board_scope), or with
+    `only_status` the boards `due_boards` owes that status.
+    """
+    limit = int(config.get("sync", "max_boards_per_run", default=200))
+    # A generated-ref source (LinkedIn) has no Board rows to query: its
+    # refs come from preferences, fresh every run, via its own
+    # `discover()`. Everything else is still owed its fetch by
+    # `due_boards()`. The cap applies either way, so a preference set
+    # with forty titles cannot turn into a four-hundred-search run.
+    adapter_cls = source_registry.get(source)
+    if adapter_cls.generates_refs:
+        # `only_status="candidate"` means "prove out unvalidated board
+        # guesses" (jobhunt boards --validate, jobhunt discover); a
+        # generated ref is never a candidate board, so there is nothing
+        # to validate here. A `market` filter (e.g. `sync --market yc`)
+        # is meant to narrow which boards run; a generated source has
+        # no per-ref market to narrow, only its own fixed one, so it
+        # runs only when the filter already matches it. Either way this
+        # must stay a no-op rather than kick off a full preference-
+        # driven crawl from a command whose contract is "just boards".
+        if only_status is not None or (market is not None and market != adapter_cls.market):
+            return []
+        return list(build_adapter(config, source).discover())[:limit]
+    if only_status is not None:
+        return due_boards(config, source, force, limit, only_status=only_status, market=market)
+    from jobhunt import board_scope
+
+    cap = config.get("sync", "max_relevant_boards_per_run", default=None)
+    return board_scope.relevant_boards(config, source, market=market, limit=int(cap) if cap else None)
+
+
+def prefetch(
+    config: Config,
+    source: str,
+    progress: Callable[[int, int, str], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> Prefetched:
+    """Plan and fetch one source, leaving the storing to `sync_source(prefetched=...)`."""
+    run_key = new_run_key()
+    refs = plan_refs(config, source)
+    report = throttle.Report()
+    fetched, failed, messages = (
+        fetch_pass(config, source, refs, run_key, progress=progress, should_stop=should_stop,
+                   throttled=report)
+        if refs else (0, [], [])
+    )
+    return Prefetched(
+        run_key=run_key, refs=refs, fetched=fetched, failed=failed, messages=messages,
+        throttled=report,
+    )
+
+
+def prefetch_all(
+    config: Config,
+    sources: list[str],
+    progress: Callable[[str, int, int, str], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> tuple[dict[str, Prefetched], dict[str, str]]:
+    """Fetch every source at once, one thread each.
+
+    They are separate sites, each with its own pace and its own 429 handling,
+    so nothing is gained by one waiting on another: a run over two thousand
+    boards fetched one platform after the next took as long as all of them
+    added up. Only the fetching overlaps. Storing still happens one source at a
+    time afterwards, since SQLite takes one writer.
+
+    Returns (prefetched, errors). A source whose thread raised is left out of
+    the first and named in the second, so the caller can fetch it the old way.
+    """
+    import concurrent.futures
+
+    def one(source: str) -> Prefetched:
+        hook = (lambda done, total, token: progress(source, done, total, token)) if progress else None
+        return prefetch(config, source, progress=hook, should_stop=should_stop)
+
+    done: dict[str, Prefetched] = {}
+    errors: dict[str, str] = {}
+    if not sources:
+        return done, errors
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=len(sources), thread_name_prefix="jobhunt-fetch"
+    ) as pool:
+        futures = {pool.submit(one, source): source for source in sources}
+        for future in concurrent.futures.as_completed(futures):
+            source = futures[future]
+            try:
+                done[source] = future.result()
+            except Exception as exc:  # noqa: BLE001 - one source must not sink the others
+                errors[source] = f"{type(exc).__name__}: {exc}"
+    return done, errors
+
+
 def sync_source(
     config: Config,
     source: str,
@@ -535,6 +642,9 @@ def sync_source(
     try:
         if prefetched is not None:
             result.boards = len(prefetched.refs)
+            if not prefetched.refs:
+                result.status = "ok"
+                return result
             result.throttled = prefetched.throttled.left
             result.raw_fetched = prefetched.fetched
             messages = list(prefetched.messages)
@@ -543,38 +653,7 @@ def sync_source(
             )
             result.errors = len(prefetched.failed) - result.rejected
         elif from_raw is None:
-            limit = int(config.get("sync", "max_boards_per_run", default=200))
-            # A generated-ref source (LinkedIn) has no Board rows to query: its
-            # refs come from preferences, fresh every run, via its own
-            # `discover()`. Everything else is still owed its fetch by
-            # `due_boards()`. The cap applies either way, so a preference set
-            # with forty titles cannot turn into a four-hundred-search run.
-            adapter_cls = source_registry.get(source)
-            if adapter_cls.generates_refs:
-                # `only_status="candidate"` means "prove out unvalidated board
-                # guesses" (jobhunt boards --validate, jobhunt discover); a
-                # generated ref is never a candidate board, so there is nothing
-                # to validate here. A `market` filter (e.g. `sync --market yc`)
-                # is meant to narrow which boards run; a generated source has
-                # no per-ref market to narrow, only its own fixed one, so it
-                # runs only when the filter already matches it. Either way this
-                # must stay a no-op rather than kick off a full preference-
-                # driven crawl from a command whose contract is "just boards".
-                if only_status is not None or (market is not None and market != adapter_cls.market):
-                    refs = []
-                else:
-                    refs = list(build_adapter(config, source).discover())[:limit]
-            elif only_status is not None:
-                refs = due_boards(
-                    config, source, force, limit, only_status=only_status, market=market
-                )
-            else:
-                from jobhunt import board_scope
-
-                cap = config.get("sync", "max_relevant_boards_per_run", default=None)
-                refs = board_scope.relevant_boards(
-                    config, source, market=market, limit=int(cap) if cap else None
-                )
+            refs = plan_refs(config, source, force, only_status, market)
             result.boards = len(refs)
             if not refs:
                 result.status = "ok"

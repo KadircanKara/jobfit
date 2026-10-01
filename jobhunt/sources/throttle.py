@@ -10,6 +10,14 @@ same board again. A source that is still refusing after `MAX_WAIT_PER_SOURCE`
 seconds of waiting in one run stops there: the boards it did not reach keep
 their due date and are fetched next run, and none of them is marked failed.
 
+A 429 that arrives only after the board redirected somewhere else is not
+the board refusing. Personio sends a company that has left it to its own home
+page, and that home page answers scripts with 429: read as throttling, one
+gone board made the whole source wait five minutes and then stop with 552
+boards unfetched. `is_throttle` counts only a 429 from the board's own host;
+the redirected kind is the board failing, and it ages toward dead like any
+other.
+
 Every 429 is logged (`history`) with how many requests the source had made in
 the run before it and the pause between requests at the time, so each
 source's real limit can be read off rather than guessed.
@@ -52,7 +60,19 @@ class Report:
 
 
 def is_throttle(exc: BaseException) -> bool:
-    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
+    """A 429 from the host that was asked. See the module note on redirects."""
+    return (
+        isinstance(exc, httpx.HTTPStatusError)
+        and exc.response.status_code == 429
+        and not left_host(exc.response)
+    )
+
+
+def left_host(response: httpx.Response) -> bool:
+    """True when redirects carried the request off the host it was sent to."""
+    if not response.history:
+        return False
+    return response.history[0].request.url.host != response.request.url.host
 
 
 def retry_after(exc: httpx.HTTPStatusError) -> float | None:
