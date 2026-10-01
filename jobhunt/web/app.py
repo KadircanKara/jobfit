@@ -407,7 +407,8 @@ def create_app(*, config: Config | None = None) -> FastAPI:
     # --- runs ---------------------------------------------------------
 
     @app.post("/api/runs")
-    def start_run() -> Any:
+    def start_run(fetch: bool = True) -> Any:
+        """Start a run. `?fetch=false` skips fetching and scores what is stored."""
         jh: AppState = app.state.jh
         if jh.supervisor is not None and jh.supervisor.state.running:
             return JSONResponse(
@@ -433,11 +434,9 @@ def create_app(*, config: Config | None = None) -> FastAPI:
             log=jh.log,
             store=lambda state: history_module.save(cfg, state.run_id, _run_payload(state, jh)),
             clock=lambda: utcnow().isoformat(),
-            max_gate_rounds=int(
-                cfg.get("ranking", "max_gate_rounds", default=DEFAULT_GATE_ROUNDS)
-            ),
+            max_gate_rounds=cfg.get("ranking", "max_gate_rounds", default=DEFAULT_GATE_ROUNDS),
         )
-        jh.supervisor.start(run_id=run_id)
+        jh.supervisor.start(run_id=run_id, fetch=fetch)
         return {"started": True}
 
     # --- the other boards ---------------------------------------------------

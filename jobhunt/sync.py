@@ -15,7 +15,7 @@ import json
 import os
 import pathlib
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import httpx
@@ -581,45 +581,52 @@ def prefetch(
     )
 
 
-def prefetch_all(
+def prefetch_as_done(
     config: Config,
     sources: list[str],
     progress: Callable[[str, int, int, str], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
-) -> tuple[dict[str, Prefetched], dict[str, str]]:
-    """Fetch every source at once, one thread each.
+) -> Iterator[tuple[str, Prefetched | None, str | None]]:
+    """Fetch every source at once, one thread each, handing each back as it finishes.
 
     They are separate sites, each with its own pace and its own 429 handling,
-    so nothing is gained by one waiting on another: a run over two thousand
-    boards fetched one platform after the next took as long as all of them
-    added up. Only the fetching overlaps. Storing still happens one source at a
-    time afterwards, since SQLite takes one writer.
+    so nothing is gained by one waiting on another. Each comes back as soon as
+    its own fetch is done, so the caller can store it while the slow ones are
+    still fetching: LinkedIn, at about ten requests a minute, used to hold
+    every other source's results unstored for over an hour. Storing itself
+    stays one source at a time, since SQLite takes one writer.
 
-    Returns (prefetched, errors). A source whose thread raised is left out of
-    the first and named in the second, so the caller can fetch it the old way.
+    Yields (source, prefetched, error). A source whose thread raised comes
+    back with no prefetched and the reason, so the caller can fetch it the old
+    way. Closing the generator early stops the fetches still going.
     """
     import concurrent.futures
+    import threading
+
+    if not sources:
+        return
+    abandoned = threading.Event()
+
+    def stop() -> bool:
+        return abandoned.is_set() or (should_stop is not None and should_stop())
 
     def one(source: str) -> Prefetched:
         hook = (lambda done, total, token: progress(source, done, total, token)) if progress else None
-        return prefetch(config, source, progress=hook, should_stop=should_stop)
+        return prefetch(config, source, progress=hook, should_stop=stop)
 
-    done: dict[str, Prefetched] = {}
-    errors: dict[str, str] = {}
-    if not sources:
-        return done, errors
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=len(sources), thread_name_prefix="jobhunt-fetch"
     ) as pool:
         futures = {pool.submit(one, source): source for source in sources}
-        for future in concurrent.futures.as_completed(futures):
-            source = futures[future]
-            try:
-                done[source] = future.result()
-            except Exception as exc:  # noqa: BLE001 - one source must not sink the others
-                errors[source] = f"{type(exc).__name__}: {exc}"
-    return done, errors
-
+        try:
+            for future in concurrent.futures.as_completed(futures):
+                source = futures[future]
+                try:
+                    yield source, future.result(), None
+                except Exception as exc:  # noqa: BLE001 - one source must not sink the others
+                    yield source, None, f"{type(exc).__name__}: {exc}"
+        finally:
+            abandoned.set()
 
 def sync_source(
     config: Config,

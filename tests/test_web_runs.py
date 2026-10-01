@@ -529,16 +529,18 @@ class PrefetchingPipeline(FakePipeline):
 
     def prefetch(self, sources):
         self.prefetched.append(list(sources))
-        return {"ashby": "ConnectError: down"}
+        # Finished in reverse: storing follows the fetches, not the list.
+        for source in reversed(sources):
+            yield source, "ConnectError: down" if source == "ashby" else None
 
 
-def test_every_source_is_fetched_up_front_before_any_is_stored():
+def test_each_source_is_stored_in_the_order_its_fetch_finished():
     pipeline = PrefetchingPipeline(sources=["greenhouse", "ashby"], boards=1)
     sup = supervisor(pipeline)
     sup.run()
 
     assert pipeline.prefetched == [["greenhouse", "ashby"]]
-    assert [source for source, _ in pipeline.fetched] == ["greenhouse", "ashby"]
+    assert [source for source, _ in pipeline.fetched] == ["ashby", "greenhouse"]
     messages = [event.message for event in sup.log]
     assert "fetching 2 sources at once" in messages
     assert any("ashby fetch failed ahead of time" in message for message in messages)
@@ -553,4 +555,26 @@ def test_a_resumed_run_fetches_up_front_only_what_it_had_not_finished():
     pipeline.on_fetch = None
     sup.run_resumed()
 
-    assert pipeline.prefetched == [["greenhouse", "ashby"], ["ashby"]]
+    assert pipeline.prefetched == [["greenhouse", "ashby"], ["greenhouse"]]
+
+
+def test_with_no_ceiling_the_gate_scores_every_job_that_passed():
+    """The default: a backlog far past the old 10-round ceiling is worked to the end."""
+    pipeline = FakePipeline(gate_rounds=25)
+    sup = supervisor(pipeline)
+    sup.run()
+
+    assert sup.state.gate.rounds == 25
+    assert sup.state.outcome == "completed"
+    assert any(event.message.startswith("round 25 ·") for event in sup.log)
+
+
+def test_a_run_without_fetching_ranks_gates_and_shortlists_what_is_stored():
+    pipeline = FakePipeline(sources=["greenhouse", "ashby"], gate_rounds=2)
+    sup = supervisor(pipeline)
+    sup.run(fetch=False)
+
+    assert pipeline.fetched == []
+    assert pipeline.ranked and pipeline.shortlisted
+    assert sup.state.gate.rounds == 2
+    assert sup.state.outcome == "completed"
