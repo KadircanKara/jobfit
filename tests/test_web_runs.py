@@ -578,3 +578,30 @@ def test_a_run_without_fetching_ranks_gates_and_shortlists_what_is_stored():
     assert pipeline.ranked and pipeline.shortlisted
     assert sup.state.gate.rounds == 2
     assert sup.state.outcome == "completed"
+
+
+class RepeatingPipeline(FakePipeline):
+    """Hands back the same two jobs however often they are scored, as a job
+    whose verdict lands on a different score row did."""
+
+    def gate_batches(self):
+        self.rounds_served += 1
+        payload = {"jobs": [{"job_id": 21932}, {"job_id": 80833}]}
+        return runs_module.GatePlan(
+            batches=[runs_module.GateBatch(label="yc", size=2, payload=payload)], jobs=2
+        )
+
+    def gate(self, batch):
+        self.gated.append(batch.size)
+        return [{"job_id": job["job_id"], "score": 0.5} for job in batch.payload["jobs"]]
+
+
+def test_a_slice_that_comes_back_after_scoring_ends_the_gate_instead_of_looping():
+    pipeline = RepeatingPipeline()
+    sup = supervisor(pipeline)
+    sup.run()
+
+    assert sup.state.gate.rounds == 1
+    assert pipeline.gated == [2]
+    assert any("came back after being scored" in event.message for event in sup.log)
+    assert sup.state.outcome == "completed"
