@@ -10,7 +10,7 @@ import sys
 import typer
 from rich.console import Console
 from rich.table import Table
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 
 from jobhunt import __version__, store, sync
 from jobhunt import applications as applications_module
@@ -486,7 +486,9 @@ def _extract_queue(cfg) -> None:
     with session_scope(cfg.db_path) as session:
         rows = session.execute(
             select(Job)
-            .join(Score, Score.job_id == Job.id)
+            # The row for the job's current market. A job that moved market keeps
+            # its old row, and reading that one let a stale pass or score through.
+            .join(Score, and_(Score.job_id == Job.id, Score.profile == Job.market))
             .where(Job.is_active.is_(True))
             .where(Score.deterministic_pass.is_(True))
             .where(Job.jd_completeness != "full")

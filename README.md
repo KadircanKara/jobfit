@@ -1,21 +1,71 @@
 # jobhunt
 
-Local CLI job sourcing and application tracking. Full architecture in `PLAN.md`.
-
-Phases 1 to 5 are built, plus the automation layer on top. From Claude Code it
-is one command; from a terminal it is a handful. LinkedIn (phase 6) and the
-Turkish boards (phase 7) are parked.
-
-```
-/jobhunt-config     set what you are looking for, conversationally
-/scrape-jobs        sync every board, rank, show the top matches, update the CSV
-```
-
-`/scrape-jobs` ends with checkboxes. Ticking a job records it, tailors a CV and
-cover letter into its folder, and flips `applied` to TRUE in the CSV. It never
-submits anything to an employer.
+A local job search that runs on your own machine: it finds openings across
+thousands of company job boards and LinkedIn, ranks them against what you are
+looking for, scores the survivors with Claude, and tailors a CV for the ones you
+pick. It never applies for you. Full architecture in `PLAN.md`.
 
 **You never type a company name.** The board list is discovered, not curated.
+
+## The web app
+
+`jobhunt serve` opens it on `127.0.0.1:8765`. It binds to loopback only, so
+nothing outside your machine can reach it.
+
+### Run
+
+![The run page after a full run](docs/images/run.png)
+
+One button runs the whole pipeline, with each step's progress live on screen:
+
+1. **Sync.** Every source is fetched at once, one thread each, and each is
+   stored as soon as its own fetch finishes. A run fetches every *relevant*
+   board: one that has ever posted a title you are looking for, plus the
+   aggregator feeds. **Check other boards** fetches the rest on demand, and any
+   board that turns out to carry a matching job becomes relevant from then on.
+2. **Rank.** Your filters, free and deterministic, over the whole corpus. The
+   page shows how many jobs passed and what dropped the rest.
+3. **Fit gate.** Claude scores every job that passed, twenty at a time, until
+   none is left unscored. It runs through the `claude` CLI, so there is no API
+   key.
+4. **Shortlist.** Before a job is shown, its posting is checked to be still
+   open; a closed one never reaches the list.
+
+Pause keeps what a run already fetched; Stop ends it. Filters (titles,
+locations, seniority, salary, work authorization and the rest) are set on the
+same page.
+
+### Shortlist
+
+![The shortlist](docs/images/shortlist.png)
+
+Every job above the bar, with its fit score, where it came from, and the
+gate's one-line reason. Earlier runs stay in the sidebar. From here you pick
+jobs to tailor, open outreach, or mark a job applied.
+
+### Tailoring
+
+![Tailoring two CVs](docs/images/tailoring.png)
+
+Each selected job gets its own folder and a CV cut from your profile for that
+posting. A reviewer with fresh context gates every CV: a claim that does not
+trace back to your master CV fails it, and the loop goes up to three rounds
+before it reports a failure rather than shipping one. **Review and revise**
+opens the CV next to its findings.
+
+### Outreach
+
+![The outreach drawer, contact details blurred](docs/images/outreach.png)
+
+Find who posted a job, or who else works at the company, and draft a LinkedIn
+message to them. It goes through [Unipile](https://www.unipile.com) with your
+own account, under daily and weekly caps set below what a person does by hand.
+Set `UNIPILE_DSN`, `UNIPILE_API_KEY` and `UNIPILE_ACCOUNT_ID` to enable it.
+
+### Profile and templates
+
+Your CV lives as data on the Profile page and renders through a LaTeX template
+from the Templates page. See [Your CV](#your-cv).
 
 ## Install
 
@@ -27,6 +77,18 @@ python3 -m venv .venv
 
 `init` writes `~/.jobhunt/config.yaml` and runs the alembic migrations against
 `~/.jobhunt/jobhunt.db`. The boards table starts empty.
+
+The web app needs its interface built once, and two tools on the path:
+
+```bash
+cd ui && npm install && npm run build   # into jobhunt/web/static
+claude auth login                       # the fit gate and tailoring run through it
+jobhunt serve
+```
+
+A TeX distribution with `lualatex` (TeX Live is what is tested) builds the CVs.
+For working on the interface, `scripts/dev.sh` starts the API and a Vite dev
+server on `localhost:5173` in the background; `scripts/dev-stop.sh` stops both.
 
 Point everything at a scratch directory with `JOBHUNT_HOME=/tmp/whatever`.
 
@@ -64,9 +126,17 @@ jobhunt stats
 jobhunt serve                         # the web app, on 127.0.0.1:8765
 ```
 
-## The automated flow
+## The automated flow from Claude Code
 
-`~/.claude/skills/scrape-jobs/SKILL.md` orchestrates the CLI and contributes the
+Without the web app, `/scrape-jobs` (`~/.claude/skills/scrape-jobs/SKILL.md`)
+orchestrates the CLI from Claude Code. From Claude Code it is one command:
+
+```
+/jobhunt-config     set what you are looking for, conversationally
+/scrape-jobs        sync every board, rank, show the top matches, update the CSV
+```
+
+The skill orchestrates the CLI and contributes the
 one thing it cannot do without an API key: scoring the fit gate.
 
 1. `jobhunt sync --fast` in the foreground, capped at 12 boards per source, which
@@ -230,7 +300,7 @@ so nothing one build writes is seen by the next.
 
 Two passes over separate storage, which is the point.
 
-1. **Fetch.** Boards due per `next_fetch_at`, capped per run. Each response is
+1. **Fetch.** Every relevant board of the source (see below). Each response is
    written verbatim to `~/.jobhunt/data/raw/{source}/{run_key}/{provider}__{token}.json`
    in an envelope carrying the token, market, and fetch time.
 2. **Normalize.** Each stored envelope is parsed into `JobPosting` records and
@@ -273,8 +343,7 @@ wrong `company_id` is worse than none.
 Himalayas. It cannot. Measured across six aggregators, 463 job records produced
 one ATS token, because every aggregator wraps its apply link in its own domain.
 The write-up is in `references/sources.md`. Strategy A still earns its place: ATS
-postings do leak their own tokens, and phase 6 (LinkedIn via Unipile) supplies
-raw employer URLs, which is where it pays off.
+postings do leak their own tokens.
 
 **Strategy C, the Common Crawl backfill.** `discover --strategy commoncrawl`
 queries the CDX index once per provider and turns the returned URLs into
@@ -293,10 +362,23 @@ customer boards sit behind a wildcard certificate that names nobody. A board
 confirmed live in phase 3 does not appear in its own provider's CT results. The
 Common Crawl subdomain patterns cover the same providers properly.
 
-**Board scheduling.** Discovery can produce tens of thousands of tokens, so
-nothing iterates the boards table. `sync` selects boards where `next_fetch_at` is
-due, newest candidates first, with a hard per-run cap. A board with jobs is
-re-fetched weekly, an empty one monthly, and a dead one never.
+**Which boards a run fetches.** Discovery produces thousands of tokens, and
+most belong to companies that never hire for what you are looking for. A run
+fetches every **relevant** board, every time: one that has ever posted a job
+whose title matches your title patterns, plus the aggregator feeds. Relevance is
+worked out from the stored jobs against the current patterns, so changing your
+titles changes the set at once.
+
+Everything else (boards whose jobs never matched, empty boards, unvalidated
+candidates, and once, dead boards) is fetched only by **Check other boards** in
+the web app. A board that turns out to carry a matching job is relevant from
+then on. In practice the first check took a corpus from 892 relevant boards to
+2,030.
+
+A board that answers 429 is waited out (its `Retry-After`, or 30 seconds
+doubling) and asked again, never counted as failing. A 429 that only arrives
+after a redirect to another site, which is how Personio answers for a company
+that has left it, counts as the board being gone.
 
 ## Sources
 
@@ -309,6 +391,18 @@ re-fetched weekly, an empty one monthly, and a dead one never.
 | smartrecruiters | JSON, paged | **no**, detail fetched lazily in phase 5 |
 | personio | XML | yes |
 | workable | JSON widget API | yes |
+
+Two sources search by title and location instead of fetching a company's board,
+so they find jobs at companies the board list has never heard of:
+
+| Source | How | Limits |
+|---|---|---|
+| linkedin | public job search pages, then each new job's own page | about 10 requests a minute from one IP, measured; a 429 is waited out |
+| workable_search | `jobs.workable.com` cross-company search | 5 pages of 20 per search; descriptions included |
+
+LinkedIn only opens the page of a job whose title passes your title rules,
+which halved its requests. Workable search results carry no board token, so
+those jobs merge with board copies through deduplication rather than by key.
 
 Workday is deferred: see `references/sources.md` for why.
 
@@ -396,10 +490,8 @@ jobhunt discover --strategy harvest         # mine the URLs that just landed
 jobhunt boards --list --status validated
 ```
 
-Candidates are validated by the ordinary sync, capped per run, so a backfill of
-several thousand drains over several runs rather than in one burst. Due boards
-are served first and candidates get a bounded slice, so a backfill never starves
-the boards that are actually producing jobs.
+`jobhunt boards --validate` proves candidates from the command line; in the web
+app, **Check other boards** fetches every candidate once.
 
 State of a scratch corpus built this way, from empty, in one session:
 

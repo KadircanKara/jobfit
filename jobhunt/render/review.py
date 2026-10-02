@@ -126,7 +126,9 @@ def _scored_cards(
 
         stmt = (
             select(Job, Company, Score)
-            .join(Score, Score.job_id == Job.id)
+            # The row for the job's current market. A job that moved market keeps
+            # its old row, and reading that one let a stale pass or score through.
+            .join(Score, and_(Score.job_id == Job.id, Score.profile == Job.market))
             .join(Company, Job.company_id == Company.id, isouter=True)
             .where(Job.is_active.is_(True))
             .where(

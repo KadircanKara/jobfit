@@ -159,6 +159,16 @@ class RunState:
         return self.phase == "paused"
 
 
+def _job_ids(plan: GatePlan) -> set[Any]:
+    """The job ids a slice carries, where the payload says."""
+    return {
+        job.get("job_id")
+        for batch in plan.batches
+        for job in ((batch.payload if isinstance(batch.payload, dict) else {}).get("jobs") or [])
+        if isinstance(job, dict) and job.get("job_id") is not None
+    }
+
+
 class RunSupervisor:
     def __init__(
         self,
@@ -423,12 +433,25 @@ class RunSupervisor:
         report = GateReport()
         self.state.gate = report
 
+        scored_ids: set[Any] = set()
         while self.max_gate_rounds is None or report.rounds < self.max_gate_rounds:
             plan = self.pipeline.gate_batches()
             if not plan.batches:
                 if not report.rounds:
                     self.log.emit(phase="gate", message="nothing new to gate")
                 break
+            # With no round ceiling, a slice that comes back already scored
+            # would loop forever: a verdict that does not take the job off the
+            # backlog was scored 212 times before this check existed.
+            ids = _job_ids(plan)
+            if ids and ids <= scored_ids:
+                self.log.emit(
+                    phase="gate",
+                    message=f"{len(ids)} jobs came back after being scored · stopping the gate here",
+                    level="warning",
+                )
+                break
+            scored_ids |= ids
 
             report.rounds += 1
             # The plan on screen is the slice being worked; the job total is

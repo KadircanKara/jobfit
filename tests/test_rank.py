@@ -296,6 +296,20 @@ def test_emit_skips_jobs_already_gated(cfg, tmp_path) -> None:
     assert _counts(runner.emit(cfg, tmp_path / "b2.json")) == (0, 0)
 
 
+def test_a_job_that_moved_market_is_not_gated_off_its_old_score_row(cfg, tmp_path) -> None:
+    """A job whose market changed keeps the Score row of its old market. Read
+    that one and a passing, unscored stale row put the job in every batch,
+    while the verdict landed on the row for its new market: the gate scored
+    the same two jobs 212 times."""
+    job_id = make_job(cfg, country="DE")
+    runner.run_deterministic(cfg)
+    with session_scope(cfg.db_path) as session:
+        session.get(Job, job_id).market = "yc"
+        session.add(Score(job_id=job_id, profile="yc", deterministic_pass=False, llm_score=0.7))
+
+    assert _counts(runner.emit(cfg, tmp_path / "b.json")) == (0, 0)
+
+
 def test_emit_truncates_long_descriptions_and_says_so(cfg, tmp_path) -> None:
     make_job(cfg, country="DE", description_text="word " * 5000)
     runner.run_deterministic(cfg)
