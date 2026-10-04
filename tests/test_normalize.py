@@ -150,6 +150,10 @@ def test_html_to_text_definition_list_breaks_term_from_definition() -> None:
     [
         ("New York, NY", "US", "unknown"),
         ("Istanbul, Turkey", "TR", "unknown"),
+        # A Turkish city with no country, as Greenhouse boards in Istanbul write it.
+        ("Sarıyer, Istanbul", "TR", "unknown"),
+        ("İstanbul", "TR", "unknown"),
+        ("Yenimahalle, Ankara", "TR", "unknown"),
         ("Remote - Europe", None, "remote"),
         ("Berlin, Germany (Hybrid)", "DE", "hybrid"),
         (None, None, "unknown"),

@@ -5,7 +5,8 @@ means it goes through the same scheduler, the same per-run cap, the same
 degraded handling, and the same raw storage as an ATS board. One fetch path, not
 two. PLAN.md non-negotiable 8.
 
-Every feed here was verified live on 2026-08-20 (references/sources.md).
+Every feed here was verified live on 2026-08-20 (references/sources.md), except
+where its entry says otherwise.
 """
 from __future__ import annotations
 
@@ -27,6 +28,8 @@ FEEDS: tuple[tuple[str, str, str], ...] = (
     ("wwr", "all", "global_remote"),
     ("wwr", "remote-programming-jobs", "global_remote"),
     ("wwr", "remote-devops-sysadmin-jobs", "global_remote"),
+    # Verified 2026-10-04. See sources/techcareer.py.
+    ("techcareer", "all", "tr_local"),
 )
 
 DISCOVERED_VIA = "feed"

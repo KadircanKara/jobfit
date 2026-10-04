@@ -6,6 +6,8 @@ looking for, scores the survivors with Claude, and tailors a CV for the ones you
 pick. It never applies for you. Full architecture in `PLAN.md`.
 
 **You never type a company name.** The board list is discovered, not curated.
+The one exception is a short hand-picked list of employers hiring in Turkey,
+which discovery rarely finds on its own (`jobhunt/discovery/turkey.py`).
 
 ## The web app
 
@@ -21,7 +23,7 @@ One button runs the whole pipeline, with each step's progress live on screen:
 1. **Sync.** Every source is fetched at once, one thread each, and each is
    stored as soon as its own fetch finishes. A run fetches every *relevant*
    board: one that has ever posted a title you are looking for, plus the
-   aggregator feeds. **Check other boards** fetches the rest on demand, and any
+   aggregator feeds and the hand-picked boards. **Check other boards** fetches the rest on demand, and any
    board that turns out to carry a matching job becomes relevant from then on.
 2. **Rank.** Your filters, free and deterministic, over the whole corpus. The
    page shows how many jobs passed and what dropped the rest.
@@ -62,6 +64,13 @@ message to them. It goes through [Unipile](https://www.unipile.com) with your
 own account, under daily and weekly caps set below what a person does by hand.
 Set `UNIPILE_DSN`, `UNIPILE_API_KEY` and `UNIPILE_ACCOUNT_ID` to enable it.
 
+### Careerjet
+
+The Careerjet source searches Turkish job boards through Careerjet's API. It
+needs a free key from a [Careerjet publisher account](https://www.careerjet.com/partners/api):
+put it in `.env` as `CAREERJET_API_KEY`. `CAREERJET_USER_IP` can name your own
+address, which the API asks for; it defaults to `127.0.0.1`.
+
 ### Profile and templates
 
 Your CV lives as data on the Profile page and renders through a LaTeX template
@@ -99,6 +108,7 @@ jobhunt init                          # config and database
 jobhunt discover --strategy yc          # seed boards from a public company list
 jobhunt discover --strategy commoncrawl # bulk backfill from the crawl index
 jobhunt discover --strategy feeds       # register the tier 2 aggregators
+jobhunt discover --strategy turkey      # register the hand-picked Turkish employers
 jobhunt discover --strategy harvest     # mine ATS tokens out of ingested URLs
 jobhunt discover --domain acme.com    # probe one company I actually care about
 jobhunt boards --list --status validated

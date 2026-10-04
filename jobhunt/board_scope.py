@@ -1,7 +1,8 @@
 """Which job boards a run fetches, and the on-demand check of all the others.
 
 A normal run fetches only the **relevant** boards: those that have ever posted
-a job whose title matches the user's title patterns, plus the aggregator feeds.
+a job whose title matches the user's title patterns, plus the aggregator feeds
+and the boards the user picked by hand (discovery/turkey.py).
 It fetches every one of them, every run - no per-run cap, no weekly wait -
 because these are the boards the shortlist comes from, and a board fetched
 once a week is a week of jobs missed.
@@ -34,6 +35,10 @@ from jobhunt.rank import deterministic
 from jobhunt.sources.base import BoardRef
 
 FEED = "feed"
+MANUAL = "manual"
+# Fetched on every run whatever they have posted: a feed is where jobs appear
+# first, and a hand-picked board is one the user asked for by name.
+ALWAYS = (FEED, MANUAL)
 # Set once dead boards have had their one second chance. See `other_boards`.
 _DEAD_RECHECKED_KEY = "boards_dead_rechecked_at"
 _LAST_CHECK_KEY = "boards_other_checked_at"
@@ -112,8 +117,8 @@ def relevant_boards(
         if market:
             stmt = stmt.where(Board.market == market)
         boards = [
-            b for b in session.scalars(stmt.order_by(Board.discovered_via != FEED, Board.id)).all()
-            if b.discovered_via == FEED or b.id in relevant
+            b for b in session.scalars(stmt.order_by(Board.discovered_via.not_in(ALWAYS), Board.id)).all()
+            if b.discovered_via in ALWAYS or b.id in relevant
         ]
         return _refs(boards[:limit] if limit else boards)
 
@@ -128,7 +133,7 @@ def other_boards(
     """Every board of one source a normal run skips. What the check fetches."""
     relevant = relevant_board_ids(config) if relevant is None else relevant
     with session_scope(config.db_path) as session:
-        stmt = select(Board).where(Board.provider == source, Board.discovered_via != FEED)
+        stmt = select(Board).where(Board.provider == source, Board.discovered_via.not_in(ALWAYS))
         if not include_dead:
             stmt = stmt.where(Board.status != "dead")
         boards = [b for b in session.scalars(stmt.order_by(Board.id)).all() if b.id not in relevant]
