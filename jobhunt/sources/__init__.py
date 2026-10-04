@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from jobhunt.sources.arbeitnow import ArbeitnowAdapter
 from jobhunt.sources.ashby import AshbyAdapter
+from jobhunt.sources.careerjet import CareerjetAdapter
 from jobhunt.sources.base import BoardRef, JobPosting, RateLimit, SourceAdapter
 from jobhunt.sources.greenhouse import GreenhouseAdapter
 from jobhunt.sources.jobicy import JobicyAdapter
@@ -32,6 +33,7 @@ REGISTRY: dict[str, type] = {
     WorkableAdapter.source_id: WorkableAdapter,
     WorkableSearchAdapter.source_id: WorkableSearchAdapter,
     LinkedInAdapter.source_id: LinkedInAdapter,
+    CareerjetAdapter.source_id: CareerjetAdapter,
 }
 
 __all__ = [
@@ -39,6 +41,7 @@ __all__ = [
     "ArbeitnowAdapter",
     "AshbyAdapter",
     "BoardRef",
+    "CareerjetAdapter",
     "GreenhouseAdapter",
     "JobPosting",
     "JobicyAdapter",
