@@ -21,6 +21,7 @@ from jobhunt.db.models import Application, Board, Company, Job, Run, Score
 from jobhunt.db.session import ensure_current, session_scope, upgrade_to_head
 from jobhunt.discovery import commoncrawl as cc_module
 from jobhunt.discovery import feeds as feeds_module
+from jobhunt.discovery import turkey as turkey_module
 from jobhunt.discovery import harvest as harvest_module
 from jobhunt.discovery import patterns
 from jobhunt.discovery import yc as yc_module
@@ -68,8 +69,10 @@ def init(force: bool = typer.Option(False, "--force", help="Rewrite an existing 
     # Register the aggregator feeds now. They need no discovery and no tokens, so
     # a first sync has something to fetch instead of an empty boards table.
     feeds = feeds_module.seed(cfg)
+    turkey = turkey_module.seed(cfg)
     console.print(f"init: config={path} db={cfg.db_path} data={cfg.data_dir}")
     console.print(f"init: {feeds.summary()}")
+    console.print(f"init: {turkey.summary()}")
     if installed:
         console.print(f"init: wrote {len(installed)} tunable files, starting with {installed[0]}")
     console.print(
@@ -141,7 +144,7 @@ def _sync_targets(cfg, targets, force, dry_run, from_raw, market) -> str:
     return worst
 
 
-STRATEGIES = ("harvest", "yc", "commoncrawl", "feeds")
+STRATEGIES = ("harvest", "yc", "commoncrawl", "feeds", "turkey")
 
 
 @app.command()
@@ -176,6 +179,10 @@ def discover(
     if strategy == "feeds":
         registered = feeds_module.seed(cfg, dry_run=dry_run)
         console.print(registered.summary())
+        return
+
+    if strategy == "turkey":
+        console.print(turkey_module.seed(cfg, dry_run=dry_run).summary())
         return
 
     if strategy == "commoncrawl":

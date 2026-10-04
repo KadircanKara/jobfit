@@ -69,6 +69,13 @@ def test_a_run_fetches_relevant_boards_and_feeds_only(cfg, corpus) -> None:
     assert tokens(board_scope.relevant_boards(cfg, "ashby")) == {"feed", "match"}
 
 
+def test_a_hand_picked_board_is_fetched_every_run_like_a_feed(cfg, corpus) -> None:
+    """Picked by name, so never left waiting for a matching title to appear."""
+    board(cfg, "picked", status="candidate", via="manual")
+    assert tokens(board_scope.relevant_boards(cfg, "ashby")) == {"feed", "match", "picked"}
+    assert "picked" not in tokens(board_scope.other_boards(cfg, "ashby", include_dead=True))
+
+
 def test_the_check_fetches_everything_a_run_skips(cfg, corpus) -> None:
     assert tokens(board_scope.other_boards(cfg, "ashby", include_dead=False)) == {
         "nomatch", "excluded", "empty", "candidate",
