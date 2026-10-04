@@ -285,6 +285,18 @@ _US_STATES = {
     "tx", "ut", "vt", "va", "wa", "wv", "wi", "wy", "dc",
 }
 
+# Turkish cities a posting names without the country: "Sarıyer, Istanbul" is a
+# Turkish job, and the tr_local filter requires country TR. Found live on Good
+# Job Games' and Dream Games' Greenhouse boards. Only cities whose name means
+# nothing else; matched after folding Turkish letters, since Python lowercases
+# "İstanbul" to an "i" with a combining dot.
+_TR_CITIES = {
+    "istanbul", "ankara", "izmir", "bursa", "antalya", "kocaeli", "gebze",
+    "eskisehir", "konya", "kayseri", "gaziantep", "mersin", "adana", "sakarya",
+    "tekirdag", "denizli", "samsun", "trabzon",
+}
+_TURKISH_FOLD = str.maketrans("ıİşŞğĞüÜöÖçÇ", "iIsSgGuUoOcC")
+
 _REMOTE_RE = re.compile(r"\b(remote|distributed|anywhere|work from home|wfh)\b", re.I)
 _HYBRID_RE = re.compile(r"\bhybrid\b", re.I)
 
@@ -321,6 +333,9 @@ def parse_location(location_raw: str | None) -> tuple[str | None, str | None, st
             break
         if (len(key) == 2 and key in _US_STATES) or key in _US_STATE_NAMES:
             country = "US"
+            break
+        if part.translate(_TURKISH_FOLD).lower().strip(". ") in _TR_CITIES:
+            country = "TR"
             break
     if country is None:
         country = _country_from_tokens(parts)
