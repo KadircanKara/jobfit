@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from jobhunt.sources.arbeitnow import ArbeitnowAdapter
 from jobhunt.sources.ashby import AshbyAdapter
-from jobhunt.sources.careerjet import CareerjetAdapter
 from jobhunt.sources.base import BoardRef, JobPosting, RateLimit, SourceAdapter
+from jobhunt.sources.careerjet import CareerjetAdapter
 from jobhunt.sources.greenhouse import GreenhouseAdapter
 from jobhunt.sources.jobicy import JobicyAdapter
 from jobhunt.sources.lever import LeverAdapter
@@ -14,6 +14,7 @@ from jobhunt.sources.recruitee import RecruiteeAdapter
 from jobhunt.sources.remoteok import RemoteOkAdapter
 from jobhunt.sources.remotive import RemotiveAdapter
 from jobhunt.sources.smartrecruiters import SmartRecruitersAdapter
+from jobhunt.sources.techcareer import TechcareerAdapter
 from jobhunt.sources.workable import WorkableAdapter
 from jobhunt.sources.workable_search import WorkableSearchAdapter
 from jobhunt.sources.wwr import WeWorkRemotelyAdapter
@@ -30,6 +31,7 @@ REGISTRY: dict[str, type] = {
     ArbeitnowAdapter.source_id: ArbeitnowAdapter,
     JobicyAdapter.source_id: JobicyAdapter,
     WeWorkRemotelyAdapter.source_id: WeWorkRemotelyAdapter,
+    TechcareerAdapter.source_id: TechcareerAdapter,
     WorkableAdapter.source_id: WorkableAdapter,
     WorkableSearchAdapter.source_id: WorkableSearchAdapter,
     LinkedInAdapter.source_id: LinkedInAdapter,
@@ -54,6 +56,7 @@ __all__ = [
     "SmartRecruitersAdapter",
     "RateLimit",
     "SourceAdapter",
+    "TechcareerAdapter",
     "WeWorkRemotelyAdapter",
     "WorkableAdapter",
     "WorkableSearchAdapter",
