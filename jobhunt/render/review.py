@@ -59,11 +59,11 @@ class Card:
 # `is_active` says (that waits for two misses). For a job board that is the
 # board's own latest fetch: a job missing from it is gone, and a board nobody
 # has fetched lately says nothing either way, so wall-clock age must not hide
-# its jobs. A search (LinkedIn, Workable's job search) returns only its top
+# its jobs. A search (LinkedIn, Workable's job search, kariyer.net) returns only its top
 # results and proves nothing by leaving a job out, so there - and for a job with
 # no board - a job not seen for this many days is not shown.
 SEEN_WITHIN_DAYS = 14
-SEARCH_SOURCES = ("linkedin", "workable_search")
+SEARCH_SOURCES = ("linkedin", "workable_search", "kariyer_net")
 
 
 def shortlist(
