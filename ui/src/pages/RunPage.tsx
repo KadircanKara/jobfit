@@ -279,6 +279,7 @@ function sourceName(id: string): string {
 const SOURCE_NAMES: Record<string, string> = {
   linkedin: "LinkedIn",
   workable_search: "workable search",
+  kariyer_net: "kariyer.net",
   careerjet: "Careerjet",
   techcareer: "Techcareer",
 };

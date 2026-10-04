@@ -7,6 +7,7 @@ from jobhunt.sources.base import BoardRef, JobPosting, RateLimit, SourceAdapter
 from jobhunt.sources.careerjet import CareerjetAdapter
 from jobhunt.sources.greenhouse import GreenhouseAdapter
 from jobhunt.sources.jobicy import JobicyAdapter
+from jobhunt.sources.kariyer_net import KariyerNetAdapter
 from jobhunt.sources.lever import LeverAdapter
 from jobhunt.sources.linkedin import LinkedInAdapter
 from jobhunt.sources.personio import PersonioAdapter
@@ -35,6 +36,7 @@ REGISTRY: dict[str, type] = {
     WorkableAdapter.source_id: WorkableAdapter,
     WorkableSearchAdapter.source_id: WorkableSearchAdapter,
     LinkedInAdapter.source_id: LinkedInAdapter,
+    KariyerNetAdapter.source_id: KariyerNetAdapter,
     CareerjetAdapter.source_id: CareerjetAdapter,
 }
 
@@ -47,6 +49,7 @@ __all__ = [
     "GreenhouseAdapter",
     "JobPosting",
     "JobicyAdapter",
+    "KariyerNetAdapter",
     "LeverAdapter",
     "LinkedInAdapter",
     "PersonioAdapter",

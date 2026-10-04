@@ -183,10 +183,10 @@ class SyncLock:
 def build_adapter(config: Config, source: str):
     """Construct one adapter.
 
-    The search sources (LinkedIn, Workable's job search) are the ones whose
-    work units come from saved preferences rather than from seeded boards, and
-    LinkedIn is the only one whose fetch needs the corpus to know which detail
-    pages it can skip. Every board adapter takes no arguments at all, so that
+    The search sources (LinkedIn, Workable's job search, kariyer.net) are the
+    ones whose work units come from saved preferences rather than from seeded
+    boards, and LinkedIn and kariyer.net are the ones whose fetch needs the
+    corpus to know which detail pages it can skip. Every board adapter takes no arguments at all, so that
     difference is confined to this one function instead of being
     special-cased at each call site.
 
@@ -199,7 +199,7 @@ def build_adapter(config: Config, source: str):
     if not getattr(cls, "generates_refs", False):
         return cls()
     prefs, _ = prefs_module.load(config)
-    if source == "linkedin":
+    if source in ("linkedin", "kariyer_net"):
         adapter = cls(config=config, known_ids=_known_ids_for(config, source))
     else:
         adapter = cls()
