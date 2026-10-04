@@ -30,7 +30,9 @@ JOB = {
     "date": "Fri, 02 Oct 2026 04:41:27 GMT",
     "url": "https://jobviewtrack.com/v2/u-FwJGrfrKqu8SRPG6oqbhEYZql2XHgIhsUC9",
     "title": "YAZILIM GELİŞTİRME PERSONELİ",
-    "description": "Tercihen Bilgisayar Mühendisliği mezunu, <b>Yazılım</b> geliştirme konusunda deneyimli...",
+    "description": (
+        "Tercihen Bilgisayar Mühendisliği mezunu, <b>Yazılım</b> geliştirme konusunda deneyimli..."
+    ),
     "company": "TURKSAT",
     "salary": "",
 }
@@ -96,7 +98,8 @@ def test_the_identity_survives_a_new_tracker_url() -> None:
     """Careerjet hands out a fresh tracker URL for the same job on every call."""
     adapter = CareerjetAdapter()
     [first] = adapter.normalize({"pages": [page([JOB])]}, ref())
-    [again] = adapter.normalize({"pages": [page([job(url="https://jobviewtrack.com/v2/other")])]}, ref())
+    moved = job(url="https://jobviewtrack.com/v2/other")
+    [again] = adapter.normalize({"pages": [page([moved])]}, ref())
     [elsewhere] = adapter.normalize({"pages": [page([job(locations="Çankaya, Ankara")])]}, ref())
 
     assert first.external_id == again.external_id
@@ -117,10 +120,8 @@ def test_salary_and_work_mode_are_read_when_stated() -> None:
 
 
 def test_a_location_answer_and_junk_yield_nothing() -> None:
-    raw = {"pages": [
-        {"type": "LOCATIONS", "locations": ["Ankara", "Ankara (Merkez)"], "message": "multiple locations found"},
-        page([{"title": "no company"}, "junk", JOB, JOB]),
-    ]}
+    choices = {"type": "LOCATIONS", "locations": ["Ankara", "Ankara (Merkez)"], "message": "multiple"}
+    raw = {"pages": [choices, page([{"title": "no company"}, "junk", JOB, JOB])]}
     assert len(list(CareerjetAdapter().normalize(raw, ref()))) == 1
 
 
@@ -203,7 +204,8 @@ def test_a_search_with_no_location_sends_none_and_stops_on_one_page(key) -> None
 
 def test_a_location_answer_ends_the_search(key) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"type": "LOCATIONS", "locations": [], "message": "no matching location found"})
+        body = {"type": "LOCATIONS", "locations": [], "message": "no matching location found"}
+        return httpx.Response(200, json=body)
 
     raw = CareerjetAdapter().fetch(ref(), client_for(handler))
     assert len(raw["pages"]) == 1

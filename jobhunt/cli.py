@@ -21,9 +21,9 @@ from jobhunt.db.models import Application, Board, Company, Job, Run, Score
 from jobhunt.db.session import ensure_current, session_scope, upgrade_to_head
 from jobhunt.discovery import commoncrawl as cc_module
 from jobhunt.discovery import feeds as feeds_module
-from jobhunt.discovery import turkey as turkey_module
 from jobhunt.discovery import harvest as harvest_module
 from jobhunt.discovery import patterns
+from jobhunt.discovery import turkey as turkey_module
 from jobhunt.discovery import yc as yc_module
 from jobhunt.extract import ladder as ladder_module
 from jobhunt.rank import deterministic as rank_filters

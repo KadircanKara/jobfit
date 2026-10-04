@@ -208,7 +208,11 @@ class CareerjetAdapter(HttpAdapter):
         city = next((p for p in reversed(places) if _fold(p) not in _COUNTRY_WORDS), None)
 
         signal = f"{title} {location_raw or ''}"
-        remote_type = "hybrid" if _HYBRID.search(signal) else "remote" if _REMOTE.search(signal) else "unknown"
+        remote_type = "unknown"
+        if _HYBRID.search(signal):
+            remote_type = "hybrid"
+        elif _REMOTE.search(signal):
+            remote_type = "remote"
 
         low, high = _amount(job.get("salary_min")), _amount(job.get("salary_max"))
         stated = low is not None or high is not None
